@@ -90,7 +90,7 @@ pointer activity has arrived for `--read-delay` seconds. It then appends one
 ```sh
 ./scripts/coupled reads \
   --output ./coupled-data/read-candidate-test \
-  --read-delay 1 \
+  --read-delay 3 \
   --pause-file ./.coupled-pause
 ./scripts/coupled logs
 ```
@@ -121,7 +121,7 @@ editable fields in the allowlisted applications.
 ```sh
 ./scripts/coupled events \
   --output ./coupled-data/visible-events-test \
-  --read-delay 1 \
+  --read-delay 3 \
   --write-delay 3 \
   --pause-file ./.coupled-pause
 ./scripts/coupled logs
@@ -137,9 +137,12 @@ the same live log. Source observations are appended separately to `raw.jsonl`:
   or replacement is emitted only when both states are complete and no
   event-tap timeout occurred. Confirmed `AXPlaceholderValue` text remains in
   raw evidence but is treated as an empty logical field during derivation.
-  Unmodified Return settles an active single-line or confirmed-placeholder
-  field immediately before the application can submit or transform it. Secure
-  fields are ignored.
+  Unmodified Return settles an active single-line field immediately. In a
+  multiline field it synchronously retains a pre-Return checkpoint, then keeps
+  the normal delay. If terminal capture is invalid, empty, or equal to BEFORE,
+  a meaningful checkpoint can supply the write; otherwise AFTER remains the
+  source. Every checkpoint and its selection, timestamp, and AX errors remains
+  raw. Secure fields are ignored.
 - `READ` captures the visible rectangle of the topmost window surface after the
   read delay, removes 10% from both the left and right, 10% from the top, and
   50% from the bottom, then uses macOS Vision recognition locally to emit its
@@ -152,6 +155,47 @@ Tune it with `--viewport-side-crop` (zero to less than `0.5`),
 must sum to less than `1`. Setting all three to `0` restores full-window
 capture. Each read retains `windowBounds`, the actual cropped `captureBounds`,
 and all crop fractions so the transformation remains auditable.
+
+Chrome surfaces under 300 pixels tall, plus extremely narrow surfaces under
+100 pixels wide, are treated as auxiliary browser UI. Their recognized content
+and a `chrome_auxiliary_surface` suppression reason remain in `raw.jsonl`, but
+they do not produce derived reads or disturb primary-viewport deduplication.
+
+Every collection starts by creating an immutable `session.json`. It contains a
+random `sessionID`, start time, resolved delays and crop settings, limits,
+allowlists and exclusions, OCR settings, record schema versions, application
+version, and an SHA-256 digest of the collector executable. The same
+`sessionID` is injected at the top level of every raw and derived JSONL record.
+Coupled refuses to reuse an output directory that already contains a manifest
+or nonempty collection file, preventing records from different configurations
+from being silently appended together.
+
+Collection files deliberately remain in operational emission order. Timing
+semantics version 2 defines the initial causal conversion as:
+
+```text
+read.available_at        = read.capturedAt
+target_write.began_at    = target_write.beganAt
+prior_write.available_at = prior_write.terminalDecisionAt
+
+context(target) = stable_sort_by_available_at(
+    events where event.available_at < target_write.began_at,
+    preserving emission order for equal timestamps
+)
+```
+
+For reads, `settledAt` is when screenshot capture was requested, `capturedAt`
+is recorded immediately when the capture callback supplies the image, and
+`observedAt` is later emission after OCR. For writes, `beganAt` is recorded on
+entry to the first mutating-key callback. `usedObservationCapturedAt` records
+the terminal or checkpoint observation chosen for derivation, while
+`terminalDecisionAt` records when the collector had enough evidence to choose
+between them. `derivationObservationSource` and `fallbackReason` make that
+choice explicit. `configuredWriteDelaySeconds` describes the configured quiet
+period; `boundaryReason` states whether that period elapsed or Return/focus
+caused earlier settlement. A later versioned converter—not the collector—will
+assign causal `available_at` and construct ordered training data from these
+source timestamps.
 
 Each raw OCR observation retains the complete recognized viewport before
 overlap removal. Normalized line overlap is removed from adjacent OCR viewports
@@ -279,7 +323,7 @@ and run:
 Common tuning options:
 
 ```text
---read-delay 1          wait for pointer/scroll activity to settle
+--read-delay 3          wait for pointer/scroll activity to settle
 --write-delay 3         wait for keyboard activity to settle
 --poll-interval 0.35    detect focus/window changes
 --max-characters 30000  bound captured text per snapshot and editable field

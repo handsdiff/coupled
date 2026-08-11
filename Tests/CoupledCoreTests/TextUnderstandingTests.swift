@@ -72,4 +72,35 @@ final class TextUnderstandingTests: XCTestCase {
             "earlier"
         )
     }
+
+    func testChromeAuxiliarySurfacesAreSuppressed() {
+        XCTAssertTrue(
+            isChromeAuxiliarySurface(
+                bundleIdentifier: "com.google.Chrome",
+                width: 1455,
+                height: 158
+            )
+        )
+        XCTAssertTrue(
+            isChromeAuxiliarySurface(
+                bundleIdentifier: "com.google.Chrome",
+                width: 13,
+                height: 1440
+            )
+        )
+        XCTAssertFalse(
+            isChromeAuxiliarySurface(
+                bundleIdentifier: "com.google.Chrome",
+                width: 1455,
+                height: 1318
+            )
+        )
+        XCTAssertFalse(
+            isChromeAuxiliarySurface(
+                bundleIdentifier: "md.obsidian",
+                width: 800,
+                height: 200
+            )
+        )
+    }
 }

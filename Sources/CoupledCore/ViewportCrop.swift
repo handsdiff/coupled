@@ -21,3 +21,14 @@ public func croppedViewport(
         height: bounds.height * (1 - topCropFraction - bottomCropFraction)
     )
 }
+
+/// Chrome publishes its tab strip, address bar, menus, and scrollbar as
+/// separate Core Graphics windows. Keep them in raw capture, but do not treat
+/// these small surfaces as primary reading viewports.
+public func isChromeAuxiliarySurface(
+    bundleIdentifier: String?,
+    width: Double,
+    height: Double
+) -> Bool {
+    bundleIdentifier == "com.google.Chrome" && (height < 300 || width < 100)
+}

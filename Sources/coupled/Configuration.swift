@@ -1,9 +1,11 @@
 import Foundation
 
 struct Configuration {
+    let sessionID: String
+    let sessionStartedAt: String
     var command = "collect"
     var outputDirectory: String
-    var readDelay: TimeInterval = 1.0
+    var readDelay: TimeInterval = 3.0
     var writeDelay: TimeInterval = 3.0
     var viewportSideCropFraction = 0.1
     var viewportTopCropFraction = 0.1
@@ -24,6 +26,8 @@ struct Configuration {
     var pauseFile: String?
 
     init(arguments: [String]) throws {
+        sessionID = UUID().uuidString
+        sessionStartedAt = nowTimestamp()
         let stamp = ISO8601DateFormatter.string(
             from: Date(),
             timeZone: TimeZone.current,
@@ -111,6 +115,7 @@ struct Configuration {
     var triggersPath: String { URL(fileURLWithPath: outputDirectory).appendingPathComponent("triggers.jsonl").path }
     var writesPath: String { URL(fileURLWithPath: outputDirectory).appendingPathComponent("writes.jsonl").path }
     var readsPath: String { URL(fileURLWithPath: outputDirectory).appendingPathComponent("reads.jsonl").path }
+    var sessionPath: String { URL(fileURLWithPath: outputDirectory).appendingPathComponent("session.json").path }
 
     func isPaused() -> Bool {
         guard let pauseFile else { return false }

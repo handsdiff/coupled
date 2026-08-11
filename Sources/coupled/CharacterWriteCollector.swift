@@ -19,7 +19,10 @@ final class CharacterWriteCollector {
         if let writer {
             self.writer = writer
         } else {
-            self.writer = try JSONLWriter(path: configuration.writesPath)
+            self.writer = try JSONLWriter(
+                path: configuration.writesPath,
+                sessionID: configuration.sessionID
+            )
         }
     }
 

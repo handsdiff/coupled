@@ -13,7 +13,10 @@ final class TriggerCollector {
 
     init(configuration: Configuration) throws {
         self.configuration = configuration
-        writer = try JSONLWriter(path: configuration.triggersPath)
+        writer = try JSONLWriter(
+            path: configuration.triggersPath,
+            sessionID: configuration.sessionID
+        )
     }
 
     func run() throws {

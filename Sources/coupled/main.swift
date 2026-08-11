@@ -17,7 +17,7 @@ OPTIONS
   --output PATH                Output directory (default: ./coupled-data/<timestamp>)
   --pause-file PATH            Pause all capture while PATH exists
   --write-delay SECONDS        Idle time before settling a write (default: 3)
-  --read-delay SECONDS         Idle time before emitting a read candidate (default: 1)
+  --read-delay SECONDS         Idle time before emitting a read candidate (default: 3)
   --viewport-side-crop NUMBER  Fraction removed from each side for OCR (default: 0.1)
   --viewport-top-crop NUMBER   Fraction removed from the top for OCR (default: 0.1)
   --viewport-bottom-crop NUM   Fraction removed from the bottom for OCR (default: 0.5)
@@ -41,6 +41,7 @@ FILES
   reads.jsonl                  Settled per-app/per-display read candidates
   raw.jsonl                    Full OCR observations and active write attempts
   events.jsonl                 Overlap-reduced reads and verified writes
+  session.json                 Immutable resolved configuration and schema manifest
 
 The trigger collector never records typed characters or raw key codes. The
 writes records settled typed-character bursts. Events recognizes a central crop
@@ -75,19 +76,29 @@ do {
 
     switch configuration.command {
     case "triggers":
+        try writeSessionManifest(configuration)
         let collector = try TriggerCollector(configuration: configuration)
         try collector.run()
     case "writes":
+        try writeSessionManifest(configuration)
         let collector = try CharacterWriteCollector(configuration: configuration)
         try collector.run()
     case "reads":
+        try writeSessionManifest(configuration)
         let collector = try ReadCandidateCollector(configuration: configuration)
         try collector.run()
     case "events":
         guard CGPreflightScreenCaptureAccess() else { throw MainError.missingScreenRecording }
         guard AXIsProcessTrusted() else { throw MainError.missingAccessibility }
-        let eventWriter = try JSONLWriter(path: configuration.eventsPath)
-        let rawWriter = try JSONLWriter(path: configuration.rawPath)
+        try writeSessionManifest(configuration)
+        let eventWriter = try JSONLWriter(
+            path: configuration.eventsPath,
+            sessionID: configuration.sessionID
+        )
+        let rawWriter = try JSONLWriter(
+            path: configuration.rawPath,
+            sessionID: configuration.sessionID
+        )
         let writes = ActiveTapWriteCollector(
             configuration: configuration,
             rawWriter: rawWriter,
@@ -104,10 +115,12 @@ do {
         RunLoop.current.run()
     case "collect":
         guard AXIsProcessTrusted() else { throw MainError.missingAccessibility }
+        try writeSessionManifest(configuration)
         let collector = try Collector(configuration: configuration)
         try collector.run()
     case "snapshot":
         guard AXIsProcessTrusted() else { throw MainError.missingAccessibility }
+        try writeSessionManifest(configuration)
         let collector = try Collector(configuration: configuration)
         collector.captureOneSnapshot()
     default:

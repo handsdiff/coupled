@@ -26,8 +26,14 @@ final class Collector {
     init(configuration: Configuration) throws {
         self.configuration = configuration
         snapshotter = AccessibilitySnapshotter(configuration: configuration)
-        rawWriter = try JSONLWriter(path: configuration.rawPath)
-        eventWriter = try JSONLWriter(path: configuration.eventsPath)
+        rawWriter = try JSONLWriter(
+            path: configuration.rawPath,
+            sessionID: configuration.sessionID
+        )
+        eventWriter = try JSONLWriter(
+            path: configuration.eventsPath,
+            sessionID: configuration.sessionID
+        )
     }
 
     func run() throws {

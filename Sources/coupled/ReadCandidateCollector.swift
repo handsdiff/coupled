@@ -33,7 +33,10 @@ final class ReadCandidateCollector {
         if let writer {
             self.writer = writer
         } else {
-            self.writer = try JSONLWriter(path: configuration.readsPath)
+            self.writer = try JSONLWriter(
+                path: configuration.readsPath,
+                sessionID: configuration.sessionID
+            )
         }
     }
 
@@ -50,6 +53,7 @@ final class ReadCandidateCollector {
             writeDiagnostic("visible pixels are captured and recognized locally after \(configuration.readDelay) seconds without pointer activity")
             writeDiagnostic("viewport crop removes \(Int((configuration.viewportSideCropFraction * 100).rounded()))% from each side, \(Int((configuration.viewportTopCropFraction * 100).rounded()))% from the top, and \(Int((configuration.viewportBottomCropFraction * 100).rounded()))% from the bottom")
             writeDiagnostic("normalized line overlap is removed between adjacent OCR viewports in the same app/window/display")
+            writeDiagnostic("Chrome auxiliary surfaces are retained raw and suppressed from derived reads")
         } else {
             writeDiagnostic("read candidates: \(writer.path)")
             writeDiagnostic("one candidate is emitted after \(configuration.readDelay) seconds without pointer activity in that app/display")
@@ -242,6 +246,7 @@ final class ReadCandidateCollector {
         let settledAt = nowTimestamp()
         SCScreenshotManager.captureImage(in: captureBounds) { [weak self] image, error in
             guard let self else { return }
+            let capturedAt = nowTimestamp()
             guard let image else {
                 DispatchQueue.main.async {
                     self.reportCaptureErrorOnce(
@@ -261,6 +266,7 @@ final class ReadCandidateCollector {
                         self.emitScreenRead(
                             pending,
                             settledAt: settledAt,
+                            capturedAt: capturedAt,
                             captureBounds: captureBounds,
                             recognized: recognized
                         )
@@ -277,11 +283,20 @@ final class ReadCandidateCollector {
     private func emitScreenRead(
         _ pending: PendingReadCandidate,
         settledAt: String,
+        capturedAt: String,
         captureBounds: CGRect,
         recognized: RecognizedScreenText
     ) {
         guard !configuration.isPaused() else { return }
         let rawObservationID = UUID().uuidString
+        let suppressesDerivedRead = isChromeAuxiliarySurface(
+            bundleIdentifier: pending.bundleIdentifier,
+            width: pending.windowBounds!.width,
+            height: pending.windowBounds!.height
+        )
+        let derivedSuppressionReason = suppressesDerivedRead
+            ? "chrome_auxiliary_surface"
+            : nil
         var sourceRecordIDs: [String] = []
         if let rawWriter {
             do {
@@ -290,6 +305,7 @@ final class ReadCandidateCollector {
                         recordID: rawObservationID,
                         observedAt: nowTimestamp(),
                         settledAt: settledAt,
+                        capturedAt: capturedAt,
                         firstActivityAt: pending.firstActivityAt,
                         lastActivityAt: pending.lastActivityAt,
                         firstEventTimestampNanoseconds: pending.firstEventTimestampNanoseconds,
@@ -300,6 +316,7 @@ final class ReadCandidateCollector {
                         content: recognized.content,
                         recognizedLineCount: recognized.lineCount,
                         contentWasTruncated: recognized.wasTruncated,
+                        derivedSuppressionReason: derivedSuppressionReason,
                         viewportSideCropFraction: configuration.viewportSideCropFraction,
                         viewportTopCropFraction: configuration.viewportTopCropFraction,
                         viewportBottomCropFraction: configuration.viewportBottomCropFraction,
@@ -322,6 +339,7 @@ final class ReadCandidateCollector {
                 return
             }
         }
+        guard !suppressesDerivedRead else { return }
         let contextIdentifier = "\(pending.processIdentifier)|\(pending.windowID ?? 0)|\(pending.displayID)"
         do {
             if let data = try writer.writeViewport(
@@ -336,6 +354,7 @@ final class ReadCandidateCollector {
                     sequence: self.sequence,
                     observedAt: nowTimestamp(),
                     settledAt: settledAt,
+                    capturedAt: capturedAt,
                     firstActivityAt: pending.firstActivityAt,
                     lastActivityAt: pending.lastActivityAt,
                     readDelaySeconds: self.configuration.readDelay,
@@ -452,12 +471,13 @@ private struct ReadCandidateRecord: Encodable {
 }
 
 private struct ScreenReadRecord: Encodable {
-    let schemaVersion = 5
+    let schemaVersion = 6
     let kind = "read"
     let provenance = "screen_ocr"
     let sequence: UInt64
     let observedAt: String
     let settledAt: String
+    let capturedAt: String
     let firstActivityAt: String
     let lastActivityAt: String
     let readDelaySeconds: Double
@@ -486,11 +506,12 @@ private struct ScreenReadRecord: Encodable {
 }
 
 private struct RawScreenReadRecord: Encodable {
-    let schemaVersion = 1
+    let schemaVersion = 3
     let recordType = "screen_ocr_observation"
     let recordID: String
     let observedAt: String
     let settledAt: String
+    let capturedAt: String
     let firstActivityAt: String
     let lastActivityAt: String
     let firstEventTimestampNanoseconds: UInt64
@@ -501,6 +522,7 @@ private struct RawScreenReadRecord: Encodable {
     let content: String
     let recognizedLineCount: Int
     let contentWasTruncated: Bool
+    let derivedSuppressionReason: String?
     let viewportSideCropFraction: Double
     let viewportTopCropFraction: Double
     let viewportBottomCropFraction: Double
