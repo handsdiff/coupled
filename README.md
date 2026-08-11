@@ -115,9 +115,8 @@ contain sensitive document or page names.
 
 ## Combined visible events
 
-The `events` command is the first combined stream. It preserves the verified
-settled typed-write behavior and turns settled read candidates into actual
-screen-text reads:
+The `events` command combines screen-text reads with one deliberately narrow
+write experiment: settled edits in a focused Obsidian text area.
 
 ```sh
 ./scripts/coupled events \
@@ -128,10 +127,14 @@ screen-text reads:
 ./scripts/coupled logs
 ```
 
-Both event types are appended in emission order to `events.jsonl` and mirrored
-to the same live log:
+Derived events are appended in emission order to `events.jsonl` and mirrored to
+the same live log. Source observations are appended separately to `raw.jsonl`:
 
-- `WRITE` retains the tested `typed_character_burst` logic.
+- `WRITE` is attempted only for Obsidian. An active event tap attempts to
+  capture the focused text area before returning the first mutating key. The
+  same retained Accessibility element is queried after the write delay, and a
+  minimal insertion, deletion, or replacement is emitted only when both states
+  are complete and no event-tap timeout occurred.
 - `READ` captures the visible rectangle of the topmost window surface after the
   read delay, removes 10% from both the left and right, 10% from the top, and
   50% from the bottom, then uses macOS Vision recognition locally to emit its
@@ -145,9 +148,10 @@ must sum to less than `1`. Setting all three to `0` restores full-window
 capture. Each read retains `windowBounds`, the actual cropped `captureBounds`,
 and all crop fractions so the transformation remains auditable.
 
-Normalized line overlap is removed from adjacent OCR viewports only when app,
-window, and display all match. The event's `content` contains newly visible
-lines in display order; `recognizedLineCount`, `emittedLineCount`, and
+Each raw OCR observation retains the complete recognized viewport before
+overlap removal. Normalized line overlap is removed from adjacent OCR viewports
+only when app, window, and display all match. The event's `content` contains
+newly visible lines in display order; `recognizedLineCount`, `emittedLineCount`, and
 `overlapRemovedLineCount` make the transformation inspectable. Exact duplicate
 viewports emit no event. An intervening write or different context resets the
 comparison, preserving a later reread. Capture is allowlisted by bundle to
@@ -156,18 +160,21 @@ Obsidian (`md.obsidian`), Chrome (`com.google.Chrome`), and Codex
 applications are ignored. Deliberately expand the boundary with
 `--allow-bundle`; `--exclude-bundle` and `--exclude-app-name` can narrow it.
 
-The default log shows the complete typed write and the first eight recognized
-lines of each OCR read, preserving line breaks. Use
+The default log shows the Obsidian insertion/removal and the first eight
+recognized lines of each OCR read, preserving line breaks. Use
 `./scripts/coupled logs --full-text` for every recognized line in a readable
 form, or `./scripts/coupled logs --raw` for the full JSONL event. Screenshots
 are processed in memory and are not saved.
 
-This command requires **Input Monitoring** and **Screen Recording** for
-`dist/Coupled.app`; it does not require Accessibility. OCR is an observation of
-visible pixels, so it naturally includes occlusion and can make recognition
-errors. It can also capture secrets visible on screen, while typed writes still
-cannot identify secure fields. Use the pause file before handling sensitive
-information.
+This command requires **Input Monitoring**, **Screen Recording**, and
+**Accessibility** for `dist/Coupled.app`. OCR is an observation of visible
+pixels, so it naturally includes occlusion and can make recognition errors.
+The Obsidian experiment does not poll or cache inactive editors. It retains one
+focused Accessibility element and its initial value only while a burst is
+active. Chrome and Codex produce reads but no derived write events. One raw
+before/after audit record is stored per Obsidian burst—individual key signals
+are not stored. Both files can contain sensitive visible or editable text; use
+the pause file before handling sensitive information.
 
 ## Experimental interpretation
 

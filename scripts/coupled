@@ -116,6 +116,8 @@ case "$command_name" in
           end
         elif .kind == "read_candidate" then
           "\(.observedAt)  READ  app=\(app_name)  window=\(window_name)  activity=\(.triggerTypes | join(","))  items=\(.eventCount)  after=\(.readDelaySeconds)s  display=\(.displayID)"
+        elif .kind == "write" and .operation != null then
+          "\(.observedAt)  WRITE  app=\(app_name)  window=\(window_name)  operation=\(.operation)  provenance=\(.provenance)  inserted=\((.content // "") | tojson)  removed=\((.removedContent // "") | tojson)  offset=\(.characterOffset)  after=\(.writeDelaySeconds)s"
         elif .kind == "write" and .provenance == "typed_character_burst" then
           "\(.observedAt)  WRITE  app=\(app_name)  text=\(.content | tojson)  characters=\(.characterCount)  after=\(.writeDelaySeconds)s"
         elif .kind == "character_write" then

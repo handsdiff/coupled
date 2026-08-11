@@ -11,6 +11,7 @@ final class ReadCandidateCollector {
     private let configuration: Configuration
     private let captureScreenText: Bool
     private let writer: JSONLWriter
+    private let rawWriter: JSONLWriter?
     private var eventTap: CFMachPort?
     private var eventTapSource: CFRunLoopSource?
     private var sequence: UInt64 = 0
@@ -23,10 +24,12 @@ final class ReadCandidateCollector {
     init(
         configuration: Configuration,
         captureScreenText: Bool = false,
-        writer: JSONLWriter? = nil
+        writer: JSONLWriter? = nil,
+        rawWriter: JSONLWriter? = nil
     ) throws {
         self.configuration = configuration
         self.captureScreenText = captureScreenText
+        self.rawWriter = rawWriter
         if let writer {
             self.writer = writer
         } else {
@@ -278,6 +281,47 @@ final class ReadCandidateCollector {
         recognized: RecognizedScreenText
     ) {
         guard !configuration.isPaused() else { return }
+        let rawObservationID = UUID().uuidString
+        var sourceRecordIDs: [String] = []
+        if let rawWriter {
+            do {
+                _ = try rawWriter.write(
+                    RawScreenReadRecord(
+                        recordID: rawObservationID,
+                        observedAt: nowTimestamp(),
+                        settledAt: settledAt,
+                        firstActivityAt: pending.firstActivityAt,
+                        lastActivityAt: pending.lastActivityAt,
+                        firstEventTimestampNanoseconds: pending.firstEventTimestampNanoseconds,
+                        lastEventTimestampNanoseconds: pending.lastEventTimestampNanoseconds,
+                        readDelaySeconds: configuration.readDelay,
+                        triggerTypes: pending.triggerTypes.sorted(),
+                        eventCount: pending.eventCount,
+                        content: recognized.content,
+                        recognizedLineCount: recognized.lineCount,
+                        contentWasTruncated: recognized.wasTruncated,
+                        viewportSideCropFraction: configuration.viewportSideCropFraction,
+                        viewportTopCropFraction: configuration.viewportTopCropFraction,
+                        viewportBottomCropFraction: configuration.viewportBottomCropFraction,
+                        windowBounds: pending.windowBounds!,
+                        captureBounds: rectValue(captureBounds),
+                        x: pending.lastX,
+                        y: pending.lastY,
+                        displayID: pending.displayID,
+                        displayBounds: pending.displayBounds,
+                        windowID: pending.windowID,
+                        windowTitle: pending.windowTitle,
+                        appName: pending.appName,
+                        bundleIdentifier: pending.bundleIdentifier,
+                        processIdentifier: pending.processIdentifier
+                    )
+                )
+                sourceRecordIDs = [rawObservationID]
+            } catch {
+                writeDiagnostic("could not preserve raw screen observation: \(error)")
+                return
+            }
+        }
         let contextIdentifier = "\(pending.processIdentifier)|\(pending.windowID ?? 0)|\(pending.displayID)"
         do {
             if let data = try writer.writeViewport(
@@ -315,7 +359,8 @@ final class ReadCandidateCollector {
                     windowTitle: pending.windowTitle,
                     appName: pending.appName,
                     bundleIdentifier: pending.bundleIdentifier,
-                    processIdentifier: pending.processIdentifier
+                    processIdentifier: pending.processIdentifier,
+                    sourceRecordIDs: sourceRecordIDs
                 )
             }) {
                 writeLineToStandardOutput(data)
@@ -407,7 +452,7 @@ private struct ReadCandidateRecord: Encodable {
 }
 
 private struct ScreenReadRecord: Encodable {
-    let schemaVersion = 4
+    let schemaVersion = 5
     let kind = "read"
     let provenance = "screen_ocr"
     let sequence: UInt64
@@ -422,6 +467,39 @@ private struct ScreenReadRecord: Encodable {
     let emittedLineCount: Int
     let recognizedLineCount: Int
     let overlapRemovedLineCount: Int
+    let contentWasTruncated: Bool
+    let viewportSideCropFraction: Double
+    let viewportTopCropFraction: Double
+    let viewportBottomCropFraction: Double
+    let windowBounds: RectValue
+    let captureBounds: RectValue
+    let x: Double
+    let y: Double
+    let displayID: UInt32
+    let displayBounds: RectValue
+    let windowID: UInt32?
+    let windowTitle: String?
+    let appName: String
+    let bundleIdentifier: String?
+    let processIdentifier: Int32
+    let sourceRecordIDs: [String]
+}
+
+private struct RawScreenReadRecord: Encodable {
+    let schemaVersion = 1
+    let recordType = "screen_ocr_observation"
+    let recordID: String
+    let observedAt: String
+    let settledAt: String
+    let firstActivityAt: String
+    let lastActivityAt: String
+    let firstEventTimestampNanoseconds: UInt64
+    let lastEventTimestampNanoseconds: UInt64
+    let readDelaySeconds: Double
+    let triggerTypes: [String]
+    let eventCount: Int
+    let content: String
+    let recognizedLineCount: Int
     let contentWasTruncated: Bool
     let viewportSideCropFraction: Double
     let viewportTopCropFraction: Double
