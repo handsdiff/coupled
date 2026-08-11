@@ -3,9 +3,9 @@ import ApplicationServices
 import CoupledCore
 import Foundation
 
-/// Tests whether an active event tap can capture an Obsidian editor immediately
-/// before its first mutation, then derive one settled before/after text diff.
-final class ObsidianWriteCollector {
+/// Captures a focused editable immediately before its first mutation, retains
+/// that exact AX element, then derives one settled before/after text diff.
+final class ActiveTapWriteCollector {
     private let configuration: Configuration
     private let rawWriter: JSONLWriter
     private let eventWriter: JSONLWriter
@@ -14,7 +14,7 @@ final class ObsidianWriteCollector {
     private var eventTap: CFMachPort?
     private var eventTapSource: CFRunLoopSource?
     private var writeTimer: Timer?
-    private var pending: PendingObsidianWrite?
+    private var pending: PendingActiveTapWrite?
     private var sequence: UInt64 = 0
     private var tapTimeoutCount: UInt64 = 0
 
@@ -32,42 +32,49 @@ final class ObsidianWriteCollector {
         writeDiagnostic(
             "AX messaging timeout: \(Self.axTimeoutSeconds) seconds (\(axErrorName(timeoutError)))"
         )
-        primeObsidianAccessibility()
+        primeRendererAccessibility()
         guard installActiveEventTap() else {
-            throw ObsidianWriteCollectorError.eventTapUnavailable
+            throw ActiveTapWriteCollectorError.eventTapUnavailable
         }
-        writeDiagnostic("Obsidian active-tap write experiment: \(eventWriter.path)")
+        writeDiagnostic("active-tap write capture: \(eventWriter.path)")
+        let enabledBundles = configuration.allowedBundles
+            .subtracting(configuration.excludedBundles)
+            .sorted()
+        writeDiagnostic("write apps: \(enabledBundles.joined(separator: ", "))")
         writeDiagnostic("no polling; one before snapshot is held only during an active write burst")
     }
 
-    private func primeObsidianAccessibility() {
-        guard let running = NSRunningApplication.runningApplications(
-            withBundleIdentifier: Self.obsidianBundleIdentifier
-        ).first else {
-            writeDiagnostic("Obsidian accessibility prime: app not running")
-            return
+    private func primeRendererAccessibility() {
+        guard configuration.activateRendererAccessibility else { return }
+        for bundleIdentifier in configuration.allowedBundles.sorted() {
+            guard !configuration.excludedBundles.contains(bundleIdentifier),
+                  let running = NSRunningApplication.runningApplications(
+                    withBundleIdentifier: bundleIdentifier
+                  ).first else {
+                continue
+            }
+            let applicationElement = AXUIElementCreateApplication(running.processIdentifier)
+            let manual = AXUIElementSetAttributeValue(
+                applicationElement,
+                "AXManualAccessibility" as CFString,
+                kCFBooleanTrue
+            )
+            let enhanced = AXUIElementSetAttributeValue(
+                applicationElement,
+                "AXEnhancedUserInterface" as CFString,
+                kCFBooleanTrue
+            )
+            writeDiagnostic(
+                "accessibility prime \(bundleIdentifier): manual=\(axErrorName(manual)) enhanced=\(axErrorName(enhanced))"
+            )
         }
-        let applicationElement = AXUIElementCreateApplication(running.processIdentifier)
-        let manual = AXUIElementSetAttributeValue(
-            applicationElement,
-            "AXManualAccessibility" as CFString,
-            kCFBooleanTrue
-        )
-        let enhanced = AXUIElementSetAttributeValue(
-            applicationElement,
-            "AXEnhancedUserInterface" as CFString,
-            kCFBooleanTrue
-        )
-        writeDiagnostic(
-            "Obsidian accessibility prime: manual=\(axErrorName(manual)) enhanced=\(axErrorName(enhanced))"
-        )
     }
 
     private func installActiveEventTap() -> Bool {
         let mask = CGEventMask(1) << CGEventMask(CGEventType.keyDown.rawValue)
         let callback: CGEventTapCallBack = { _, type, event, userInfo in
             guard let userInfo else { return Unmanaged.passUnretained(event) }
-            let collector = Unmanaged<ObsidianWriteCollector>
+            let collector = Unmanaged<ActiveTapWriteCollector>
                 .fromOpaque(userInfo)
                 .takeUnretainedValue()
 
@@ -146,7 +153,7 @@ final class ObsidianWriteCollector {
             let focused = captureFocusedTarget(includeValue: false, reason: "key_target")
             let remainsOnTarget: Bool
             if pending.target == nil {
-                remainsOnTarget = focused.bundleIdentifier == Self.obsidianBundleIdentifier
+                remainsOnTarget = focused.bundleIdentifier == pending.bundleIdentifier
                     && focused.target == nil
             } else {
                 remainsOnTarget = sameTarget(pending.target, focused.target)
@@ -154,10 +161,17 @@ final class ObsidianWriteCollector {
 
             if remainsOnTarget {
                 extendPending(with: classification, event: event)
+                if shouldFinalizeBeforeReturn(classification: classification, pending: pending) {
+                    completeCapture(
+                        boundaryReason: "return_pressed",
+                        deferPersistence: true,
+                        callbackStartedNanoseconds: callbackStarted
+                    )
+                }
                 return
             }
 
-            let boundary = focused.bundleIdentifier == Self.obsidianBundleIdentifier
+            let boundary = focused.bundleIdentifier == pending.bundleIdentifier
                 && focused.target == nil
                 ? "focus_unavailable"
                 : "target_changed"
@@ -196,13 +210,14 @@ final class ObsidianWriteCollector {
         before: TargetCapture,
         beforeDurationMilliseconds: Double
     ) {
-        guard before.bundleIdentifier == Self.obsidianBundleIdentifier else {
+        guard before.isEligibleApplication, let bundleIdentifier = before.bundleIdentifier else {
             return
         }
 
         let attemptID = UUID().uuidString
-        pending = PendingObsidianWrite(
+        pending = PendingActiveTapWrite(
             attemptID: attemptID,
+            bundleIdentifier: bundleIdentifier,
             target: before.target,
             before: before.observation,
             beforeAXErrors: before.errors,
@@ -242,7 +257,8 @@ final class ObsidianWriteCollector {
 
     private func completeCapture(
         boundaryReason: String,
-        deferPersistence: Bool = false
+        deferPersistence: Bool = false,
+        callbackStartedNanoseconds: UInt64? = nil
     ) {
         guard !configuration.isPaused() else {
             discardPendingForPause()
@@ -250,17 +266,27 @@ final class ObsidianWriteCollector {
         }
         writeTimer?.invalidate()
         writeTimer = nil
-        guard let pending else { return }
+        guard var pending else { return }
         self.pending = nil
 
         let after = pending.target.map {
             captureHeldTarget($0, reason: "write_after_\(boundaryReason)")
         } ?? TargetCapture(
-            bundleIdentifier: Self.obsidianBundleIdentifier,
+            bundleIdentifier: pending.bundleIdentifier,
             target: nil,
             observation: nil,
             errors: ["target:unavailable"]
         )
+        if let callbackStartedNanoseconds {
+            let duration = milliseconds(sinceNanoseconds: callbackStartedNanoseconds)
+            if pending.firstCallbackDurationMilliseconds == nil {
+                pending.firstCallbackDurationMilliseconds = duration
+            }
+            pending.maximumCallbackDurationMilliseconds = max(
+                pending.maximumCallbackDurationMilliseconds,
+                duration
+            )
+        }
         let tapTimeoutCountAtCompletion = tapTimeoutCount
 
         let work: () -> Void = { [weak self] in
@@ -280,7 +306,7 @@ final class ObsidianWriteCollector {
     }
 
     private func persistAndDerive(
-        pending: PendingObsidianWrite,
+        pending: PendingActiveTapWrite,
         after: TargetCapture,
         boundaryReason: String,
         tapTimeoutCountAtCompletion: UInt64
@@ -303,9 +329,17 @@ final class ObsidianWriteCollector {
             edit = nil
             resolution = "value_truncated"
         } else {
+            let before = pending.before!
+            let terminal = after.observation!
             let candidate = minimalTextEdit(
-                from: pending.before!.value,
-                to: after.observation!.value
+                from: logicalEditableValue(
+                    before.value,
+                    placeholderValue: before.placeholderValue
+                ),
+                to: logicalEditableValue(
+                    terminal.value,
+                    placeholderValue: terminal.placeholderValue
+                )
             )
             edit = candidate.isEmpty ? nil : candidate
             resolution = candidate.isEmpty ? "no_change" : "validated"
@@ -314,6 +348,7 @@ final class ObsidianWriteCollector {
         let proposedEventID = edit == nil ? nil : UUID().uuidString
         let rawRecord = RawActiveTapWriteAttempt(
             recordID: pending.attemptID,
+            bundleIdentifier: pending.bundleIdentifier,
             observedAt: nowTimestamp(),
             beganAt: pending.beganAt,
             lastInputAt: pending.lastInputAt,
@@ -350,7 +385,7 @@ final class ObsidianWriteCollector {
         }
 
         sequence += 1
-        let record = ObsidianActiveTapWriteRecord(
+        let record = ActiveTapWriteRecord(
             sequence: sequence,
             eventID: proposedEventID,
             observedAt: nowTimestamp(),
@@ -383,16 +418,31 @@ final class ObsidianWriteCollector {
         pending = nil
     }
 
+    private func shouldFinalizeBeforeReturn(
+        classification: KeyClassification,
+        pending: PendingActiveTapWrite
+    ) -> Bool {
+        guard classification.isUnmodifiedReturn else { return false }
+        let role = pending.target?.identity.role
+        return role == (kAXTextFieldRole as String)
+            || role == (kAXComboBoxRole as String)
+            || pending.before?.valueRepresentedPlaceholder == true
+    }
+
     private func captureFocusedTarget(includeValue: Bool, reason: String) -> TargetCapture {
         guard let running = NSWorkspace.shared.frontmostApplication else {
             return TargetCapture(errors: ["frontmost_application:no_value"])
         }
-        guard running.bundleIdentifier == Self.obsidianBundleIdentifier else {
+        let appName = running.localizedName ?? running.bundleIdentifier ?? "Unknown"
+        guard configuration.captures(
+            bundleIdentifier: running.bundleIdentifier,
+            appName: appName
+        ) else {
             return TargetCapture(bundleIdentifier: running.bundleIdentifier)
         }
 
         let app = AppContext(
-            name: running.localizedName ?? "Obsidian",
+            name: appName,
             bundleIdentifier: running.bundleIdentifier,
             processIdentifier: running.processIdentifier
         )
@@ -413,6 +463,7 @@ final class ObsidianWriteCollector {
         ) else {
             return TargetCapture(
                 bundleIdentifier: running.bundleIdentifier,
+                isEligibleApplication: true,
                 errors: errors
             )
         }
@@ -423,11 +474,27 @@ final class ObsidianWriteCollector {
         if targetTimeoutError != .success {
             errors.append("messaging_timeout_target:\(axErrorName(targetTimeoutError))")
         }
-        guard stringAttribute(focusedElement, kAXRoleAttribute, errors: &errors)
-                == (kAXTextAreaRole as String) else {
-            errors.append("focused_element:not_text_area")
+        guard let role = stringAttribute(
+            focusedElement,
+            kAXRoleAttribute,
+            errors: &errors
+        ) else {
+            errors.append("focused_element:missing_role")
             return TargetCapture(
                 bundleIdentifier: running.bundleIdentifier,
+                isEligibleApplication: true,
+                errors: errors
+            )
+        }
+        let subrole = stringAttribute(focusedElement, kAXSubroleAttribute, errors: &errors)
+        if isSecureEditableSurface(role: role, subrole: subrole) {
+            return TargetCapture(errors: ["focused_element:secure"])
+        }
+        guard isSupportedEditableSurface(role: role, subrole: subrole) else {
+            errors.append("focused_element:unsupported_role:\(role)")
+            return TargetCapture(
+                bundleIdentifier: running.bundleIdentifier,
+                isEligibleApplication: true,
                 errors: errors
             )
         }
@@ -450,7 +517,7 @@ final class ObsidianWriteCollector {
             processIdentifier: running.processIdentifier,
             bundleIdentifier: running.bundleIdentifier,
             windowTitle: window.title,
-            role: kAXTextAreaRole as String,
+            role: role,
             accessibilityIdentifier: stringAttribute(
                 focusedElement,
                 kAXIdentifierAttribute,
@@ -467,6 +534,7 @@ final class ObsidianWriteCollector {
         guard includeValue else {
             return TargetCapture(
                 bundleIdentifier: running.bundleIdentifier,
+                isEligibleApplication: true,
                 target: target,
                 errors: errors
             )
@@ -478,6 +546,7 @@ final class ObsidianWriteCollector {
         )
         return TargetCapture(
             bundleIdentifier: running.bundleIdentifier,
+            isEligibleApplication: true,
             target: target,
             observation: observation,
             errors: errors
@@ -501,6 +570,7 @@ final class ObsidianWriteCollector {
         let observation = captureObservation(from: target, reason: reason, errors: &errors)
         return TargetCapture(
             bundleIdentifier: target.app.bundleIdentifier,
+            isEligibleApplication: true,
             target: target,
             observation: observation,
             errors: errors
@@ -520,6 +590,11 @@ final class ObsidianWriteCollector {
             return nil
         }
         let clipped = String(value.prefix(configuration.maxCharacters))
+        let placeholderValue = stringAttribute(
+            target.element,
+            kAXPlaceholderValueAttribute,
+            errors: &errors
+        )
         let selection = rangeAttribute(
             target.element,
             kAXSelectedTextRangeAttribute,
@@ -530,18 +605,23 @@ final class ObsidianWriteCollector {
             observedAt: nowTimestamp(),
             reason: reason,
             value: clipped,
+            placeholderValue: placeholderValue,
+            valueRepresentedPlaceholder: valueRepresentsPlaceholder(
+                clipped,
+                placeholderValue: placeholderValue
+            ),
             selectedRangeLocation: selection?.location,
             selectedRangeLength: selection?.length,
             valueWasTruncated: clipped.count < value.count
         )
     }
 
-    private static let obsidianBundleIdentifier = "md.obsidian"
     private static let axTimeoutSeconds = 0.2
 }
 
-private struct PendingObsidianWrite {
+private struct PendingActiveTapWrite {
     let attemptID: String
+    let bundleIdentifier: String
     let target: HeldEditableTarget?
     let before: ActiveTapEditableObservation?
     let beforeAXErrors: [String]
@@ -567,17 +647,20 @@ private struct HeldEditableTarget {
 
 private struct TargetCapture {
     let bundleIdentifier: String?
+    let isEligibleApplication: Bool
     let target: HeldEditableTarget?
     let observation: ActiveTapEditableObservation?
     let errors: [String]
 
     init(
         bundleIdentifier: String? = nil,
+        isEligibleApplication: Bool = false,
         target: HeldEditableTarget? = nil,
         observation: ActiveTapEditableObservation? = nil,
         errors: [String] = []
     ) {
         self.bundleIdentifier = bundleIdentifier
+        self.isEligibleApplication = isEligibleApplication
         self.target = target
         self.observation = observation
         self.errors = errors
@@ -598,6 +681,8 @@ private struct ActiveTapEditableObservation: Encodable {
     let observedAt: String
     let reason: String
     let value: String
+    let placeholderValue: String?
+    let valueRepresentedPlaceholder: Bool
     let selectedRangeLocation: Int?
     let selectedRangeLength: Int?
     let valueWasTruncated: Bool
@@ -605,8 +690,9 @@ private struct ActiveTapEditableObservation: Encodable {
 
 private struct RawActiveTapWriteAttempt: Encodable {
     let schemaVersion = 1
-    let recordType = "obsidian_active_tap_write_attempt"
+    let recordType = "active_tap_write_attempt"
     let recordID: String
+    let bundleIdentifier: String
     let observedAt: String
     let beganAt: String
     let lastInputAt: String
@@ -638,10 +724,10 @@ private struct RawWriteSensorHealth: Encodable {
     let activeAttemptID: String?
 }
 
-private struct ObsidianActiveTapWriteRecord: Encodable {
+private struct ActiveTapWriteRecord: Encodable {
     let schemaVersion = 1
     let kind = "write"
-    let provenance = "obsidian_active_tap_diff"
+    let provenance = "active_tap_accessibility_diff"
     let sequence: UInt64
     let eventID: String
     let observedAt: String
@@ -664,6 +750,13 @@ private struct ObsidianActiveTapWriteRecord: Encodable {
 private struct KeyClassification {
     let canStartWrite: Bool
     let hint: String
+    let isUnmodifiedReturn: Bool
+
+    init(canStartWrite: Bool, hint: String, isUnmodifiedReturn: Bool = false) {
+        self.canStartWrite = canStartWrite
+        self.hint = hint
+        self.isUnmodifiedReturn = isUnmodifiedReturn
+    }
 }
 
 private func classifyKey(_ event: CGEvent) -> KeyClassification {
@@ -678,6 +771,15 @@ private func classifyKey(_ event: CGEvent) -> KeyClassification {
     }
     if event.flags.contains(.maskControl) {
         return KeyClassification(canStartWrite: false, hint: "control_shortcut")
+    }
+    let returnCodes: Set<Int64> = [36, 76]
+    let mutationModifiers: CGEventFlags = [.maskShift, .maskCommand, .maskControl, .maskAlternate]
+    if returnCodes.contains(code), event.flags.intersection(mutationModifiers).isEmpty {
+        return KeyClassification(
+            canStartWrite: false,
+            hint: "return",
+            isUnmodifiedReturn: true
+        )
     }
     if code == 51 || code == 117 {
         return KeyClassification(canStartWrite: true, hint: "delete")
@@ -704,6 +806,7 @@ private func sameTarget(_ left: HeldEditableTarget?, _ right: HeldEditableTarget
 private func merging(_ identity: TargetCapture, with value: TargetCapture) -> TargetCapture {
     TargetCapture(
         bundleIdentifier: value.bundleIdentifier ?? identity.bundleIdentifier,
+        isEligibleApplication: value.isEligibleApplication || identity.isEligibleApplication,
         target: value.target ?? identity.target,
         observation: value.observation,
         errors: identity.errors + value.errors
@@ -805,10 +908,10 @@ private func milliseconds(sinceNanoseconds started: UInt64) -> Double {
     return Double(finished - started) / 1_000_000
 }
 
-enum ObsidianWriteCollectorError: Error, CustomStringConvertible {
+enum ActiveTapWriteCollectorError: Error, CustomStringConvertible {
     case eventTapUnavailable
 
     var description: String {
-        "could not create active Obsidian event tap; grant Accessibility and Input Monitoring, then try again"
+        "could not create active write event tap; grant Accessibility and Input Monitoring, then try again"
     }
 }

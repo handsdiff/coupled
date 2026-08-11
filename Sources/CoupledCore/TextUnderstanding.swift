@@ -142,3 +142,27 @@ public func writableCharacters(in text: String) -> [Character] {
         return true
     }
 }
+
+/// Roles whose complete AXValue can be tested with the retained-element diff.
+/// A supported role is still rejected when macOS marks it as secure.
+public func isSupportedEditableSurface(role: String, subrole: String?) -> Bool {
+    guard !isSecureEditableSurface(role: role, subrole: subrole) else { return false }
+    return ["AXTextArea", "AXTextField", "AXComboBox"].contains(role)
+}
+
+public func isSecureEditableSurface(role: String, subrole: String?) -> Bool {
+    role == "AXSecureTextField" || subrole == "AXSecureTextField"
+}
+
+/// Chromium/Electron can expose an empty field's visual prompt as AXValue.
+/// Treat it as UI only when AXPlaceholderValue independently confirms it.
+public func valueRepresentsPlaceholder(_ value: String, placeholderValue: String?) -> Bool {
+    guard let placeholderValue else { return false }
+    let normalizedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    let normalizedPlaceholder = placeholderValue.trimmingCharacters(in: .whitespacesAndNewlines)
+    return !normalizedPlaceholder.isEmpty && normalizedValue == normalizedPlaceholder
+}
+
+public func logicalEditableValue(_ value: String, placeholderValue: String?) -> String {
+    valueRepresentsPlaceholder(value, placeholderValue: placeholderValue) ? "" : value
+}

@@ -8,7 +8,7 @@ USAGE
   coupled triggers [options]   Emit raw input triggers as JSONL; no AX interpretation.
   coupled writes [options]     Emit typed-character bursts after an idle delay.
   coupled reads [options]      Emit timing-only read candidates after an idle delay.
-  coupled events [options]     Emit screen-text reads and Obsidian write diffs.
+  coupled events [options]     Emit screen-text reads and settled editable diffs.
   coupled collect [options]    Continuously emit interpreted events as JSONL.
   coupled snapshot [options]   Capture one visible-text snapshot and exit.
   coupled doctor [options]     Report required macOS permissions.
@@ -25,6 +25,8 @@ OPTIONS
   --exclude-bundle ID          Remove a bundle from capture; may be repeated
   --exclude-app-name NAME      Ignore an application name; may be repeated
   --max-characters COUNT       Maximum OCR/field text retained (default: 30000)
+  --no-activate-renderer-accessibility
+                               Do not activate Chromium/Electron AX trees
   --prompt-permissions         Ask macOS to show relevant permission prompts
   -h, --help                   Show this help
 
@@ -32,19 +34,17 @@ OLDER COLLECTOR OPTIONS
   --poll-interval SECONDS      Focus-change polling interval (default: 0.35)
   --max-nodes COUNT            Maximum Accessibility nodes visited per snapshot (default: 1200)
   --read-on-write              Also schedule a read snapshot after each settled write
-  --no-activate-renderer-accessibility
-                               Do not activate Chromium/Electron AX trees
 
 FILES
   triggers.jsonl               One record per keyboard, pointer, click, or scroll trigger
   writes.jsonl                 Settled per-app typed-character write bursts
   reads.jsonl                  Settled per-app/per-display read candidates
-  raw.jsonl                    Full OCR observations and Obsidian write attempts
-  events.jsonl                 Overlap-reduced reads and verified Obsidian writes
+  raw.jsonl                    Full OCR observations and active write attempts
+  events.jsonl                 Overlap-reduced reads and verified writes
 
 The trigger collector never records typed characters or raw key codes. The
 writes records settled typed-character bursts. Events recognizes a central crop
-of visible screen text and experiments only with focused Obsidian text areas.
+of visible screen text and focused editable fields in allowlisted applications.
 Secure fields are excluded. Treat all output as sensitive.
 """
 
@@ -66,7 +66,7 @@ do {
     if configuration.command == "doctor" {
         print("Input Monitoring (trigger capture): \(CGPreflightListenEventAccess() ? "granted" : "missing")")
         print("Screen Recording (screen-text reads): \(CGPreflightScreenCaptureAccess() ? "granted" : "missing")")
-        print("Accessibility (Obsidian write experiment): \(AXIsProcessTrusted() ? "granted" : "missing")")
+        print("Accessibility (settled write capture): \(AXIsProcessTrusted() ? "granted" : "missing")")
         if !AXIsProcessTrusted() || !CGPreflightListenEventAccess() || !CGPreflightScreenCaptureAccess() {
             print(permissionInstructions())
         }
@@ -88,7 +88,7 @@ do {
         guard AXIsProcessTrusted() else { throw MainError.missingAccessibility }
         let eventWriter = try JSONLWriter(path: configuration.eventsPath)
         let rawWriter = try JSONLWriter(path: configuration.rawPath)
-        let writes = ObsidianWriteCollector(
+        let writes = ActiveTapWriteCollector(
             configuration: configuration,
             rawWriter: rawWriter,
             eventWriter: eventWriter
@@ -140,7 +140,7 @@ func permissionInstructions() -> String {
     let executablePath = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL.path
     if let appRange = executablePath.range(of: ".app/Contents/MacOS/") {
         let appPath = String(executablePath[..<appRange.lowerBound]) + ".app"
-        return "Add this bundle in System Settings > Privacy & Security. Input Monitoring supports triggers and write timing; Screen Recording supports screen-text reads; Accessibility supports the Obsidian write experiment:\n\(appPath)"
+        return "Add this bundle in System Settings > Privacy & Security. Input Monitoring supports triggers and write timing; Screen Recording supports screen-text reads; Accessibility supports settled write capture:\n\(appPath)"
     }
     return "Package the executable with `./scripts/package-app.sh`, then grant permissions to dist/Coupled.app instead of this build artifact."
 }

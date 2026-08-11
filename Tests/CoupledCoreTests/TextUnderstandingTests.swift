@@ -27,6 +27,38 @@ final class TextUnderstandingTests: XCTestCase {
         XCTAssertTrue(minimalTextEdit(from: "same", to: "same").isEmpty)
     }
 
+    func testSupportedEditableRolesAcrossApplications() {
+        XCTAssertTrue(isSupportedEditableSurface(role: "AXTextArea", subrole: nil))
+        XCTAssertTrue(isSupportedEditableSurface(role: "AXTextField", subrole: nil))
+        XCTAssertTrue(isSupportedEditableSurface(role: "AXComboBox", subrole: nil))
+        XCTAssertFalse(isSupportedEditableSurface(role: "AXWebArea", subrole: nil))
+    }
+
+    func testSecureEditableSurfaceIsRejected() {
+        XCTAssertTrue(isSecureEditableSurface(role: "AXTextField", subrole: "AXSecureTextField"))
+        XCTAssertFalse(
+            isSupportedEditableSurface(role: "AXTextField", subrole: "AXSecureTextField")
+        )
+    }
+
+    func testConfirmedPlaceholderBecomesEmptyLogicalValue() {
+        XCTAssertTrue(
+            valueRepresentsPlaceholder("\nDo anything", placeholderValue: "Do anything")
+        )
+        XCTAssertEqual(
+            logicalEditableValue("Ask Gemini\n", placeholderValue: "Ask Gemini"),
+            ""
+        )
+    }
+
+    func testUnconfirmedPromptLikeTextRemainsUserContent() {
+        XCTAssertFalse(valueRepresentsPlaceholder("Do anything", placeholderValue: nil))
+        XCTAssertEqual(
+            logicalEditableValue("Do anything", placeholderValue: "Ask Gemini"),
+            "Do anything"
+        )
+    }
+
     func testNewlyVisibleLinesPreservesViewportOverlap() {
         XCTAssertEqual(
             newlyVisibleLines(previous: "alpha\nbeta", current: "beta\ngamma\ngamma"),

@@ -115,8 +115,8 @@ contain sensitive document or page names.
 
 ## Combined visible events
 
-The `events` command combines screen-text reads with one deliberately narrow
-write experiment: settled edits in a focused Obsidian text area.
+The `events` command combines screen-text reads with settled edits in focused
+editable fields in the allowlisted applications.
 
 ```sh
 ./scripts/coupled events \
@@ -130,11 +130,16 @@ write experiment: settled edits in a focused Obsidian text area.
 Derived events are appended in emission order to `events.jsonl` and mirrored to
 the same live log. Source observations are appended separately to `raw.jsonl`:
 
-- `WRITE` is attempted only for Obsidian. An active event tap attempts to
-  capture the focused text area before returning the first mutating key. The
-  same retained Accessibility element is queried after the write delay, and a
-  minimal insertion, deletion, or replacement is emitted only when both states
-  are complete and no event-tap timeout occurred.
+- `WRITE` is attempted in Obsidian, Chrome, and Codex by default. An active
+  event tap attempts to capture a focused text area, text field, or combo box
+  before returning the first mutating key. The same retained Accessibility
+  element is queried after the write delay, and a minimal insertion, deletion,
+  or replacement is emitted only when both states are complete and no
+  event-tap timeout occurred. Confirmed `AXPlaceholderValue` text remains in
+  raw evidence but is treated as an empty logical field during derivation.
+  Unmodified Return settles an active single-line or confirmed-placeholder
+  field immediately before the application can submit or transform it. Secure
+  fields are ignored.
 - `READ` captures the visible rectangle of the topmost window surface after the
   read delay, removes 10% from both the left and right, 10% from the top, and
   50% from the bottom, then uses macOS Vision recognition locally to emit its
@@ -160,7 +165,7 @@ Obsidian (`md.obsidian`), Chrome (`com.google.Chrome`), and Codex
 applications are ignored. Deliberately expand the boundary with
 `--allow-bundle`; `--exclude-bundle` and `--exclude-app-name` can narrow it.
 
-The default log shows the Obsidian insertion/removal and the first eight
+The default log shows each verified insertion/removal and the first eight
 recognized lines of each OCR read, preserving line breaks. Use
 `./scripts/coupled logs --full-text` for every recognized line in a readable
 form, or `./scripts/coupled logs --raw` for the full JSONL event. Screenshots
@@ -169,12 +174,13 @@ are processed in memory and are not saved.
 This command requires **Input Monitoring**, **Screen Recording**, and
 **Accessibility** for `dist/Coupled.app`. OCR is an observation of visible
 pixels, so it naturally includes occlusion and can make recognition errors.
-The Obsidian experiment does not poll or cache inactive editors. It retains one
+The write collector does not poll or cache inactive editors. It retains one
 focused Accessibility element and its initial value only while a burst is
-active. Chrome and Codex produce reads but no derived write events. One raw
-before/after audit record is stored per Obsidian burst—individual key signals
-are not stored. Both files can contain sensitive visible or editable text; use
-the pause file before handling sensitive information.
+active. One raw before/after audit record is stored per attempted burst—
+individual key signals are not stored. If an application does not expose a
+complete editable `AXValue`, the raw attempt records the failure and no derived
+write is guessed. Both files can contain sensitive visible or editable text;
+use the pause file before handling sensitive information.
 
 ## Experimental interpretation
 
