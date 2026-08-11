@@ -1,0 +1,8 @@
+.build/
+.swiftpm/
+coupled-data/
+dist/
+*.jsonl
+.DS_Store
+.coupled-pause
+.coupled-launch/

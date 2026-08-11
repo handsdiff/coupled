@@ -1,0 +1,219 @@
+#!/bin/zsh
+set -euo pipefail
+
+project_dir="${0:A:h:h}"
+app_dir="$project_dir/dist/Coupled.app"
+executable="$app_dir/Contents/MacOS/coupled"
+launch_log_dir="$project_dir/.coupled-launch"
+
+if [[ ! -x "$executable" ]]; then
+  print -u2 "Coupled.app is missing. Run ./scripts/package-app.sh first."
+  exit 1
+fi
+
+command_name="${1:-help}"
+if (( $# > 0 )); then
+  shift
+fi
+
+normalize_paths() {
+  arguments=("$@")
+  normalized=()
+  has_output=false
+  index=1
+  while (( index <= ${#arguments[@]} )); do
+    argument="${arguments[index]}"
+    normalized+=("$argument")
+    if [[ "$argument" == "--output" || "$argument" == "--pause-file" ]]; then
+      (( index += 1 ))
+      if (( index > ${#arguments[@]} )); then
+        print -u2 "Missing value for $argument"
+        exit 1
+      fi
+      value="${arguments[index]}"
+      if [[ "$value" != /* ]]; then
+        value="$PWD/${value#./}"
+      fi
+      normalized+=("$value")
+      [[ "$argument" != "--output" ]] || has_output=true
+    fi
+    (( index += 1 ))
+  done
+}
+
+case "$command_name" in
+  help|-h|--help)
+    print "Usage:"
+    print "  ./scripts/coupled doctor [--prompt-permissions]"
+    print "  ./scripts/coupled triggers [trigger options]"
+    print "  ./scripts/coupled writes [write options]"
+    print "  ./scripts/coupled reads [read options]"
+    print "  ./scripts/coupled events [event options]"
+    print "  ./scripts/coupled collect [collector options]"
+    print "  ./scripts/coupled snapshot [collector options]"
+    print "  ./scripts/coupled logs [--full-text|--raw]"
+    print "  ./scripts/coupled status"
+    print "  ./scripts/coupled stop"
+    print ""
+    print "Coupled must be launched through this wrapper so macOS associates the"
+    print "process with the Coupled.app privacy permissions."
+    ;;
+
+  status)
+    if pgrep -f "$executable" >/dev/null; then
+      pgrep -fl "$executable"
+    else
+      print "Coupled is not running."
+    fi
+    ;;
+
+  logs)
+    log_mode="${1:-}"
+    if [[ -n "$log_mode" && "$log_mode" != "--full-text" && "$log_mode" != "--raw" ]]; then
+      print -u2 "Usage: ./scripts/coupled logs [--full-text|--raw]"
+      exit 1
+    fi
+    log_files=("$launch_log_dir"/*.stdout.jsonl(N.om))
+    if (( ${#log_files[@]} == 0 )); then
+      print -u2 "No Coupled launch logs exist yet."
+      exit 1
+    fi
+    latest_log="${log_files[1]}"
+    print "Following $latest_log"
+    print "Press Ctrl-C to stop following; the collector will continue running."
+    if [[ "$log_mode" == "--raw" ]]; then
+      tail -n 20 -f "$latest_log"
+    elif command -v jq >/dev/null; then
+      tail -n 8 -f "$latest_log" | jq --unbuffered -r --arg mode "$log_mode" '
+        def app_name:
+          .appName
+          // .frontmostAppName
+          // .app.name
+          // .app.bundleIdentifier
+          // .bundleIdentifier;
+        def window_name:
+          if (.windowTitle // "") != "" then
+            (.windowTitle | tojson)
+          elif .windowID != null then
+            "#\(.windowID)"
+          else
+            "-"
+          end;
+        def read_preview:
+          ((.content // "") | split("\n")) as $lines |
+          ($lines[0:8] | to_entries |
+            map("    \(.key + 1) | \(.value)") | join("\n"))
+          + (if ($lines | length) > 8 then
+              "\n    … \(($lines | length) - 8) more recognized lines"
+            else "" end);
+        def read_header:
+          "\(.observedAt)  READ  app=\(app_name)  window=\(window_name)  characters=\(.content | length)  lines=\(.emittedLineCount // .recognizedLineCount)  viewport-lines=\(.recognizedLineCount)  overlap-removed=\(.overlapRemovedLineCount // 0)  crop=\((((.viewportSideCropFraction // 0) * 100) | round))% sides/\((((.viewportTopCropFraction // 0) * 100) | round))% top/\((((.viewportBottomCropFraction // 0) * 100) | round))% bottom  display=\(.displayID)";
+        if .kind == "read" and .provenance == "screen_ocr" then
+          if $mode == "--full-text" then
+            "\(read_header)\n\(.content // "")\n"
+          else
+            "\(read_header)\n\(read_preview)"
+          end
+        elif .kind == "read_candidate" then
+          "\(.observedAt)  READ  app=\(app_name)  window=\(window_name)  activity=\(.triggerTypes | join(","))  items=\(.eventCount)  after=\(.readDelaySeconds)s  display=\(.displayID)"
+        elif .kind == "write" and .provenance == "typed_character_burst" then
+          "\(.observedAt)  WRITE  app=\(app_name)  text=\(.content | tojson)  characters=\(.characterCount)  after=\(.writeDelaySeconds)s"
+        elif .kind == "character_write" then
+          "\(.observedAt)  CHARACTER  app=\(app_name)  value=\(.character | tojson)"
+        elif .kind != null then
+          "\(.observedAt // .lastObservedAt)  \(.kind | ascii_upcase)  app=\(app_name)  display=\(.displayID // "-")"
+        else
+          tojson
+        end
+      '
+    else
+      print -u2 "jq is unavailable; showing raw JSONL."
+      tail -n 20 -f "$latest_log"
+    fi
+    ;;
+
+  stop)
+    process_ids=("${(@f)$(pgrep -f "$executable" || true)}")
+    if (( ${#process_ids[@]} == 0 )) || [[ -z "${process_ids[1]:-}" ]]; then
+      print "Coupled is not running."
+      exit 0
+    fi
+    kill "${process_ids[@]}"
+    print "Stopped Coupled process(es): ${process_ids[*]}"
+    ;;
+
+  doctor|snapshot)
+    temporary_dir="$(mktemp -d "${TMPDIR:-/private/tmp}/coupled-${command_name}.XXXXXX")"
+    stdout_log="$temporary_dir/stdout.log"
+    stderr_log="$temporary_dir/stderr.log"
+
+    launch_arguments=("$@")
+    if [[ "$command_name" == "snapshot" ]]; then
+      normalize_paths "$@"
+      launch_arguments=("${normalized[@]}")
+      if [[ "$has_output" == false ]]; then
+        snapshot_stamp="$(date -u +%Y-%m-%dT%H-%M-%SZ)"
+        launch_arguments+=("--output" "$project_dir/coupled-data/snapshot-$snapshot_stamp")
+      fi
+    fi
+
+    open -n -g \
+      -o "$stdout_log" \
+      --stderr "$stderr_log" \
+      --env COUPLED_LAUNCHED_BY_LAUNCH_SERVICES=1 \
+      "$app_dir" \
+      --args "$command_name" "${launch_arguments[@]}"
+
+    for _ in {1..100}; do
+      if [[ -s "$stdout_log" || -s "$stderr_log" ]]; then
+        break
+      fi
+      sleep 0.05
+    done
+
+    [[ ! -f "$stdout_log" ]] || sed -n '1,200p' "$stdout_log"
+    [[ ! -f "$stderr_log" ]] || sed -n '1,200p' "$stderr_log" >&2
+    ;;
+
+  triggers|writes|reads|events|collect)
+    mkdir -p "$launch_log_dir"
+    stamp="$(date -u +%Y-%m-%dT%H-%M-%SZ)"
+    stdout_log="$launch_log_dir/$stamp.stdout.jsonl"
+    stderr_log="$launch_log_dir/$stamp.stderr.log"
+
+    normalize_paths "$@"
+
+    if [[ "$has_output" == false ]]; then
+      normalized+=("--output" "$project_dir/coupled-data/$stamp")
+    fi
+
+    open -n -g \
+      -o "$stdout_log" \
+      --stderr "$stderr_log" \
+      --env COUPLED_LAUNCHED_BY_LAUNCH_SERVICES=1 \
+      "$app_dir" \
+      --args "$command_name" "${normalized[@]}"
+
+    for _ in {1..20}; do
+      if [[ -f "$stderr_log" ]] && grep -q 'run `coupled --help` for usage' "$stderr_log"; then
+        print -u2 "Coupled failed to start:"
+        sed -n '1,80p' "$stderr_log" >&2
+        exit 1
+      fi
+      sleep 0.05
+    done
+
+    print "Coupled $command_name launched through macOS Launch Services."
+    print "Event mirror: $stdout_log"
+    print "Diagnostics:  $stderr_log"
+    print "Follow:       ./scripts/coupled logs"
+    print "Check:        ./scripts/coupled status"
+    print "Stop:         ./scripts/coupled stop"
+    ;;
+
+  *)
+    print -u2 "Unknown command: $command_name"
+    print -u2 "Run ./scripts/coupled help for usage."
+    exit 1
+    ;;
+esac
