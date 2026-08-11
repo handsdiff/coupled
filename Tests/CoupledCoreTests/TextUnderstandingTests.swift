@@ -59,6 +59,17 @@ final class TextUnderstandingTests: XCTestCase {
         )
     }
 
+    func testRemovalOnlyBurstIgnoresNonMutatingHints() {
+        XCTAssertTrue(isRemovalOnlyWriteBurst(inputHints: ["delete"]))
+        XCTAssertTrue(isRemovalOnlyWriteBurst(inputHints: ["cut"]))
+        XCTAssertTrue(
+            isRemovalOnlyWriteBurst(inputHints: ["cut", "navigation", "shortcut"])
+        )
+        XCTAssertFalse(isRemovalOnlyWriteBurst(inputHints: ["delete", "typed"]))
+        XCTAssertFalse(isRemovalOnlyWriteBurst(inputHints: ["cut", "paste"]))
+        XCTAssertFalse(isRemovalOnlyWriteBurst(inputHints: ["paste"]))
+    }
+
     func testNewlyVisibleLinesPreservesViewportOverlap() {
         XCTAssertEqual(
             newlyVisibleLines(previous: "alpha\nbeta", current: "beta\ngamma\ngamma"),

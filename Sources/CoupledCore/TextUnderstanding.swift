@@ -166,3 +166,12 @@ public func valueRepresentsPlaceholder(_ value: String, placeholderValue: String
 public func logicalEditableValue(_ value: String, placeholderValue: String?) -> String {
     valueRepresentsPlaceholder(value, placeholderValue: placeholderValue) ? "" : value
 }
+
+/// True when deletion or cut is the only mutation-capable input observed in a
+/// burst. Navigation, selection shortcuts, and Return may accompany removal
+/// without providing evidence that the user inserted replacement text.
+public func isRemovalOnlyWriteBurst(inputHints: Set<String>) -> Bool {
+    guard inputHints.contains("delete") || inputHints.contains("cut") else { return false }
+    let contentMutations: Set<String> = ["typed", "paste", "undo_redo"]
+    return inputHints.isDisjoint(with: contentMutations)
+}

@@ -82,6 +82,7 @@ private struct SessionManifest: Encodable {
 private struct ResolvedCollectorConfiguration: Encodable {
     let readDelaySeconds: Double
     let writeDelaySeconds: Double
+    let postPasteCheckpointDelaySeconds: Double
     let viewportSideCropFraction: Double
     let viewportTopCropFraction: Double
     let viewportBottomCropFraction: Double
@@ -99,6 +100,7 @@ private struct ResolvedCollectorConfiguration: Encodable {
     init(_ configuration: Configuration) {
         readDelaySeconds = configuration.readDelay
         writeDelaySeconds = configuration.writeDelay
+        postPasteCheckpointDelaySeconds = configuration.postPasteCheckpointDelay
         viewportSideCropFraction = configuration.viewportSideCropFraction
         viewportTopCropFraction = configuration.viewportTopCropFraction
         viewportBottomCropFraction = configuration.viewportBottomCropFraction
@@ -132,8 +134,8 @@ private struct SchemaManifest: Encodable {
     let readCandidate = 1
     let rawScreenOCR = 3
     let derivedScreenRead = 6
-    let rawActiveTapWrite = 3
-    let derivedActiveTapWrite = 3
+    let rawActiveTapWrite = 4
+    let derivedActiveTapWrite = 4
     let writeSensorHealth = 1
     let rawActivity = 2
     let rawAccessibilitySnapshot = 1

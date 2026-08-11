@@ -24,6 +24,16 @@ expect(
     "unicode replacement"
 )
 expect(minimalTextEdit(from: "same", to: "same").isEmpty, "no-op")
+expect(isRemovalOnlyWriteBurst(inputHints: ["delete"]), "delete-only burst")
+expect(isRemovalOnlyWriteBurst(inputHints: ["cut"]), "cut-only burst")
+expect(
+    isRemovalOnlyWriteBurst(inputHints: ["cut", "navigation", "shortcut"]),
+    "removal-only burst with non-mutating hints"
+)
+expect(
+    !isRemovalOnlyWriteBurst(inputHints: ["delete", "typed"]),
+    "typed content prevents removal-only classification"
+)
 expect(
     newlyVisibleLines(previous: "alpha\nbeta", current: "beta\ngamma\ngamma") == "gamma",
     "viewport overlap"

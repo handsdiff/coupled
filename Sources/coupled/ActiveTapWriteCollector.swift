@@ -176,6 +176,12 @@ final class ActiveTapWriteCollector {
                     event: event,
                     inputObservedAt: inputObservedAt
                 )
+                if classification.isPaste {
+                    recordPasteSignal(
+                        event: event,
+                        inputObservedAt: inputObservedAt
+                    )
+                }
                 if shouldFinalizeBeforeReturn(classification: classification, pending: pending) {
                     completeCapture(
                         boundaryReason: "return_pressed",
@@ -207,6 +213,9 @@ final class ActiveTapWriteCollector {
                     sinceNanoseconds: beforeStarted
                 )
             )
+            if classification.isPaste {
+                recordPasteSignal(event: event, inputObservedAt: inputObservedAt)
+            }
             return
         }
 
@@ -220,6 +229,9 @@ final class ActiveTapWriteCollector {
             before: before,
             beforeDurationMilliseconds: milliseconds(sinceNanoseconds: beforeStarted)
         )
+        if classification.isPaste {
+            recordPasteSignal(event: event, inputObservedAt: inputObservedAt)
+        }
     }
 
     private func startPending(
@@ -247,6 +259,7 @@ final class ActiveTapWriteCollector {
             inputEventCount: 1,
             inputHints: [classification.hint],
             returnCheckpoints: [],
+            pasteCheckpoints: [],
             beforeCaptureDurationMilliseconds: beforeDurationMilliseconds,
             firstCallbackDurationMilliseconds: nil,
             maximumCallbackDurationMilliseconds: 0,
@@ -353,6 +366,9 @@ final class ActiveTapWriteCollector {
                 before: pending.before!,
                 after: after,
                 checkpoints: pending.returnCheckpoints,
+                pasteCheckpoints: pending.pasteCheckpoints,
+                inputHints: pending.inputHints,
+                lastEventTimestampNanoseconds: pending.lastEventTimestampNanoseconds,
                 boundaryReason: boundaryReason
             )
         }
@@ -381,6 +397,7 @@ final class ActiveTapWriteCollector {
             before: pending.before,
             after: after.observation,
             returnCheckpoints: pending.returnCheckpoints,
+            pasteCheckpoints: pending.pasteCheckpoints,
             beforeAXErrors: pending.beforeAXErrors,
             afterAXErrors: after.errors,
             beforeCaptureDurationMilliseconds: pending.beforeCaptureDurationMilliseconds,
@@ -442,34 +459,70 @@ final class ActiveTapWriteCollector {
         before: ActiveTapEditableObservation,
         after: TargetCapture,
         checkpoints: [ActiveTapReturnCheckpoint],
+        pasteCheckpoints: [ActiveTapPasteCheckpoint],
+        inputHints: Set<String>,
+        lastEventTimestampNanoseconds: UInt64,
         boundaryReason: String
     ) -> WriteDerivationDecision {
         let beforeValue = logicalEditableValue(
             before.value,
             placeholderValue: before.placeholderValue
         )
-        let checkpoint = checkpoints.last.flatMap { checkpoint -> MeaningfulCheckpoint? in
-            guard checkpoint.axErrors.isEmpty,
-                  let observation = checkpoint.observation,
-                  !observation.valueWasTruncated else {
-                return nil
-            }
-            let value = logicalEditableValue(
-                observation.value,
-                placeholderValue: observation.placeholderValue
-            )
-            let edit = minimalTextEdit(from: beforeValue, to: value)
-            guard !edit.isEmpty else { return nil }
-            return MeaningfulCheckpoint(
-                checkpointID: checkpoint.checkpointID,
-                observation: observation,
-                edit: edit
+        let returnCheckpoint = checkpoints.last.flatMap {
+            meaningfulCheckpoint(
+                checkpointID: $0.checkpointID,
+                eventTimestampNanoseconds: $0.eventTimestampNanoseconds,
+                observationSource: "pre_return_checkpoint",
+                observation: $0.observation,
+                errors: $0.axErrors,
+                beforeValue: beforeValue
             )
         }
+        let latestCheckpoint: MeaningfulCheckpoint? = {
+            let latestReturn: ObservationCheckpoint? = checkpoints.last.flatMap {
+                guard $0.eventTimestampNanoseconds == lastEventTimestampNanoseconds else {
+                    return nil
+                }
+                return ObservationCheckpoint(
+                    checkpointID: $0.checkpointID,
+                    eventTimestampNanoseconds: $0.eventTimestampNanoseconds,
+                    observationSource: "pre_return_checkpoint",
+                    observation: $0.observation,
+                    errors: $0.axErrors
+                )
+            }
+            let latestPaste: ObservationCheckpoint? = pasteCheckpoints.last.flatMap {
+                guard $0.eventTimestampNanoseconds == lastEventTimestampNanoseconds else {
+                    return nil
+                }
+                return ObservationCheckpoint(
+                    checkpointID: $0.checkpointID,
+                    eventTimestampNanoseconds: $0.eventTimestampNanoseconds,
+                    observationSource: "post_paste_checkpoint",
+                    observation: $0.observation,
+                    errors: $0.axErrors
+                )
+            }
+            let latest = [latestReturn, latestPaste]
+                .compactMap { $0 }
+                .max { $0.eventTimestampNanoseconds < $1.eventTimestampNanoseconds }
+            guard let latest else { return nil }
+            return meaningfulCheckpoint(
+                checkpointID: latest.checkpointID,
+                eventTimestampNanoseconds: latest.eventTimestampNanoseconds,
+                observationSource: latest.observationSource,
+                observation: latest.observation,
+                errors: latest.errors,
+                beforeValue: beforeValue
+            )
+        }()
 
         if boundaryReason == "return_pressed" {
-            guard let checkpoint else { return .unresolved("no_change") }
-            return .checkpoint(checkpoint, fallbackReason: "immediate_terminal_return")
+            guard let returnCheckpoint else { return .unresolved("no_change") }
+            return .checkpoint(
+                returnCheckpoint,
+                fallbackReason: "immediate_terminal_return"
+            )
         }
 
         let terminalIsInvalid = after.errors.contains { error in
@@ -477,8 +530,8 @@ final class ActiveTapWriteCollector {
                 || error.contains("no_value")
                 || error == "target:unavailable"
         }
-        if terminalIsInvalid, let checkpoint {
-            return .checkpoint(checkpoint, fallbackReason: "terminal_invalid")
+        if terminalIsInvalid, let latestCheckpoint {
+            return .checkpoint(latestCheckpoint, fallbackReason: "terminal_invalid")
         }
         guard let terminal = after.observation else {
             return .unresolved("after_capture_failed")
@@ -490,14 +543,20 @@ final class ActiveTapWriteCollector {
             terminal.value,
             placeholderValue: terminal.placeholderValue
         )
-        if let checkpoint, terminal.value == before.value {
-            return .checkpoint(checkpoint, fallbackReason: "terminal_matches_before")
+        if let latestCheckpoint, terminal.value == before.value {
+            return .checkpoint(latestCheckpoint, fallbackReason: "terminal_matches_before")
         }
-        if let checkpoint, terminalValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return .checkpoint(checkpoint, fallbackReason: "terminal_unpopulated")
+        if let latestCheckpoint,
+           terminalValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return .checkpoint(latestCheckpoint, fallbackReason: "terminal_unpopulated")
         }
 
-        let edit = minimalTextEdit(from: beforeValue, to: terminalValue)
+        var edit = minimalTextEdit(from: beforeValue, to: terminalValue)
+        var fallbackReason: String?
+        if isRemovalOnlyWriteBurst(inputHints: inputHints), !edit.inserted.isEmpty {
+            edit = minimalTextEdit(from: beforeValue, to: "")
+            fallbackReason = "removal_only_terminal_unpopulated"
+        }
         guard !edit.isEmpty else {
             return .unresolved(
                 "no_change",
@@ -509,9 +568,37 @@ final class ActiveTapWriteCollector {
             edit: edit,
             resolution: "validated",
             observationSource: "terminal_after",
-            fallbackReason: nil,
+            fallbackReason: fallbackReason,
             usedCheckpointID: nil,
             usedObservationCapturedAt: terminal.observedAt
+        )
+    }
+
+    private func meaningfulCheckpoint(
+        checkpointID: String,
+        eventTimestampNanoseconds: UInt64,
+        observationSource: String,
+        observation: ActiveTapEditableObservation?,
+        errors: [String],
+        beforeValue: String
+    ) -> MeaningfulCheckpoint? {
+        guard errors.isEmpty,
+              let observation,
+              !observation.valueWasTruncated else {
+            return nil
+        }
+        let value = logicalEditableValue(
+            observation.value,
+            placeholderValue: observation.placeholderValue
+        )
+        let edit = minimalTextEdit(from: beforeValue, to: value)
+        guard !edit.isEmpty else { return nil }
+        return MeaningfulCheckpoint(
+            checkpointID: checkpointID,
+            eventTimestampNanoseconds: eventTimestampNanoseconds,
+            observationSource: observationSource,
+            observation: observation,
+            edit: edit
         )
     }
 
@@ -547,6 +634,72 @@ final class ActiveTapWriteCollector {
     private func appendReturnCheckpoint(_ checkpoint: ActiveTapReturnCheckpoint) {
         guard var pending else { return }
         pending.returnCheckpoints.append(checkpoint)
+        self.pending = pending
+    }
+
+    private func recordPasteSignal(event: CGEvent, inputObservedAt: String) {
+        guard var pending else { return }
+        let checkpointID = UUID().uuidString
+        let pasteboard = NSPasteboard.general
+        let clipboardValue = pasteboard.string(forType: .string)
+        let clipped = clipboardValue.map {
+            String($0.prefix(configuration.maxCharacters))
+        }
+        pending.pasteCheckpoints.append(
+            ActiveTapPasteCheckpoint(
+                checkpointID: checkpointID,
+                inputObservedAt: inputObservedAt,
+                eventTimestampNanoseconds: event.timestamp,
+                clipboardObservedAt: nowTimestamp(),
+                clipboardChangeCount: pasteboard.changeCount,
+                clipboardTypes: pasteboard.types?.map(\.rawValue).sorted() ?? [],
+                clipboardText: clipped,
+                clipboardTextWasTruncated: clipboardValue.map {
+                    clipped!.count < $0.count
+                } ?? false,
+                postPasteCaptureRequestedAt: nil,
+                observation: nil,
+                axErrors: []
+            )
+        )
+        let attemptID = pending.attemptID
+        let target = pending.target
+        self.pending = pending
+
+        Timer.scheduledTimer(
+            withTimeInterval: configuration.postPasteCheckpointDelay,
+            repeats: false
+        ) { [weak self] _ in
+            guard let self else { return }
+            let requestedAt = nowTimestamp()
+            let capture = target.map {
+                self.captureHeldTarget($0, reason: "post_paste_checkpoint")
+            } ?? TargetCapture(errors: ["target:unavailable"])
+            self.completePasteCheckpoint(
+                attemptID: attemptID,
+                checkpointID: checkpointID,
+                requestedAt: requestedAt,
+                capture: capture
+            )
+        }
+    }
+
+    private func completePasteCheckpoint(
+        attemptID: String,
+        checkpointID: String,
+        requestedAt: String,
+        capture: TargetCapture
+    ) {
+        guard var pending,
+              pending.attemptID == attemptID,
+              let index = pending.pasteCheckpoints.firstIndex(where: {
+                  $0.checkpointID == checkpointID
+              }) else {
+            return
+        }
+        pending.pasteCheckpoints[index].postPasteCaptureRequestedAt = requestedAt
+        pending.pasteCheckpoints[index].observation = capture.observation
+        pending.pasteCheckpoints[index].axErrors = capture.errors
         self.pending = pending
     }
 
@@ -763,6 +916,7 @@ private struct PendingActiveTapWrite {
     var inputEventCount: Int
     var inputHints: Set<String>
     var returnCheckpoints: [ActiveTapReturnCheckpoint]
+    var pasteCheckpoints: [ActiveTapPasteCheckpoint]
     let beforeCaptureDurationMilliseconds: Double
     var firstCallbackDurationMilliseconds: Double?
     var maximumCallbackDurationMilliseconds: Double
@@ -833,8 +987,32 @@ private struct ActiveTapReturnCheckpoint: Encodable {
     let axErrors: [String]
 }
 
+private struct ActiveTapPasteCheckpoint: Encodable {
+    let checkpointID: String
+    let inputObservedAt: String
+    let eventTimestampNanoseconds: UInt64
+    let clipboardObservedAt: String
+    let clipboardChangeCount: Int
+    let clipboardTypes: [String]
+    let clipboardText: String?
+    let clipboardTextWasTruncated: Bool
+    var postPasteCaptureRequestedAt: String?
+    var observation: ActiveTapEditableObservation?
+    var axErrors: [String]
+}
+
+private struct ObservationCheckpoint {
+    let checkpointID: String
+    let eventTimestampNanoseconds: UInt64
+    let observationSource: String
+    let observation: ActiveTapEditableObservation?
+    let errors: [String]
+}
+
 private struct MeaningfulCheckpoint {
     let checkpointID: String
+    let eventTimestampNanoseconds: UInt64
+    let observationSource: String
     let observation: ActiveTapEditableObservation
     let edit: TextEdit
 }
@@ -869,7 +1047,7 @@ private struct WriteDerivationDecision {
         WriteDerivationDecision(
             edit: checkpoint.edit,
             resolution: "validated",
-            observationSource: "pre_return_checkpoint",
+            observationSource: checkpoint.observationSource,
             fallbackReason: fallbackReason,
             usedCheckpointID: checkpoint.checkpointID,
             usedObservationCapturedAt: checkpoint.observation.observedAt
@@ -878,7 +1056,7 @@ private struct WriteDerivationDecision {
 }
 
 private struct RawActiveTapWriteAttempt: Encodable {
-    let schemaVersion = 3
+    let schemaVersion = 4
     let recordType = "active_tap_write_attempt"
     let recordID: String
     let bundleIdentifier: String
@@ -902,6 +1080,7 @@ private struct RawActiveTapWriteAttempt: Encodable {
     let before: ActiveTapEditableObservation?
     let after: ActiveTapEditableObservation?
     let returnCheckpoints: [ActiveTapReturnCheckpoint]
+    let pasteCheckpoints: [ActiveTapPasteCheckpoint]
     let beforeAXErrors: [String]
     let afterAXErrors: [String]
     let beforeCaptureDurationMilliseconds: Double
@@ -922,7 +1101,7 @@ private struct RawWriteSensorHealth: Encodable {
 }
 
 private struct ActiveTapWriteRecord: Encodable {
-    let schemaVersion = 3
+    let schemaVersion = 4
     let kind = "write"
     let provenance = "active_tap_accessibility_diff"
     let sequence: UInt64
@@ -954,11 +1133,18 @@ private struct KeyClassification {
     let canStartWrite: Bool
     let hint: String
     let isUnmodifiedReturn: Bool
+    let isPaste: Bool
 
-    init(canStartWrite: Bool, hint: String, isUnmodifiedReturn: Bool = false) {
+    init(
+        canStartWrite: Bool,
+        hint: String,
+        isUnmodifiedReturn: Bool = false,
+        isPaste: Bool = false
+    ) {
         self.canStartWrite = canStartWrite
         self.hint = hint
         self.isUnmodifiedReturn = isUnmodifiedReturn
+        self.isPaste = isPaste
     }
 }
 
@@ -966,7 +1152,7 @@ private func classifyKey(_ event: CGEvent) -> KeyClassification {
     let code = event.getIntegerValueField(.keyboardEventKeycode)
     if event.flags.contains(.maskCommand) {
         switch code {
-        case 9: return KeyClassification(canStartWrite: true, hint: "paste")
+        case 9: return KeyClassification(canStartWrite: true, hint: "paste", isPaste: true)
         case 7: return KeyClassification(canStartWrite: true, hint: "cut")
         case 6: return KeyClassification(canStartWrite: true, hint: "undo_redo")
         default: return KeyClassification(canStartWrite: false, hint: "shortcut")

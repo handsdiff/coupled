@@ -9,7 +9,8 @@ struct Configuration {
     var writeDelay: TimeInterval = 3.0
     var viewportSideCropFraction = 0.1
     var viewportTopCropFraction = 0.1
-    var viewportBottomCropFraction = 0.5
+    var viewportBottomCropFraction = 0.35
+    let postPasteCheckpointDelay: TimeInterval = 0.05
     var pollInterval: TimeInterval = 0.35
     var maxCharacters = 30_000
     var maxNodes = 1_200

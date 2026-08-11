@@ -20,7 +20,7 @@ OPTIONS
   --read-delay SECONDS         Idle time before emitting a read candidate (default: 3)
   --viewport-side-crop NUMBER  Fraction removed from each side for OCR (default: 0.1)
   --viewport-top-crop NUMBER   Fraction removed from the top for OCR (default: 0.1)
-  --viewport-bottom-crop NUM   Fraction removed from the bottom for OCR (default: 0.5)
+  --viewport-bottom-crop NUM   Fraction removed from the bottom for OCR (default: 0.35)
   --allow-bundle ID            Add a bundle to the default Obsidian/Chrome/Codex allowlist
   --exclude-bundle ID          Remove a bundle from capture; may be repeated
   --exclude-app-name NAME      Ignore an application name; may be repeated

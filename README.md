@@ -142,14 +142,18 @@ the same live log. Source observations are appended separately to `raw.jsonl`:
   the normal delay. If terminal capture is invalid, empty, or equal to BEFORE,
   a meaningful checkpoint can supply the write; otherwise AFTER remains the
   source. Every checkpoint and its selection, timestamp, and AX errors remains
-  raw. Secure fields are ignored.
+  raw. Cmd-V also retains clipboard text synchronously and requests a snapshot
+  of the held field 50 milliseconds after the paste. This preserves paste
+  evidence even when a transient field disappears before normal settlement.
+  A removal-only burst (Backspace/Delete or Cmd-X) cannot treat newly exposed
+  prompt text as user-authored insertion. Secure fields are ignored.
 - `READ` captures the visible rectangle of the topmost window surface after the
   read delay, removes 10% from both the left and right, 10% from the top, and
-  50% from the bottom, then uses macOS Vision recognition locally to emit its
+  35% from the bottom, then uses macOS Vision recognition locally to emit its
   text with provenance `screen_ocr`.
 
 The crop now retains the middle 80% of the selected window's width and the
-vertical band from 10% through 50%. It is not a claim about gaze or attention.
+vertical band from 10% through 65%. It is not a claim about gaze or attention.
 Tune it with `--viewport-side-crop` (zero to less than `0.5`),
 `--viewport-top-crop`, and `--viewport-bottom-crop`; the top and bottom values
 must sum to less than `1`. Setting all three to `0` restores full-window
