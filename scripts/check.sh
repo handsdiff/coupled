@@ -20,6 +20,7 @@ swiftc \
   "$project_dir/Sources/CoupledCore/TextUnderstanding.swift" \
   "$project_dir/Sources/CoupledCore/AdjacentViewportDeduplicator.swift" \
   "$project_dir/Sources/CoupledCore/ViewportCrop.swift" \
+  "$project_dir/Sources/CoupledCore/CausalDatasetCompiler.swift" \
   "$project_dir/Checks/main.swift" \
   -o "$check_binary"
 

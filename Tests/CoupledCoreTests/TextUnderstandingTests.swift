@@ -27,6 +27,40 @@ final class TextUnderstandingTests: XCTestCase {
         XCTAssertTrue(minimalTextEdit(from: "same", to: "same").isEmpty)
     }
 
+    func testSemanticCursorContextUsesTextRatherThanPixels() {
+        XCTAssertEqual(
+            semanticCursorContext(
+                in: "α🐈beta",
+                selectionStartUTF16: 1,
+                selectionLengthUTF16: 2,
+                surroundingCharacterCount: 2
+            ),
+            SemanticCursorContext(
+                leftContext: "α",
+                selectedText: "🐈",
+                rightContext: "be",
+                selectionStartCharacters: 1,
+                selectionLengthCharacters: 1,
+                selectionStartUTF16: 1,
+                selectionLengthUTF16: 2,
+                fieldCharacterCount: 6,
+                leftContextWasTruncated: false,
+                selectedTextWasTruncated: false,
+                rightContextWasTruncated: true
+            )
+        )
+    }
+
+    func testCursorInsideSurrogatePairIsRejected() {
+        XCTAssertNil(
+            semanticCursorContext(
+                in: "🐈",
+                selectionStartUTF16: 1,
+                selectionLengthUTF16: 0
+            )
+        )
+    }
+
     func testSupportedEditableRolesAcrossApplications() {
         XCTAssertTrue(isSupportedEditableSurface(role: "AXTextArea", subrole: nil))
         XCTAssertTrue(isSupportedEditableSurface(role: "AXTextField", subrole: nil))

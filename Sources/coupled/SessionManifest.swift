@@ -50,7 +50,7 @@ func writeSessionManifest(_ configuration: Configuration) throws {
         command: configuration.command,
         outputDirectory: outputURL.standardizedFileURL.path,
         configuration: ResolvedCollectorConfiguration(configuration),
-        ocr: OCRManifest(),
+        ocr: OCRManifest(configuration),
         schemas: SchemaManifest(),
         build: CollectorBuildManifest()
     )
@@ -83,6 +83,8 @@ private struct ResolvedCollectorConfiguration: Encodable {
     let readDelaySeconds: Double
     let writeDelaySeconds: Double
     let postPasteCheckpointDelaySeconds: Double
+    let postInputCheckpointDelaySeconds: Double
+    let cursorContextCharacters: Int
     let viewportSideCropFraction: Double
     let viewportTopCropFraction: Double
     let viewportBottomCropFraction: Double
@@ -91,6 +93,7 @@ private struct ResolvedCollectorConfiguration: Encodable {
     let maxNodes: Int
     let activateRendererAccessibility: Bool
     let readOnWrite: Bool
+    let retainScreenshots: Bool
     let promptForPermissions: Bool
     let allowedBundles: [String]
     let excludedBundles: [String]
@@ -101,6 +104,8 @@ private struct ResolvedCollectorConfiguration: Encodable {
         readDelaySeconds = configuration.readDelay
         writeDelaySeconds = configuration.writeDelay
         postPasteCheckpointDelaySeconds = configuration.postPasteCheckpointDelay
+        postInputCheckpointDelaySeconds = configuration.postInputCheckpointDelay
+        cursorContextCharacters = configuration.cursorContextCharacters
         viewportSideCropFraction = configuration.viewportSideCropFraction
         viewportTopCropFraction = configuration.viewportTopCropFraction
         viewportBottomCropFraction = configuration.viewportBottomCropFraction
@@ -109,6 +114,7 @@ private struct ResolvedCollectorConfiguration: Encodable {
         maxNodes = configuration.maxNodes
         activateRendererAccessibility = configuration.activateRendererAccessibility
         readOnWrite = configuration.readOnWrite
+        retainScreenshots = configuration.retainScreenshots
         promptForPermissions = configuration.promptForPermissions
         allowedBundles = configuration.allowedBundles.sorted()
         excludedBundles = configuration.excludedBundles.sorted()
@@ -123,7 +129,15 @@ private struct OCRManifest: Encodable {
     let usesLanguageCorrection = true
     let automaticallyDetectsLanguage = true
     let screenshotAPI = "SCScreenshotManager.captureImage"
-    let retainedScreenshot = false
+    let retainedScreenshot: Bool
+    let retainedScreenshotScope: String?
+    let retainedScreenshotFormat: String?
+
+    init(_ configuration: Configuration) {
+        retainedScreenshot = configuration.retainScreenshots
+        retainedScreenshotScope = configuration.retainScreenshots ? "full_window" : nil
+        retainedScreenshotFormat = configuration.retainScreenshots ? "png" : nil
+    }
 }
 
 private struct SchemaManifest: Encodable {
@@ -132,10 +146,10 @@ private struct SchemaManifest: Encodable {
     let characterWrite = 1
     let settledCharacterWrite = 1
     let readCandidate = 1
-    let rawScreenOCR = 3
+    let rawScreenOCR = 4
     let derivedScreenRead = 6
-    let rawActiveTapWrite = 4
-    let derivedActiveTapWrite = 4
+    let rawActiveTapWrite = 6
+    let derivedActiveTapWrite = 5
     let writeSensorHealth = 1
     let rawActivity = 2
     let rawAccessibilitySnapshot = 1

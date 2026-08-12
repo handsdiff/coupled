@@ -1,0 +1,821 @@
+import CryptoKit
+import Foundation
+
+public struct CausalDatasetCompilerConfiguration: Sendable {
+    public let conversionVersion: String
+    public let includeTimestampsInContext: Bool
+
+    public init(
+        conversionVersion: String = "phase1-causal-v3",
+        includeTimestampsInContext: Bool = false
+    ) {
+        self.conversionVersion = conversionVersion
+        self.includeTimestampsInContext = includeTimestampsInContext
+    }
+}
+
+public struct CausalDatasetCompilerResult: Sendable, Equatable {
+    public let sourceEventCount: Int
+    public let convertedEventCount: Int
+    public let exampleCount: Int
+    public let targetExcludedEventCount: Int
+    public let rejectedEventCount: Int
+
+    public init(
+        sourceEventCount: Int,
+        convertedEventCount: Int,
+        exampleCount: Int,
+        targetExcludedEventCount: Int,
+        rejectedEventCount: Int
+    ) {
+        self.sourceEventCount = sourceEventCount
+        self.convertedEventCount = convertedEventCount
+        self.exampleCount = exampleCount
+        self.targetExcludedEventCount = targetExcludedEventCount
+        self.rejectedEventCount = rejectedEventCount
+    }
+}
+
+public enum CausalDatasetCompilerError: Error, CustomStringConvertible {
+    case missingFile(String)
+    case outputAlreadyExists(String)
+    case invalidJSONObject(String, Int)
+    case invalidManifest(String)
+    case invalidEvent(String, Int, String)
+    case couldNotCreate(String)
+
+    public var description: String {
+        switch self {
+        case .missingFile(let path):
+            return "required input file is missing: \(path)"
+        case .outputAlreadyExists(let path):
+            return "compiler output already exists: \(path); use a fresh output directory"
+        case .invalidJSONObject(let path, let line):
+            return "expected a JSON object at \(path):\(line)"
+        case .invalidManifest(let reason):
+            return "invalid session manifest: \(reason)"
+        case .invalidEvent(let path, let line, let reason):
+            return "invalid event at \(path):\(line): \(reason)"
+        case .couldNotCreate(let path):
+            return "could not create compiler output at \(path)"
+        }
+    }
+}
+
+/// Converts an operational Coupled session into deterministic Phase 1 causal
+/// histories, pre-mutation queries, and human-written content targets. It deliberately
+/// preserves the complete model input. Model-specific tokenization and left
+/// truncation are a later packing step because a 32K suffix cannot be defined
+/// without the selected tokenizer.
+public struct CausalDatasetCompiler {
+    public let configuration: CausalDatasetCompilerConfiguration
+
+    public init(configuration: CausalDatasetCompilerConfiguration = .init()) {
+        self.configuration = configuration
+    }
+
+    @discardableResult
+    public func compile(inputDirectory: URL, outputDirectory: URL) throws
+        -> CausalDatasetCompilerResult
+    {
+        let input = inputDirectory.standardizedFileURL
+        let output = outputDirectory.standardizedFileURL
+        let sessionURL = input.appendingPathComponent("session.json")
+        let eventsURL = input.appendingPathComponent("events.jsonl")
+        let rawURL = input.appendingPathComponent("raw.jsonl")
+        for url in [sessionURL, eventsURL, rawURL] where !FileManager.default.fileExists(atPath: url.path) {
+            throw CausalDatasetCompilerError.missingFile(url.path)
+        }
+
+        let outputFiles = [
+            output.appendingPathComponent("dataset.json"),
+            output.appendingPathComponent("events.jsonl"),
+            output.appendingPathComponent("examples.jsonl"),
+            output.appendingPathComponent("target-exclusions.jsonl"),
+            output.appendingPathComponent("rejections.jsonl"),
+        ]
+        if FileManager.default.fileExists(atPath: output.path),
+           !(try FileManager.default.contentsOfDirectory(atPath: output.path)).isEmpty {
+            throw CausalDatasetCompilerError.outputAlreadyExists(
+                "\(output.path) is not an empty directory"
+            )
+        }
+        for url in outputFiles where FileManager.default.fileExists(atPath: url.path) {
+            throw CausalDatasetCompilerError.outputAlreadyExists(url.path)
+        }
+
+        let manifestData = try Data(contentsOf: sessionURL)
+        guard let manifest = try JSONSerialization.jsonObject(with: manifestData) as? [String: Any],
+              let sessionID = manifest.string("sessionID"),
+              !sessionID.isEmpty else {
+            throw CausalDatasetCompilerError.invalidManifest("missing sessionID")
+        }
+        let timingVersion = ((manifest["schemas"] as? [String: Any])?["timingSemanticsVersion"] as? NSNumber)?.intValue
+        guard timingVersion == 2 else {
+            throw CausalDatasetCompilerError.invalidManifest(
+                "timingSemanticsVersion must be 2, found \(timingVersion.map(String.init) ?? "missing")"
+            )
+        }
+
+        let rawRecords = try readJSONL(rawURL)
+        var attempts = [String: [String: Any]]()
+        for record in rawRecords
+            where record.object.string("recordType") == "active_tap_write_attempt" {
+            guard let recordID = record.object.string("recordID"), !recordID.isEmpty else {
+                throw CausalDatasetCompilerError.invalidEvent(
+                    rawURL.path, record.line, "active tap attempt is missing recordID"
+                )
+            }
+            guard attempts.updateValue(record.object, forKey: recordID) == nil else {
+                throw CausalDatasetCompilerError.invalidEvent(
+                    rawURL.path, record.line, "duplicate raw record ID \(recordID)"
+                )
+            }
+        }
+        let sourceEvents = try readJSONL(eventsURL)
+        var converted = [ConvertedEvent]()
+        var rejections = [[String: Any]]()
+        var seenIDs = Set<String>()
+
+        for source in sourceEvents {
+            let event = source.object
+            guard event.string("sessionID") == sessionID else {
+                throw CausalDatasetCompilerError.invalidEvent(
+                    eventsURL.path, source.line, "sessionID does not match session.json"
+                )
+            }
+            guard let kind = event.string("kind"), kind == "read" || kind == "write" else {
+                rejections.append(rejection(
+                    source: source,
+                    sourceEventID: sourceEventID(event: event, sessionID: sessionID, line: source.line),
+                    reason: "phase1_ineligible_kind"
+                ))
+                continue
+            }
+            let eventID = sourceEventID(event: event, sessionID: sessionID, line: source.line)
+            guard seenIDs.insert(eventID).inserted else {
+                throw CausalDatasetCompilerError.invalidEvent(
+                    eventsURL.path, source.line, "duplicate source event ID \(eventID)"
+                )
+            }
+            if event.boolean("phase1Eligible") == false {
+                rejections.append(rejection(
+                    source: source,
+                    sourceEventID: eventID,
+                    reason: "explicitly_excluded_from_phase1"
+                ))
+                continue
+            }
+
+            if kind == "read" {
+                guard let capturedAt = event.string("capturedAt"), parseTimestamp(capturedAt) != nil else {
+                    rejections.append(rejection(
+                        source: source, sourceEventID: eventID, reason: "missing_or_invalid_capturedAt"
+                    ))
+                    continue
+                }
+                converted.append(ConvertedEvent(
+                    source: source,
+                    sourceEventID: eventID,
+                    kind: kind,
+                    availableAt: capturedAt,
+                    beganAt: nil,
+                    serialized: try serializeContextEvent(
+                        event,
+                        availableAt: capturedAt,
+                        includeTimestamp: configuration.includeTimestampsInContext
+                    )
+                ))
+                continue
+            }
+
+            guard let beganAt = event.string("beganAt"), let beganDate = parseTimestamp(beganAt),
+                  let availableAt = event.string("terminalDecisionAt"),
+                  let availableDate = parseTimestamp(availableAt) else {
+                rejections.append(rejection(
+                    source: source, sourceEventID: eventID,
+                    reason: "missing_or_invalid_write_timestamps"
+                ))
+                continue
+            }
+            guard availableDate >= beganDate else {
+                rejections.append(rejection(
+                    source: source, sourceEventID: eventID,
+                    reason: "write_available_before_began"
+                ))
+                continue
+            }
+            guard let verificationFailure = verifyWrite(event: event, attempts: attempts) else {
+                converted.append(ConvertedEvent(
+                    source: source,
+                    sourceEventID: eventID,
+                    kind: kind,
+                    availableAt: availableAt,
+                    beganAt: beganAt,
+                    serialized: try serializeContextEvent(
+                        event,
+                        availableAt: availableAt,
+                        includeTimestamp: configuration.includeTimestampsInContext
+                    )
+                ))
+                continue
+            }
+            rejections.append(rejection(
+                source: source, sourceEventID: eventID, reason: verificationFailure
+            ))
+        }
+
+        converted.sort(by: causalOrder)
+        let targets = converted
+            .filter { $0.kind == "write" }
+            .sorted(by: targetOrder)
+        var examples = [[String: Any]]()
+        var targetExclusions = [[String: Any]]()
+        for target in targets {
+            let targetStart = parseTimestamp(target.beganAt!)!
+            let contextEvents = converted.filter {
+                parseTimestamp($0.availableAt)! < targetStart
+            }
+            let context = contextEvents.map(\.serialized).joined(separator: "\n")
+            let contextIDs = contextEvents.map(\.sourceEventID)
+            let contextSourceRecordIDs = contextEvents.flatMap {
+                $0.source.object.stringArray("sourceRecordIDs")
+            }
+            let targetSourceRecordIDs = target.source.object.stringArray("sourceRecordIDs")
+            let attempt = attempts[targetSourceRecordIDs[0]]!
+            let conditioningState = try writeConditioningState(
+                event: target.source.object,
+                attempt: attempt
+            )
+            let query = try serializeQuery(
+                conditioningState,
+                includeTimestamp: configuration.includeTimestampsInContext
+            )
+            let modelInput = context.isEmpty ? query : context + "\n" + query
+            let outcome = writeOutcome(target.source.object)
+            let content = outcome.string("content") ?? ""
+            let outcomeOffset = outcome.number("characterOffset")?.intValue
+            let initialOffset = ((conditioningState["cursorContext"] as? [String: Any])?
+                .number("selectionStartCharacters"))?.intValue
+            let targetExclusionReason: String?
+            if content.isEmpty {
+                targetExclusionReason = "empty_content"
+            } else if initialOffset == nil {
+                targetExclusionReason = "missing_initial_cursor_context"
+            } else if outcomeOffset != initialOffset {
+                targetExclusionReason = "net_edit_offset_differs_from_initial_cursor"
+            } else {
+                targetExclusionReason = nil
+            }
+            if let targetExclusionReason {
+                targetExclusions.append(targetExclusion(
+                    target: target,
+                    reason: targetExclusionReason,
+                    content: content,
+                    initialOffset: initialOffset,
+                    outcomeOffset: outcomeOffset
+                ))
+                continue
+            }
+            examples.append([
+                "schemaVersion": 3,
+                "exampleID": "\(sessionID):\(target.sourceEventID)",
+                "conversionVersion": configuration.conversionVersion,
+                "sessionID": sessionID,
+                "targetBeganAt": target.beganAt!,
+                "context": context,
+                "conditioningState": conditioningState,
+                "query": query,
+                "modelInput": modelInput,
+                "contextEventIDs": contextIDs,
+                "contextSourceRecordIDs": contextSourceRecordIDs,
+                "target": content,
+                "targetMetadata": writeOutcomeMetadata(
+                    event: target.source.object,
+                    outcome: outcome
+                ),
+                "targetEventID": target.sourceEventID,
+                "targetSourceRecordIDs": targetSourceRecordIDs,
+                "sourceRecordIDs": contextSourceRecordIDs + targetSourceRecordIDs,
+                "targetMask": [
+                    "type": "all_target_tokens",
+                    "includeInLoss": "entire_target_string",
+                ],
+            ])
+        }
+
+        try FileManager.default.createDirectory(
+            at: output,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: NSNumber(value: 0o700)]
+        )
+        try writeJSONL(converted.map {
+            convertedRecord(
+                $0,
+                sessionID: sessionID,
+                conversionVersion: configuration.conversionVersion
+            )
+        }, to: outputFiles[1])
+        rejections = rejections.map { rejection in
+            var result = rejection
+            result["sessionID"] = sessionID
+            result["conversionVersion"] = configuration.conversionVersion
+            return result
+        }
+        targetExclusions = targetExclusions.map { exclusion in
+            var result = exclusion
+            result["sessionID"] = sessionID
+            result["conversionVersion"] = configuration.conversionVersion
+            return result
+        }
+        try writeJSONL(examples, to: outputFiles[2])
+        try writeJSONL(targetExclusions, to: outputFiles[3])
+        try writeJSONL(rejections, to: outputFiles[4])
+
+        let sourceDigests: [String: Any] = [
+            "session.json": try sha256(of: sessionURL),
+            "events.jsonl": try sha256(of: eventsURL),
+            "raw.jsonl": try sha256(of: rawURL),
+        ]
+        let datasetManifest: [String: Any] = [
+            "schemaVersion": 3,
+            "conversionVersion": configuration.conversionVersion,
+            "sessionID": sessionID,
+            "source": [
+                "sessionDirectory": input.path,
+                "digestsSHA256": sourceDigests,
+                "sourceEventCount": sourceEvents.count,
+                "rawRecordCount": rawRecords.count,
+            ],
+            "counts": [
+                "convertedEvents": converted.count,
+                "examples": examples.count,
+                "targetExclusions": targetExclusions.count,
+                "rejections": rejections.count,
+            ],
+            "timing": [
+                "readAvailableAt": "capturedAt",
+                "writeAvailableAt": "terminalDecisionAt",
+                "targetBeganAt": "beganAt",
+                "causalFilter": "event.availableAt < target.beganAt",
+                "tieBreak": "source JSONL line order",
+            ],
+            "eligibility": [
+                "contextKinds": ["read", "verified_write"],
+                "targetKinds": ["verified_write_with_nonempty_content_and_stable_initial_cursor"],
+                "targetExclusionRules": [
+                    "content.isEmpty",
+                    "conditioning.cursorContext.selectionStartCharacters is missing",
+                    "outcome.characterOffset != conditioning.cursorContext.selectionStartCharacters",
+                ],
+                "explicitExclusion": "phase1Eligible == false",
+                "writeVerification": "raw_before_plus_derived_edit_equals_used_observation",
+            ],
+            "serialization": [
+                "contextVersion": 1,
+                "queryVersion": 1,
+                "targetVersion": 3,
+                "targetFormat": "plain_text_content",
+                "timestampsInContext": configuration.includeTimestampsInContext,
+                "eventDelimiter": "newline",
+                "jsonKeys": "sorted",
+            ],
+            "objective": [
+                "modelInput": "causal_history_plus_pre_mutation_conditioning_state",
+                "target": "human_written_content",
+                "knownDestinationAndInitialSelectionReceiveLoss": false,
+                "operationReceivesLoss": false,
+                "removedContentReceivesLoss": false,
+                "outcomeCharacterOffsetReceivesLoss": false,
+            ],
+            "contextPacking": [
+                "state": "unpacked_complete_model_input",
+                "requiredNextStep": "tokenize modelInput with the selected model tokenizer and retain its most recent L tokens",
+                "initialPhase1TokenBudget": 32_768,
+                "rightEdge": "write conditioning query",
+                "reason": "token suffixes are model-tokenizer dependent; query remains while older history truncates first",
+            ],
+            "targetMask": [
+                "type": "all_target_tokens",
+                "includeInLoss": "entire_target_string",
+            ],
+        ]
+        try writeJSONObject(datasetManifest, to: outputFiles[0], pretty: true)
+
+        return CausalDatasetCompilerResult(
+            sourceEventCount: sourceEvents.count,
+            convertedEventCount: converted.count,
+            exampleCount: examples.count,
+            targetExcludedEventCount: targetExclusions.count,
+            rejectedEventCount: rejections.count
+        )
+    }
+}
+
+private struct SourceRecord {
+    let line: Int
+    let object: [String: Any]
+}
+
+private struct ConvertedEvent {
+    let source: SourceRecord
+    let sourceEventID: String
+    let kind: String
+    let availableAt: String
+    let beganAt: String?
+    let serialized: String
+}
+
+private func readJSONL(_ url: URL) throws -> [SourceRecord] {
+    let contents = try String(contentsOf: url, encoding: .utf8)
+    return try contents.split(separator: "\n", omittingEmptySubsequences: true)
+        .enumerated()
+        .map { index, line in
+            let data = Data(line.utf8)
+            guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                throw CausalDatasetCompilerError.invalidJSONObject(url.path, index + 1)
+            }
+            return SourceRecord(line: index + 1, object: object)
+        }
+}
+
+private func sourceEventID(event: [String: Any], sessionID: String, line: Int) -> String {
+    if let eventID = event.string("eventID"), !eventID.isEmpty { return eventID }
+    if let sequence = event.number("sequence")?.intValue {
+        return "\(sessionID):\(event.string("kind") ?? "event"):\(sequence)"
+    }
+    return "\(sessionID):line:\(line)"
+}
+
+private func verifyWrite(event: [String: Any], attempts: [String: [String: Any]]) -> String? {
+    let sourceIDs = event.stringArray("sourceRecordIDs")
+    guard sourceIDs.count == 1, let attempt = attempts[sourceIDs[0]] else {
+        return "missing_unique_raw_write_attempt"
+    }
+    guard attempt.string("resolution") == "validated" else {
+        return "raw_write_attempt_not_validated"
+    }
+    guard attempt.string("proposedEventID") == event.string("eventID") else {
+        return "raw_derived_event_id_mismatch"
+    }
+    guard let before = attempt["before"] as? [String: Any],
+          let rawBefore = before.string("value") else {
+        return "raw_before_missing"
+    }
+    let beforeValue = logicalEditableValue(
+        rawBefore,
+        placeholderValue: before.string("placeholderValue")
+    )
+    guard let used = usedObservation(attempt) else {
+        return "used_observation_missing"
+    }
+    var afterValue = logicalEditableValue(
+        used.string("value") ?? "",
+        placeholderValue: used.string("placeholderValue")
+    )
+    guard let operation = event.string("operation"),
+          let inserted = event.string("content"),
+          let removed = event.string("removedContent"),
+          let offset = event.number("characterOffset")?.intValue else {
+        return "derived_edit_fields_missing"
+    }
+    // Schema 4 briefly used a delete-only placeholder fallback. It was valid
+    // only when the entire prior field was selected, but the collector applied
+    // it too broadly. Preserve the valid select-all deletion while rejecting
+    // the overbroad cases through the reconstruction invariant below.
+    if event.string("fallbackReason") == "removal_only_terminal_unpopulated",
+       before.number("selectedRangeLocation")?.intValue == 0,
+       before.number("selectedRangeLength")?.intValue == beforeValue.utf16.count {
+        afterValue = ""
+    }
+    guard let reconstructed = applyEdit(
+        operation: operation,
+        offset: offset,
+        removed: removed,
+        inserted: inserted,
+        to: beforeValue
+    ) else {
+        return "derived_edit_does_not_apply_to_before"
+    }
+    return reconstructed == afterValue ? nil : "derived_edit_does_not_reconstruct_used_observation"
+}
+
+private func usedObservation(_ attempt: [String: Any]) -> [String: Any]? {
+    switch attempt.string("derivationObservationSource") {
+    case "terminal_after":
+        return attempt["after"] as? [String: Any]
+    case "pre_return_checkpoint":
+        guard let checkpointID = attempt.string("usedCheckpointID"),
+              let checkpoints = attempt["returnCheckpoints"] as? [[String: Any]] else { return nil }
+        return checkpoints.first { $0.string("checkpointID") == checkpointID }?["observation"] as? [String: Any]
+    case "post_paste_checkpoint":
+        guard let checkpointID = attempt.string("usedCheckpointID"),
+              let checkpoints = attempt["pasteCheckpoints"] as? [[String: Any]] else { return nil }
+        return checkpoints.first { $0.string("checkpointID") == checkpointID }?["observation"] as? [String: Any]
+    case "post_input_checkpoint":
+        guard let checkpointID = attempt.string("usedCheckpointID"),
+              let checkpoints = attempt["mutationCheckpoints"] as? [[String: Any]] else { return nil }
+        return checkpoints.first { $0.string("checkpointID") == checkpointID }?["observation"] as? [String: Any]
+    default:
+        return nil
+    }
+}
+
+private func applyEdit(
+    operation: String,
+    offset: Int,
+    removed: String,
+    inserted: String,
+    to value: String
+) -> String? {
+    guard ["insert", "delete", "replace"].contains(operation), offset >= 0 else { return nil }
+    let characters = Array(value)
+    let removedCharacters = Array(removed)
+    guard offset <= characters.count,
+          offset + removedCharacters.count <= characters.count,
+          Array(characters[offset..<(offset + removedCharacters.count)]) == removedCharacters else {
+        return nil
+    }
+    return String(characters[..<offset]) + inserted
+        + String(characters[(offset + removedCharacters.count)...])
+}
+
+private func serializeContextEvent(
+    _ event: [String: Any],
+    availableAt: String,
+    includeTimestamp: Bool
+) throws -> String {
+    let kind = event.string("kind")!
+    var serialized: [String: Any] = [
+        "schemaVersion": 1,
+        "kind": kind,
+        "appName": event.string("appName") ?? "",
+        "bundleIdentifier": event.string("bundleIdentifier") ?? "",
+        "windowTitle": event.string("windowTitle") ?? "",
+        "content": event.string("content") ?? "",
+        "provenance": event.string("provenance") ?? "",
+    ]
+    if includeTimestamp { serialized["availableAt"] = availableAt }
+    if kind == "write" {
+        serialized["operation"] = event.string("operation") ?? ""
+        serialized["removedContent"] = event.string("removedContent") ?? ""
+        serialized["characterOffset"] = event.number("characterOffset")?.intValue ?? 0
+        serialized["boundaryReason"] = event.string("boundaryReason") ?? ""
+    }
+    return try canonicalJSONString(serialized)
+}
+
+private func writeConditioningState(
+    event: [String: Any],
+    attempt: [String: Any]
+) throws -> [String: Any] {
+    let eventState = event["conditioningState"] as? [String: Any]
+    if let rawState = attempt["conditioningState"] as? [String: Any] {
+        if let eventState,
+           try canonicalJSONString(eventState) != canonicalJSONString(rawState) {
+            throw CausalDatasetCompilerError.invalidManifest(
+                "derived write conditioning state does not match raw evidence"
+            )
+        }
+        return rawState
+    }
+
+    guard let before = attempt["before"] as? [String: Any],
+          let rawValue = before.string("value"),
+          let capturedAt = before.string("observedAt") else {
+        throw CausalDatasetCompilerError.invalidManifest(
+            "verified write is missing its pre-mutation conditioning observation"
+        )
+    }
+    let targetIdentity = attempt["targetIdentity"] as? [String: Any] ?? [:]
+    let logicalValue = logicalEditableValue(
+        rawValue,
+        placeholderValue: before.string("placeholderValue")
+    )
+    var state: [String: Any] = [
+        "schemaVersion": 1,
+        "captureSemantics": "synchronous_before_application_mutation",
+        "inputInterceptedAt": event.string("beganAt") ?? "",
+        "capturedAt": capturedAt,
+        "destination": compactJSONObject([
+            "appName": event.string("appName") ?? "",
+            "bundleIdentifier": event.string("bundleIdentifier"),
+            "processIdentifier": event.number("processIdentifier")?.intValue,
+            "windowTitle": event.string("windowTitle"),
+            "resource": nil,
+            "role": targetIdentity.string("role") ?? "",
+            "subrole": targetIdentity.string("subrole"),
+            "fieldIdentifier": targetIdentity.string("accessibilityIdentifier"),
+            "fieldLabel": targetIdentity.string("fieldLabel"),
+            "fieldDescription": targetIdentity.string("fieldDescription"),
+            "placeholder": before.string("placeholderValue"),
+        ]),
+        "sourceObservationID": before.string("observationID") ?? "",
+    ]
+    if let cursor = semanticCursorContext(
+        in: logicalValue,
+        selectionStartUTF16: before.number("selectedRangeLocation")?.intValue,
+        selectionLengthUTF16: before.number("selectedRangeLength")?.intValue
+    ) {
+        state["cursorContext"] = cursorJSONObject(cursor)
+    }
+    if let eventState,
+       try canonicalJSONString(eventState) != canonicalJSONString(state) {
+        throw CausalDatasetCompilerError.invalidManifest(
+            "derived write conditioning state does not reconstruct from raw evidence"
+        )
+    }
+    return state
+}
+
+private func serializeQuery(
+    _ conditioningState: [String: Any],
+    includeTimestamp: Bool
+) throws -> String {
+    var destination = conditioningState["destination"] as? [String: Any] ?? [:]
+    destination.removeValue(forKey: "processIdentifier")
+    var query: [String: Any] = [
+        "schemaVersion": 1,
+        "kind": "write_conditioning_state",
+        "destination": destination,
+        "cursorContext": conditioningState["cursorContext"] ?? NSNull(),
+    ]
+    if includeTimestamp {
+        query["capturedAt"] = conditioningState.string("capturedAt") ?? ""
+    }
+    return try canonicalJSONString(query)
+}
+
+private func writeOutcome(_ event: [String: Any]) -> [String: Any] {
+    event["outcome"] as? [String: Any] ?? event
+}
+
+private func writeOutcomeMetadata(
+    event: [String: Any],
+    outcome: [String: Any]
+) -> [String: Any] {
+    compactJSONObject([
+        "operation": outcome.string("operation") ?? "",
+        "characterOffset": outcome.number("characterOffset")?.intValue,
+        "removedContent": outcome.string("removedContent") ?? "",
+        "provenance": event.string("provenance"),
+        "boundaryReason": event.string("boundaryReason"),
+        "derivationObservationSource": event.string("derivationObservationSource"),
+        "fallbackReason": event.string("fallbackReason"),
+    ])
+}
+
+private func targetExclusion(
+    target: ConvertedEvent,
+    reason: String,
+    content: String,
+    initialOffset: Int?,
+    outcomeOffset: Int?
+) -> [String: Any] {
+    compactJSONObject([
+        "schemaVersion": 1,
+        "sourceLine": target.source.line,
+        "sourceEventID": target.sourceEventID,
+        "kind": target.kind,
+        "reason": reason,
+        "contentCharacterCount": content.count,
+        "initialCursorOffset": initialOffset,
+        "outcomeCharacterOffset": outcomeOffset,
+        "sourceRecordIDs": target.source.object.stringArray("sourceRecordIDs"),
+    ])
+}
+
+private func cursorJSONObject(_ cursor: SemanticCursorContext) -> [String: Any] {
+    [
+        "leftContext": cursor.leftContext,
+        "selectedText": cursor.selectedText,
+        "rightContext": cursor.rightContext,
+        "selectionStartCharacters": cursor.selectionStartCharacters,
+        "selectionLengthCharacters": cursor.selectionLengthCharacters,
+        "selectionStartUTF16": cursor.selectionStartUTF16,
+        "selectionLengthUTF16": cursor.selectionLengthUTF16,
+        "fieldCharacterCount": cursor.fieldCharacterCount,
+        "leftContextWasTruncated": cursor.leftContextWasTruncated,
+        "selectedTextWasTruncated": cursor.selectedTextWasTruncated,
+        "rightContextWasTruncated": cursor.rightContextWasTruncated,
+    ]
+}
+
+private func compactJSONObject(_ values: [String: Any?]) -> [String: Any] {
+    values.reduce(into: [String: Any]()) { result, entry in
+        if let value = entry.value {
+            result[entry.key] = value
+        }
+    }
+}
+
+private func causalOrder(_ lhs: ConvertedEvent, _ rhs: ConvertedEvent) -> Bool {
+    let left = parseTimestamp(lhs.availableAt)!
+    let right = parseTimestamp(rhs.availableAt)!
+    if left != right { return left < right }
+    return lhs.source.line < rhs.source.line
+}
+
+private func targetOrder(_ lhs: ConvertedEvent, _ rhs: ConvertedEvent) -> Bool {
+    let left = parseTimestamp(lhs.beganAt!)!
+    let right = parseTimestamp(rhs.beganAt!)!
+    if left != right { return left < right }
+    return lhs.source.line < rhs.source.line
+}
+
+private func parseTimestamp(_ value: String) -> Date? {
+    ISO8601DateFormatter.causal.date(from: value)
+}
+
+private extension ISO8601DateFormatter {
+    static let causal: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+}
+
+private func rejection(source: SourceRecord, sourceEventID: String, reason: String) -> [String: Any] {
+    [
+        "schemaVersion": 1,
+        "sourceLine": source.line,
+        "sourceEventID": sourceEventID,
+        "kind": source.object.string("kind") ?? "unknown",
+        "reason": reason,
+        "sourceRecordIDs": source.object.stringArray("sourceRecordIDs"),
+    ]
+}
+
+private func convertedRecord(
+    _ event: ConvertedEvent,
+    sessionID: String,
+    conversionVersion: String
+) -> [String: Any] {
+    var record: [String: Any] = [
+        "schemaVersion": 1,
+        "conversionVersion": conversionVersion,
+        "sessionID": sessionID,
+        "sourceEventID": event.sourceEventID,
+        "sourceLine": event.source.line,
+        "kind": event.kind,
+        "availableAt": event.availableAt,
+        "serialized": event.serialized,
+        "sourceRecordIDs": event.source.object.stringArray("sourceRecordIDs"),
+    ]
+    if let beganAt = event.beganAt { record["beganAt"] = beganAt }
+    return record
+}
+
+private func canonicalJSONString(_ object: [String: Any]) throws -> String {
+    let data = try JSONSerialization.data(
+        withJSONObject: object,
+        options: [.sortedKeys, .withoutEscapingSlashes]
+    )
+    return String(decoding: data, as: UTF8.self)
+}
+
+private func writeJSONL(_ objects: [[String: Any]], to url: URL) throws {
+    var data = Data()
+    for object in objects {
+        data.append(try JSONSerialization.data(
+            withJSONObject: object,
+            options: [.sortedKeys, .withoutEscapingSlashes]
+        ))
+        data.append(0x0A)
+    }
+    guard FileManager.default.createFile(
+        atPath: url.path,
+        contents: data,
+        attributes: [.posixPermissions: NSNumber(value: 0o600)]
+    ) else {
+        throw CausalDatasetCompilerError.couldNotCreate(url.path)
+    }
+}
+
+private func writeJSONObject(_ object: [String: Any], to url: URL, pretty: Bool) throws {
+    var options: JSONSerialization.WritingOptions = [.sortedKeys, .withoutEscapingSlashes]
+    if pretty { options.insert(.prettyPrinted) }
+    var data = try JSONSerialization.data(withJSONObject: object, options: options)
+    data.append(0x0A)
+    guard FileManager.default.createFile(
+        atPath: url.path,
+        contents: data,
+        attributes: [.posixPermissions: NSNumber(value: 0o600)]
+    ) else {
+        throw CausalDatasetCompilerError.couldNotCreate(url.path)
+    }
+}
+
+private func sha256(of url: URL) throws -> String {
+    let data = try Data(contentsOf: url)
+    return SHA256.hash(data: data)
+        .map { String(format: "%02x", $0) }
+        .joined()
+}
+
+private extension Dictionary where Key == String, Value == Any {
+    func string(_ key: String) -> String? { self[key] as? String }
+    func number(_ key: String) -> NSNumber? { self[key] as? NSNumber }
+    func boolean(_ key: String) -> Bool? { self[key] as? Bool }
+    func stringArray(_ key: String) -> [String] { self[key] as? [String] ?? [] }
+}

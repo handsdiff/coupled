@@ -146,7 +146,13 @@ the same live log. Source observations are appended separately to `raw.jsonl`:
   of the held field 50 milliseconds after the paste. This preserves paste
   evidence even when a transient field disappears before normal settlement.
   A removal-only burst (Backspace/Delete or Cmd-X) cannot treat newly exposed
-  prompt text as user-authored insertion. Secure fields are ignored.
+  prompt text as user-authored insertion. Every validated write also carries a
+  `conditioningState` captured synchronously before the application receives
+  the first mutation. It identifies the available destination and retains up
+  to 512 characters on each side of the caret, bounded selected text, both
+  UTF-16 and Character selection coordinates, and field length. The distinct
+  `outcome` retains the net edit operation and offset. Secure fields are
+  ignored. Tune the semantic radius with `--cursor-context-characters`.
 - `READ` captures the visible rectangle of the topmost window surface after the
   read delay, removes 10% from both the left and right, 10% from the top, and
   35% from the bottom, then uses macOS Vision recognition locally to emit its
@@ -197,12 +203,21 @@ the terminal or checkpoint observation chosen for derivation, while
 between them. `derivationObservationSource` and `fallbackReason` make that
 choice explicit. `configuredWriteDelaySeconds` describes the configured quiet
 period; `boundaryReason` states whether that period elapsed or Return/focus
-caused earlier settlement. A later versioned converter—not the collector—will
-assign causal `available_at` and construct ordered training data from these
-source timestamps.
+caused earlier settlement. The versioned `compile` command—not the collector—
+assigns causal `availableAt` and constructs ordered training data from these
+source timestamps. A write's conditioning snapshot can complete milliseconds
+after its input event was intercepted, but the active event tap has not yet
+returned that mutation to the application. Its explicit capture semantics are
+`synchronous_before_application_mutation`; it is query state rather than an
+ordinary history event whose time is backdated.
 
 Each raw OCR observation retains the complete recognized viewport before
-overlap removal. Normalized line overlap is removed from adjacent OCR viewports
+overlap removal. By default it also retains the full-window source image as an
+owner-only PNG under `screenshots/`, records its SHA-256 digest and dimensions,
+and applies the configured crop only as Vision's recognition region. This makes
+OCR and crop rules rerunnable without changing the derived stream. Disable
+image retention deliberately with `--no-retain-screenshots`. Normalized line
+overlap is removed from adjacent OCR viewports
 only when app, window, and display all match. The event's `content` contains
 newly visible lines in display order; `recognizedLineCount`, `emittedLineCount`, and
 `overlapRemovedLineCount` make the transformation inspectable. Exact duplicate
@@ -216,19 +231,80 @@ applications are ignored. Deliberately expand the boundary with
 The default log shows each verified insertion/removal and the first eight
 recognized lines of each OCR read, preserving line breaks. Use
 `./scripts/coupled logs --full-text` for every recognized line in a readable
-form, or `./scripts/coupled logs --raw` for the full JSONL event. Screenshots
-are processed in memory and are not saved.
+form, or `./scripts/coupled logs --raw` for the full JSONL event.
 
 This command requires **Input Monitoring**, **Screen Recording**, and
 **Accessibility** for `dist/Coupled.app`. OCR is an observation of visible
 pixels, so it naturally includes occlusion and can make recognition errors.
 The write collector does not poll or cache inactive editors. It retains one
 focused Accessibility element and its initial value only while a burst is
-active. One raw before/after audit record is stored per attempted burst—
-individual key signals are not stored. If an application does not expose a
-complete editable `AXValue`, the raw attempt records the failure and no derived
-write is guessed. Both files can contain sensitive visible or editable text;
-use the pause file before handling sensitive information.
+active. One raw before/after audit record is stored per attempted burst. It
+contains the time and mutation class of each input signal, but never the key's
+character value. A 50-millisecond quiet checkpoint after mutation-capable input
+preserves transient field state when the field disappears before normal
+settlement. If an application does not expose a complete editable `AXValue`,
+the raw attempt records the failure and no derived write is guessed. Both files
+and retained screenshots can contain sensitive information; use the pause file
+before handling it.
+
+## Phase 1 causal compilation
+
+Compile a completed session into deterministic causal examples without
+reordering or modifying the source files:
+
+```sh
+./scripts/coupled compile \
+  --input ./coupled-data/normal-work-dry-run-3 \
+  --output ./coupled-data/normal-work-dry-run-3-phase1-v2
+./scripts/audit-causal-dataset.sh \
+  ./coupled-data/normal-work-dry-run-3-phase1-v2
+```
+
+The fresh output directory contains:
+
+- `events.jsonl`: the versioned causal event projection, stably ordered by
+  `availableAt` and original JSONL line for ties.
+- `examples.jsonl`: one example per eligible nonempty content write, with the exact causal
+  prefix, pre-mutation `conditioningState`, serialized `query`, complete
+  `modelInput`, plain-text content `target`, target metadata, source lines, and raw-attempt
+  lineage.
+- `target-exclusions.jsonl`: verified writes retained in causal history but not
+  used as Phase 1 targets, including pure deletions and bursts whose net edit
+  offset differs from the initial conditioned cursor.
+- `rejections.jsonl`: writes that cannot be reconstructed exactly from their
+  retained raw BEFORE and selected AFTER observation.
+- `dataset.json`: conversion rules, source digests, counts, and schema details.
+
+The compiler verifies `apply(BEFORE, derived edit) == selected logical AFTER`
+before admitting a target. A target's context contains only events whose
+`availableAt` is strictly earlier than its `beganAt`; append/emission order is
+never treated as causal order. Reads become available at `capturedAt`, and
+prior writes at `terminalDecisionAt`. Records explicitly marked
+`phase1Eligible: false`—including future displayed model predictions—are
+excluded before contexts and targets are built.
+
+Conversion `phase1-causal-v3` defines the supervised example as:
+
+```text
+modelInput = causal read/write history + known pre-mutation destination/cursor query
+target     = exact nonempty write.content string
+```
+
+The known application, field metadata, initial caret and selection receive no
+loss. Operation, removed content and net edit offset remain event and example
+metadata but also receive no loss. Pure deletions and bursts whose net edit
+offset differs from the initial caret remain available to later history while
+being excluded from the initial content-at-cursor targets. Older raw sessions
+are supported by deriving the same query from their retained BEFORE observation
+and target identity.
+
+The compiled `modelInput` is intentionally complete rather than pretending that
+characters equal model tokens. The manifest freezes the Phase 1 packing rule:
+after selecting the actual training tokenizer, retain the most recent `L`
+tokens of `modelInput` (`L = 32768` initially) and train only on the outcome
+target. Because the query is serialized at the right edge, older history is
+truncated before the current destination and cursor state. Thus tokenizer-specific packing is a deterministic loader step,
+not a sensor or causality assumption.
 
 ## Experimental interpretation
 
@@ -331,6 +407,8 @@ Common tuning options:
 --write-delay 3         wait for keyboard activity to settle
 --poll-interval 0.35    detect focus/window changes
 --max-characters 30000  bound captured text per snapshot and editable field
+--cursor-context-characters 512
+                        retain semantic text on each side of the write caret
 --max-nodes 1200        bound Accessibility-tree traversal
 --read-on-write         treat the post-write viewport as a read candidate too
 --no-activate-renderer-accessibility
@@ -361,7 +439,8 @@ waits for the configured idle delay, captures it again, and emits the smallest
 contiguous insertion, deletion, or replacement. Command-V, Command-X, and
 Command-Z are tagged as paste, cut, and transformation signals. A pointer click
 finalizes an active write before focus can move. The raw stream retains the
-before/after field values used by the interpretation.
+before/after field values used by the interpretation. The derived write keeps
+the bounded semantic initial cursor context separate from its net edit outcome.
 
 Secure text fields are excluded. A hard application deny-list, maximum capture
 sizes, and a pause file are available from the first run. Output files are

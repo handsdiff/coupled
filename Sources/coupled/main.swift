@@ -9,6 +9,7 @@ USAGE
   coupled writes [options]     Emit typed-character bursts after an idle delay.
   coupled reads [options]      Emit timing-only read candidates after an idle delay.
   coupled events [options]     Emit screen-text reads and settled editable diffs.
+  coupled compile [options]    Build deterministic Phase 1 causal examples.
   coupled collect [options]    Continuously emit interpreted events as JSONL.
   coupled snapshot [options]   Capture one visible-text snapshot and exit.
   coupled doctor [options]     Report required macOS permissions.
@@ -25,10 +26,20 @@ OPTIONS
   --exclude-bundle ID          Remove a bundle from capture; may be repeated
   --exclude-app-name NAME      Ignore an application name; may be repeated
   --max-characters COUNT       Maximum OCR/field text retained (default: 30000)
+  --cursor-context-characters COUNT
+                               Characters retained on each side of a selection (default: 512)
+  --no-retain-screenshots      Do not retain full-window PNG evidence for OCR reads
   --no-activate-renderer-accessibility
                                Do not activate Chromium/Electron AX trees
   --prompt-permissions         Ask macOS to show relevant permission prompts
   -h, --help                   Show this help
+
+COMPILE OPTIONS
+  --input PATH                 Session directory containing session/events/raw JSON
+  --output PATH                Fresh directory for compiled dataset files
+  --conversion-version NAME    Frozen conversion name (default: phase1-causal-v3)
+  --include-timestamps-in-context
+                               Include availableAt in serialized context events
 
 OLDER COLLECTOR OPTIONS
   --poll-interval SECONDS      Focus-change polling interval (default: 0.35)
@@ -42,6 +53,14 @@ FILES
   raw.jsonl                    Full OCR observations and active write attempts
   events.jsonl                 Overlap-reduced reads and verified writes
   session.json                 Immutable resolved configuration and schema manifest
+  screenshots/*.png            Retained full-window read evidence (events command)
+
+COMPILED FILES
+  dataset.json                 Conversion manifest, timing rules, and source digests
+  events.jsonl                 Causally timed eligible event projection
+  examples.jsonl               Causal model inputs and plain-text content targets
+  target-exclusions.jsonl      Valid history writes excluded as Phase 1 targets
+  rejections.jsonl             Ineligible or unverifiable source events
 
 The trigger collector never records typed characters or raw key codes. The
 writes records settled typed-character bursts. Events recognizes a central crop
@@ -50,6 +69,11 @@ Secure fields are excluded. Treat all output as sensitive.
 """
 
 do {
+    if CommandLine.arguments.dropFirst().first == "compile" {
+        let command = try CompileCommand(arguments: Array(CommandLine.arguments.dropFirst(2)))
+        try command.run()
+        exit(EXIT_SUCCESS)
+    }
     let configuration = try Configuration(arguments: CommandLine.arguments)
 
     if configuration.command == "help" {

@@ -11,12 +11,15 @@ struct Configuration {
     var viewportTopCropFraction = 0.1
     var viewportBottomCropFraction = 0.35
     let postPasteCheckpointDelay: TimeInterval = 0.05
+    let postInputCheckpointDelay: TimeInterval = 0.05
+    var cursorContextCharacters = 512
     var pollInterval: TimeInterval = 0.35
     var maxCharacters = 30_000
     var maxNodes = 1_200
     var promptForPermissions = false
     var activateRendererAccessibility = true
     var readOnWrite = false
+    var retainScreenshots = true
     var allowedBundles: Set<String> = [
         "com.google.Chrome",
         "com.openai.codex",
@@ -79,6 +82,8 @@ struct Configuration {
                 pollInterval = try positiveDouble(value(), option: argument)
             case "--max-characters":
                 maxCharacters = try positiveInt(value(), option: argument)
+            case "--cursor-context-characters":
+                cursorContextCharacters = try positiveInt(value(), option: argument)
             case "--max-nodes":
                 maxNodes = try positiveInt(value(), option: argument)
             case "--exclude-bundle":
@@ -95,6 +100,8 @@ struct Configuration {
                 activateRendererAccessibility = false
             case "--read-on-write":
                 readOnWrite = true
+            case "--no-retain-screenshots":
+                retainScreenshots = false
             case "--help", "-h":
                 command = "help"
             default:
@@ -117,6 +124,9 @@ struct Configuration {
     var writesPath: String { URL(fileURLWithPath: outputDirectory).appendingPathComponent("writes.jsonl").path }
     var readsPath: String { URL(fileURLWithPath: outputDirectory).appendingPathComponent("reads.jsonl").path }
     var sessionPath: String { URL(fileURLWithPath: outputDirectory).appendingPathComponent("session.json").path }
+    var screenshotsDirectory: String {
+        URL(fileURLWithPath: outputDirectory).appendingPathComponent("screenshots").path
+    }
 
     func isPaused() -> Bool {
         guard let pauseFile else { return false }

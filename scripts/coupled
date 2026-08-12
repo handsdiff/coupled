@@ -24,7 +24,7 @@ normalize_paths() {
   while (( index <= ${#arguments[@]} )); do
     argument="${arguments[index]}"
     normalized+=("$argument")
-    if [[ "$argument" == "--output" || "$argument" == "--pause-file" ]]; then
+    if [[ "$argument" == "--output" || "$argument" == "--input" || "$argument" == "--pause-file" ]]; then
       (( index += 1 ))
       if (( index > ${#arguments[@]} )); then
         print -u2 "Missing value for $argument"
@@ -49,6 +49,7 @@ case "$command_name" in
     print "  ./scripts/coupled writes [write options]"
     print "  ./scripts/coupled reads [read options]"
     print "  ./scripts/coupled events [event options]"
+    print "  ./scripts/coupled compile --input SESSION --output DATASET"
     print "  ./scripts/coupled collect [collector options]"
     print "  ./scripts/coupled snapshot [collector options]"
     print "  ./scripts/coupled logs [--full-text|--raw]"
@@ -142,6 +143,11 @@ case "$command_name" in
     fi
     kill "${process_ids[@]}"
     print "Stopped Coupled process(es): ${process_ids[*]}"
+    ;;
+
+  compile)
+    normalize_paths "$@"
+    "$executable" compile "${normalized[@]}"
     ;;
 
   doctor|snapshot)

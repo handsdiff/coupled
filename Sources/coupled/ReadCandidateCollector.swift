@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import CoupledCore
+import CryptoKit
 import Foundation
 import ScreenCaptureKit
 import Vision
@@ -54,6 +55,9 @@ final class ReadCandidateCollector {
             writeDiagnostic("viewport crop removes \(Int((configuration.viewportSideCropFraction * 100).rounded()))% from each side, \(Int((configuration.viewportTopCropFraction * 100).rounded()))% from the top, and \(Int((configuration.viewportBottomCropFraction * 100).rounded()))% from the bottom")
             writeDiagnostic("normalized line overlap is removed between adjacent OCR viewports in the same app/window/display")
             writeDiagnostic("Chrome auxiliary surfaces are retained raw and suppressed from derived reads")
+            if configuration.retainScreenshots {
+                writeDiagnostic("full-window PNG evidence: \(configuration.screenshotsDirectory)")
+            }
         } else {
             writeDiagnostic("read candidates: \(writer.path)")
             writeDiagnostic("one candidate is emitted after \(configuration.readDelay) seconds without pointer activity in that app/display")
@@ -243,8 +247,9 @@ final class ReadCandidateCollector {
             topCropFraction: configuration.viewportTopCropFraction,
             bottomCropFraction: configuration.viewportBottomCropFraction
         )
+        let rawObservationID = UUID().uuidString
         let settledAt = nowTimestamp()
-        SCScreenshotManager.captureImage(in: captureBounds) { [weak self] image, error in
+        SCScreenshotManager.captureImage(in: windowBounds) { [weak self] image, error in
             guard let self else { return }
             let capturedAt = nowTimestamp()
             guard let image else {
@@ -258,17 +263,31 @@ final class ReadCandidateCollector {
 
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
+                    let retainedScreenshot = try self.persistScreenshot(
+                        image,
+                        recordID: rawObservationID
+                    )
                     let recognized = try recognizeText(
                         in: image,
+                        regionOfInterest: CGRect(
+                            x: self.configuration.viewportSideCropFraction,
+                            y: self.configuration.viewportBottomCropFraction,
+                            width: 1 - (2 * self.configuration.viewportSideCropFraction),
+                            height: 1
+                                - self.configuration.viewportTopCropFraction
+                                - self.configuration.viewportBottomCropFraction
+                        ),
                         maxCharacters: self.configuration.maxCharacters
                     )
                     DispatchQueue.main.async {
                         self.emitScreenRead(
                             pending,
+                            rawObservationID: rawObservationID,
                             settledAt: settledAt,
                             capturedAt: capturedAt,
                             captureBounds: captureBounds,
-                            recognized: recognized
+                            recognized: recognized,
+                            retainedScreenshot: retainedScreenshot
                         )
                     }
                 } catch {
@@ -282,13 +301,14 @@ final class ReadCandidateCollector {
 
     private func emitScreenRead(
         _ pending: PendingReadCandidate,
+        rawObservationID: String,
         settledAt: String,
         capturedAt: String,
         captureBounds: CGRect,
-        recognized: RecognizedScreenText
+        recognized: RecognizedScreenText,
+        retainedScreenshot: RetainedScreenshot?
     ) {
         guard !configuration.isPaused() else { return }
-        let rawObservationID = UUID().uuidString
         let suppressesDerivedRead = isChromeAuxiliarySurface(
             bundleIdentifier: pending.bundleIdentifier,
             width: pending.windowBounds!.width,
@@ -316,6 +336,10 @@ final class ReadCandidateCollector {
                         content: recognized.content,
                         recognizedLineCount: recognized.lineCount,
                         contentWasTruncated: recognized.wasTruncated,
+                        screenshotRelativePath: retainedScreenshot?.relativePath,
+                        screenshotSHA256: retainedScreenshot?.sha256,
+                        screenshotPixelWidth: retainedScreenshot?.pixelWidth,
+                        screenshotPixelHeight: retainedScreenshot?.pixelHeight,
                         derivedSuppressionReason: derivedSuppressionReason,
                         viewportSideCropFraction: configuration.viewportSideCropFraction,
                         viewportTopCropFraction: configuration.viewportTopCropFraction,
@@ -393,6 +417,39 @@ final class ReadCandidateCollector {
         guard !reportedCaptureError else { return }
         reportedCaptureError = true
         writeDiagnostic("screen-text capture unavailable: \(message)")
+    }
+
+    private func persistScreenshot(_ image: CGImage, recordID: String) throws
+        -> RetainedScreenshot?
+    {
+        guard configuration.retainScreenshots else { return nil }
+        let directory = URL(fileURLWithPath: configuration.screenshotsDirectory)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: NSNumber(value: 0o700)]
+        )
+        let relativePath = "screenshots/\(recordID).png"
+        let url = URL(fileURLWithPath: configuration.outputDirectory)
+            .appendingPathComponent(relativePath)
+        let representation = NSBitmapImageRep(cgImage: image)
+        guard let data = representation.representation(using: .png, properties: [:]),
+              FileManager.default.createFile(
+                atPath: url.path,
+                contents: data,
+                attributes: [.posixPermissions: NSNumber(value: 0o600)]
+              ) else {
+            throw ReadCandidateCollectorError.screenshotPersistenceFailed(url.path)
+        }
+        let digest = SHA256.hash(data: data)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        return RetainedScreenshot(
+            relativePath: relativePath,
+            sha256: digest,
+            pixelWidth: image.width,
+            pixelHeight: image.height
+        )
     }
 
     private func resolvedWindow(
@@ -506,7 +563,7 @@ private struct ScreenReadRecord: Encodable {
 }
 
 private struct RawScreenReadRecord: Encodable {
-    let schemaVersion = 3
+    let schemaVersion = 4
     let recordType = "screen_ocr_observation"
     let recordID: String
     let observedAt: String
@@ -522,6 +579,10 @@ private struct RawScreenReadRecord: Encodable {
     let content: String
     let recognizedLineCount: Int
     let contentWasTruncated: Bool
+    let screenshotRelativePath: String?
+    let screenshotSHA256: String?
+    let screenshotPixelWidth: Int?
+    let screenshotPixelHeight: Int?
     let derivedSuppressionReason: String?
     let viewportSideCropFraction: Double
     let viewportTopCropFraction: Double
@@ -545,11 +606,23 @@ private struct RecognizedScreenText {
     let wasTruncated: Bool
 }
 
-private func recognizeText(in image: CGImage, maxCharacters: Int) throws -> RecognizedScreenText {
+private struct RetainedScreenshot {
+    let relativePath: String
+    let sha256: String
+    let pixelWidth: Int
+    let pixelHeight: Int
+}
+
+private func recognizeText(
+    in image: CGImage,
+    regionOfInterest: CGRect,
+    maxCharacters: Int
+) throws -> RecognizedScreenText {
     let request = VNRecognizeTextRequest()
     request.recognitionLevel = .accurate
     request.usesLanguageCorrection = true
     request.automaticallyDetectsLanguage = true
+    request.regionOfInterest = regionOfInterest
 
     let handler = VNImageRequestHandler(cgImage: image, options: [:])
     try handler.perform([request])
@@ -632,8 +705,14 @@ private func readTrigger(_ type: CGEventType) -> String? {
 
 enum ReadCandidateCollectorError: Error, CustomStringConvertible {
     case eventTapUnavailable
+    case screenshotPersistenceFailed(String)
 
     var description: String {
-        "could not create a global pointer event tap; grant Input Monitoring permission and try again"
+        switch self {
+        case .eventTapUnavailable:
+            return "could not create a global pointer event tap; grant Input Monitoring permission and try again"
+        case .screenshotPersistenceFailed(let path):
+            return "could not retain raw screenshot at \(path)"
+        }
     }
 }
