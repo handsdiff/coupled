@@ -1100,6 +1100,14 @@ final class ActiveTapWriteCollector {
             kAXSelectedTextRangeAttribute,
             errors: &errors
         )
+        let axRangeProbe = reason == "write_before"
+            ? captureAXRangeCursorProbe(
+                target.element,
+                selection: selection,
+                surroundingCharacterCount: configuration.cursorContextCharacters,
+                maximumRetainedCharacters: configuration.maxCharacters
+            )
+            : nil
         return ActiveTapEditableObservation(
             observationID: UUID().uuidString,
             observedAt: nowTimestamp(),
@@ -1112,7 +1120,8 @@ final class ActiveTapWriteCollector {
             ),
             selectedRangeLocation: selection?.location,
             selectedRangeLength: selection?.length,
-            valueWasTruncated: clipped.count < value.count
+            valueWasTruncated: clipped.count < value.count,
+            axRangeCursorProbe: axRangeProbe
         )
     }
 
@@ -1246,6 +1255,35 @@ private struct ActiveTapEditableObservation: Encodable {
     let selectedRangeLocation: Int?
     let selectedRangeLength: Int?
     let valueWasTruncated: Bool
+    let axRangeCursorProbe: ActiveTapAXRangeCursorProbe?
+}
+
+private struct ActiveTapAXRangeCursorProbe: Encodable {
+    let schemaVersion = 1
+    let capturedAt: String
+    let durationMilliseconds: Double
+    let requestedSurroundingCharacterCount: Int
+    let selectedRangeLocation: Int?
+    let selectedRangeLength: Int?
+    let numberOfCharacters: Int?
+    let left: ActiveTapAXRangeTextQuery?
+    let selected: ActiveTapAXRangeTextQuery?
+    let right: ActiveTapAXRangeTextQuery?
+    let errors: [String]
+}
+
+private struct ActiveTapAXRangeTextQuery: Encodable {
+    let rangeLocation: Int
+    let rangeLength: Int
+    let text: String?
+    let textWasTruncated: Bool
+    let axError: String?
+}
+
+private struct AXRangeProbePlan {
+    let left: CFRange
+    let selected: CFRange
+    let right: CFRange
 }
 
 private struct ActiveTapInputEvidence: Encodable {
@@ -1341,7 +1379,7 @@ private struct WriteDerivationDecision {
 }
 
 private struct RawActiveTapWriteAttempt: Encodable {
-    let schemaVersion = 8
+    let schemaVersion = 9
     let recordType = "active_tap_write_attempt"
     let recordID: String
     let bundleIdentifier: String
@@ -1560,6 +1598,164 @@ private func rangeAttribute(
     guard AXValueGetType(axValue) == .cfRange else { return nil }
     var range = CFRange()
     return AXValueGetValue(axValue, .cfRange, &range) ? range : nil
+}
+
+/// Queries cursor-adjacent text using the Accessibility provider's own range
+/// coordinate space. All failures stay inside this raw diagnostic record and
+/// never enter the write capture's AX errors or derivation path.
+private func captureAXRangeCursorProbe(
+    _ element: AXUIElement,
+    selection: CFRange?,
+    surroundingCharacterCount: Int,
+    maximumRetainedCharacters: Int
+) -> ActiveTapAXRangeCursorProbe {
+    let started = DispatchTime.now().uptimeNanoseconds
+    var errors = [String]()
+
+    var numberValue: CFTypeRef?
+    let numberError = AXUIElementCopyAttributeValue(
+        element,
+        kAXNumberOfCharactersAttribute as CFString,
+        &numberValue
+    )
+    let numberOfCharacters = (numberValue as? NSNumber)?.intValue
+    if numberError != .success,
+       numberError != .noValue,
+       numberError != .attributeUnsupported {
+        errors.append("AXNumberOfCharacters:\(axErrorName(numberError))")
+    }
+
+    let plan = axRangeProbePlan(
+        selection: selection,
+        numberOfCharacters: numberOfCharacters,
+        surroundingCharacterCount: surroundingCharacterCount
+    )
+    if selection != nil, plan == nil {
+        errors.append("range_plan:selection_outside_provider_character_count")
+    } else if selection == nil {
+        errors.append("range_plan:selection_unavailable")
+    }
+
+    let left = plan.map {
+        axRangeTextQuery(
+            element,
+            range: $0.left,
+            maximumRetainedCharacters: maximumRetainedCharacters,
+            retainSuffix: true
+        )
+    }
+    let selected = plan.map {
+        axRangeTextQuery(
+            element,
+            range: $0.selected,
+            maximumRetainedCharacters: maximumRetainedCharacters,
+            retainSuffix: false
+        )
+    }
+    let right = plan.map {
+        axRangeTextQuery(
+            element,
+            range: $0.right,
+            maximumRetainedCharacters: maximumRetainedCharacters,
+            retainSuffix: false
+        )
+    }
+
+    return ActiveTapAXRangeCursorProbe(
+        capturedAt: nowTimestamp(),
+        durationMilliseconds: milliseconds(sinceNanoseconds: started),
+        requestedSurroundingCharacterCount: surroundingCharacterCount,
+        selectedRangeLocation: selection?.location,
+        selectedRangeLength: selection?.length,
+        numberOfCharacters: numberOfCharacters,
+        left: left,
+        selected: selected,
+        right: right,
+        errors: errors
+    )
+}
+
+private func axRangeProbePlan(
+    selection: CFRange?,
+    numberOfCharacters: Int?,
+    surroundingCharacterCount: Int
+) -> AXRangeProbePlan? {
+    guard let selection,
+          selection.location >= 0,
+          selection.length >= 0,
+          surroundingCharacterCount > 0 else { return nil }
+    let (selectionEnd, overflowed) = selection.location.addingReportingOverflow(
+        selection.length
+    )
+    guard !overflowed else { return nil }
+    if let numberOfCharacters {
+        guard numberOfCharacters >= selectionEnd else { return nil }
+    }
+    let leftLocation = max(0, selection.location - surroundingCharacterCount)
+    let rightLength = numberOfCharacters.map {
+        min(surroundingCharacterCount, $0 - selectionEnd)
+    } ?? surroundingCharacterCount
+    return AXRangeProbePlan(
+        left: CFRange(
+            location: leftLocation,
+            length: selection.location - leftLocation
+        ),
+        selected: selection,
+        right: CFRange(location: selectionEnd, length: rightLength)
+    )
+}
+
+private func axRangeTextQuery(
+    _ element: AXUIElement,
+    range: CFRange,
+    maximumRetainedCharacters: Int,
+    retainSuffix: Bool
+) -> ActiveTapAXRangeTextQuery {
+    if range.length == 0 {
+        return ActiveTapAXRangeTextQuery(
+            rangeLocation: range.location,
+            rangeLength: 0,
+            text: "",
+            textWasTruncated: false,
+            axError: nil
+        )
+    }
+    var cfRange = CFRange(location: range.location, length: range.length)
+    guard let rangeValue = AXValueCreate(.cfRange, &cfRange) else {
+        return ActiveTapAXRangeTextQuery(
+            rangeLocation: range.location,
+            rangeLength: range.length,
+            text: nil,
+            textWasTruncated: false,
+            axError: "could_not_create_range"
+        )
+    }
+    var value: CFTypeRef?
+    let error = AXUIElementCopyParameterizedAttributeValue(
+        element,
+        kAXStringForRangeParameterizedAttribute as CFString,
+        rangeValue,
+        &value
+    )
+    guard error == .success, let text = value as? String else {
+        return ActiveTapAXRangeTextQuery(
+            rangeLocation: range.location,
+            rangeLength: range.length,
+            text: nil,
+            textWasTruncated: false,
+            axError: axErrorName(error)
+        )
+    }
+    let clipped = retainSuffix
+        ? String(text.suffix(maximumRetainedCharacters))
+        : String(text.prefix(maximumRetainedCharacters))
+    return ActiveTapAXRangeTextQuery(
+        rangeLocation: range.location,
+        rangeLength: range.length,
+        text: clipped,
+        textWasTruncated: clipped.count < text.count,
+        axError: nil
+    )
 }
 
 private func axErrorName(_ error: AXError) -> String {

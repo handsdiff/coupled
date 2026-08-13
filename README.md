@@ -153,6 +153,12 @@ the same live log. Source observations are appended separately to `raw.jsonl`:
   UTF-16 and Character selection coordinates, and field length. The distinct
   `outcome` retains the net edit operation and offset. Secure fields are
   ignored. Tune the semantic radius with `--cursor-context-characters`.
+  The raw BEFORE observation also carries an experimental
+  `axRangeCursorProbe`. It asks the same Accessibility element for text before,
+  inside, and after its selected range using `AXStringForRange`. These strings
+  are diagnostic evidence for a semantic cursor representation only: probe
+  errors and results do not change write reconstruction, derived events,
+  cursor-fidelity gating, or compiled training examples.
 - `READ` captures the visible rectangle of the topmost window surface after the
   read delay, removes 10% from both the left and right, 10% from the top, and
   35% from the bottom, then uses macOS Vision recognition locally to emit its
