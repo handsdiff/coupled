@@ -172,7 +172,18 @@ read delay and therefore settles after the write.
 - `READ` captures the visible rectangle of the topmost window surface after the
   read delay, removes 10% from both the left and right, 10% from the top, and
   35% from the bottom, then uses macOS Vision recognition locally to emit its
-  text with provenance `screen_ocr`.
+  text with provenance `screen_ocr`. Trigger-time app/window identity is kept
+  only as `triggerSurface` provenance. At settlement, the collector resolves
+  the current app, window, display, title, and bounds together; only that
+  capture-time surface labels the screenshot and OCR. If it differs from the
+  trigger surface, the stale candidate remains raw and a fresh delay starts for
+  the newly observed surface instead of immediately emitting it. Pointer
+  activity is globally collapsed to one pending attention candidate, app
+  activation starts a new interval, and a short post-click observation lets
+  navigation finish before its interval begins. A surface change while the
+  asynchronous screenshot is completing suppresses the derived read and starts
+  another interval. These rules prevent old per-window timers from capturing a
+  newly visible surface before it has satisfied `READ_DELAY`.
 
 The crop now retains the middle 80% of the selected window's width and the
 vertical band from 10% through 65%. It is not a claim about gaze or attention.

@@ -8,6 +8,7 @@
 - **Cursor fidelity measured independently:** Raw attempts and derived writes compare the initial AX cursor with the earliest retained post-input mutation and the terminal edit. That comparison remains audit evidence and does not alter reconstruction. Legacy sessions without range-native context retain the earlier conservative alignment gate.
 - **Semantic cursor positioning validated and promoted:** New sessions use Accessibility range-native left, selected, and right text as model conditioning across Obsidian, Codex, and Chrome. Numeric AX coordinates remain diagnostic only. Known empty Codex and Gemini prompt chrome is represented separately from editable context. Legacy sessions retain their conservative numeric eligibility rule.
 - **Write input now supersedes stale read timers:** A mutating key invalidates pending pointer-based reads on the same Core Graphics window before they can capture partially authored output. Raw suppression evidence links the candidate to its write attempt, and compiler v8 repairs the equivalent timing pattern in older sessions.
+- **Delayed reads now require a stable capture surface:** Trigger-time identity is retained only as provenance. App/window/display/title/bounds are resolved again at settlement and used together for screenshot attribution, cropping, OCR, and deduplication. A changed surface starts a fresh delay instead of inheriting an old timer; app activation and post-click observation provide transition boundaries; stale per-window candidates are collapsed; and a transition during screenshot completion suppresses the derived read.
 
 ## Implemented decisions
 
@@ -21,10 +22,6 @@
 - **Removed cursor-biased diffing:** Initial cursor position does not alter the independently reconstructed `BEFORE → AFTER` edit. Cursor state conditions prediction; it is not evidence that can override the observed diff.
 - **Added cursor-fidelity evidence:** Each attempt records whether the initial AX cursor agrees with the earliest retained mutation and terminal edit. This measures rather than assumes rich-editor cursor reliability.
 - **Removed the synthetic deletion fallback:** The collector never replaces an observed terminal state with a synthetic `BEFORE → empty` edit.
-
-## Remaining capture fixes
-
-- **Fix delayed read attribution:** Immediately before a delayed screenshot, re-resolve and validate the app, window, display, and relevant bounds. Suppress or restart the candidate if they no longer match, rather than attaching stale Obsidian or Chrome metadata to pixels from another app.
 
 ## Paste representation
 
