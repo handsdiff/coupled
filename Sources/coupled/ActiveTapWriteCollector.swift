@@ -503,12 +503,8 @@ final class ActiveTapWriteCollector {
         for pending: PendingActiveTapWrite
     ) -> ActiveTapWriteConditioningState? {
         guard let target = pending.target, let before = pending.before else { return nil }
-        let logicalValue = logicalEditableValue(
-            before.value,
-            placeholderValue: before.placeholderValue
-        )
         return ActiveTapWriteConditioningState(
-            schemaVersion: 1,
+            schemaVersion: 2,
             captureSemantics: "synchronous_before_application_mutation",
             inputInterceptedAt: pending.beganAt,
             capturedAt: before.observedAt,
@@ -525,13 +521,49 @@ final class ActiveTapWriteCollector {
                 fieldDescription: target.identity.fieldDescription,
                 placeholder: before.placeholderValue
             ),
-            cursorContext: semanticCursorContext(
-                in: logicalValue,
-                selectionStartUTF16: before.selectedRangeLocation,
-                selectionLengthUTF16: before.selectedRangeLength,
-                surroundingCharacterCount: configuration.cursorContextCharacters
+            cursorContext: rangeSemanticCursorContext(
+                target: target,
+                before: before
             ),
             sourceObservationID: before.observationID
+        )
+    }
+
+    private func rangeSemanticCursorContext(
+        target: HeldEditableTarget,
+        before: ActiveTapEditableObservation
+    ) -> ActiveTapRangeSemanticCursorContext? {
+        guard let probe = before.axRangeCursorProbe,
+              let left = probe.left?.text,
+              let selected = probe.selected?.text else { return nil }
+        let right: String
+        let captureStatus: String
+        if let capturedRight = probe.right?.text {
+            right = capturedRight
+            captureStatus = "complete"
+        } else if probe.right?.axError == axErrorName(.noValue),
+                  probe.right?.rangeLength == 1 {
+            right = ""
+            captureStatus = "right_provider_no_value_after_minimum_probe"
+        } else {
+            return nil
+        }
+        let surfacePrompt = unpopulatedSurfacePrompt(
+            bundleIdentifier: target.app.bundleIdentifier,
+            fieldDescription: target.identity.fieldDescription,
+            value: before.value,
+            placeholderValue: before.placeholderValue,
+            valueRepresentedPlaceholder: before.valueRepresentedPlaceholder
+        )
+        return ActiveTapRangeSemanticCursorContext(
+            schemaVersion: 2,
+            source: "accessibility_string_for_range",
+            captureStatus: captureStatus,
+            fieldState: surfacePrompt == nil ? "editable_text" : "unpopulated_prompt",
+            leftContext: surfacePrompt == nil ? left : "",
+            selectedText: surfacePrompt == nil ? selected : "",
+            rightContext: surfacePrompt == nil ? right : "",
+            surfacePrompt: surfacePrompt
         )
     }
 
@@ -1217,8 +1249,19 @@ private struct ActiveTapWriteConditioningState: Encodable {
     let inputInterceptedAt: String
     let capturedAt: String
     let destination: ActiveTapWriteDestination
-    let cursorContext: SemanticCursorContext?
+    let cursorContext: ActiveTapRangeSemanticCursorContext?
     let sourceObservationID: String
+}
+
+private struct ActiveTapRangeSemanticCursorContext: Encodable {
+    let schemaVersion: Int
+    let source: String
+    let captureStatus: String
+    let fieldState: String
+    let leftContext: String
+    let selectedText: String
+    let rightContext: String
+    let surfacePrompt: String?
 }
 
 private struct ActiveTapWriteOutcome: Encodable {
@@ -1379,7 +1422,7 @@ private struct WriteDerivationDecision {
 }
 
 private struct RawActiveTapWriteAttempt: Encodable {
-    let schemaVersion = 10
+    let schemaVersion = 11
     let recordType = "active_tap_write_attempt"
     let recordID: String
     let bundleIdentifier: String
@@ -1428,7 +1471,7 @@ private struct RawWriteSensorHealth: Encodable {
 }
 
 private struct ActiveTapWriteRecord: Encodable {
-    let schemaVersion = 7
+    let schemaVersion = 8
     let kind = "write"
     let provenance = "active_tap_accessibility_diff"
     let sequence: UInt64

@@ -95,6 +95,36 @@ expect(
     "cursor offsets inside a surrogate pair are rejected"
 )
 expect(
+    unpopulatedSurfacePrompt(
+        bundleIdentifier: "com.openai.codex",
+        fieldDescription: "Do anything",
+        value: "\nDo anything",
+        placeholderValue: nil,
+        valueRepresentedPlaceholder: false
+    ) == "Do anything",
+    "Codex prompt chrome is separated from editable cursor context"
+)
+expect(
+    unpopulatedSurfacePrompt(
+        bundleIdentifier: "com.google.Chrome",
+        fieldDescription: "Enter a prompt for Gemini",
+        value: "Ask Gemini\n",
+        placeholderValue: nil,
+        valueRepresentedPlaceholder: false
+    ) == "Ask Gemini",
+    "Gemini prompt chrome is separated from editable cursor context"
+)
+expect(
+    unpopulatedSurfacePrompt(
+        bundleIdentifier: "com.google.Chrome",
+        fieldDescription: "Enter a prompt for Gemini",
+        value: "actual draft",
+        placeholderValue: nil,
+        valueRepresentedPlaceholder: false
+    ) == nil,
+    "ordinary prompt content is never guessed to be UI chrome"
+)
+expect(
     newlyVisibleLines(previous: "alpha\nbeta", current: "beta\ngamma\ngamma") == "gamma",
     "viewport overlap"
 )
@@ -209,9 +239,37 @@ func rawAttempt(
     after: String,
     timestamp: String,
     selectionLocation: Int? = nil,
-    selectionLength: Int = 0
+    selectionLength: Int = 0,
+    rangeCursor: [String: String]? = nil
 ) -> [String: Any] {
     let terminal = observation(after, at: timestamp)
+    var beforeObservation = observation(
+        before,
+        at: timestamp,
+        selectionLocation: selectionLocation,
+        selectionLength: selectionLength
+    )
+    if let rangeCursor {
+        beforeObservation["axRangeCursorProbe"] = [
+            "capturedAt": timestamp,
+            "durationMilliseconds": 1,
+            "requestedSurroundingCharacterCount": 512,
+            "numberOfCharacters": before.count,
+            "left": [
+                "rangeLocation": 0, "rangeLength": 0,
+                "text": rangeCursor["left"] ?? "", "textWasTruncated": false,
+            ],
+            "selected": [
+                "rangeLocation": 0, "rangeLength": 0,
+                "text": rangeCursor["selected"] ?? "", "textWasTruncated": false,
+            ],
+            "right": [
+                "rangeLocation": 0, "rangeLength": before.count,
+                "text": rangeCursor["right"] ?? "", "textWasTruncated": false,
+            ],
+            "errors": [],
+        ]
+    }
     return [
         "recordType": "active_tap_write_attempt",
         "recordID": id,
@@ -224,12 +282,7 @@ func rawAttempt(
             "accessibilityIdentifier": "fixture-editor",
             "fieldLabel": "Fixture body",
         ],
-        "before": observation(
-            before,
-            at: timestamp,
-            selectionLocation: selectionLocation,
-            selectionLength: selectionLength
-        ),
+        "before": beforeObservation,
         "after": terminal,
         "returnCheckpoints": [],
         "pasteCheckpoints": [],
@@ -350,7 +403,8 @@ writeFixtureJSONL([
         id: "attempt-cursor-moved", eventID: "write-cursor-moved",
         before: "abc", after: "Xabc",
         timestamp: "2026-01-01T00:00:09.000Z",
-        selectionLocation: 3
+        selectionLocation: 3,
+        rangeCursor: ["left": "", "selected": "", "right": "abc"]
     ),
     rawAttempt(
         id: "attempt-deletion", eventID: "write-deletion",
@@ -371,8 +425,8 @@ let compilerResult = try! CausalDatasetCompiler().compile(
 )
 expect(compilerResult.sourceEventCount == 8, "compiler source count")
 expect(compilerResult.convertedEventCount == 6, "compiler excludes invalid writes")
-expect(compilerResult.exampleCount == 2, "compiler creates one example per verified write")
-expect(compilerResult.targetExcludedEventCount == 2, "compiler separates valid history from targets")
+expect(compilerResult.exampleCount == 3, "compiler creates one example per verified write")
+expect(compilerResult.targetExcludedEventCount == 1, "compiler separates valid history from targets")
 expect(compilerResult.rejectedEventCount == 2, "compiler records exclusions and rejections")
 
 let examples = readFixtureJSONL(fixtureOutput.appendingPathComponent("examples.jsonl"))
@@ -418,12 +472,15 @@ expect(
 let targetExclusions = readFixtureJSONL(
     fixtureOutput.appendingPathComponent("target-exclusions.jsonl")
 )
+let rangeQuery = try! JSONSerialization.jsonObject(
+    with: Data((examples[2]["query"] as! String).utf8)
+) as! [String: Any]
+let rangeCursor = rangeQuery["cursorContext"] as! [String: Any]
 expect(
-    targetExclusions.contains {
-        $0["reason"] as? String
-            == "initial_cursor_differs_from_earliest_observed_mutation"
-    },
-    "independently observed cursor mismatch remains history but is excluded as a target"
+    rangeCursor["leftContext"] as! String == ""
+        && rangeCursor["rightContext"] as! String == "abc"
+        && examples[2]["target"] as! String == "X",
+    "range-native semantic context admits a target independently of numeric cursor mismatch"
 )
 expect(
     targetExclusions.contains { $0["reason"] as? String == "empty_content" },

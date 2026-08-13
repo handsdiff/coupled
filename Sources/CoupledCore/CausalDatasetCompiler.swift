@@ -6,7 +6,7 @@ public struct CausalDatasetCompilerConfiguration: Sendable {
     public let includeTimestampsInContext: Bool
 
     public init(
-        conversionVersion: String = "phase1-causal-v6",
+        conversionVersion: String = "phase1-causal-v7",
         includeTimestampsInContext: Bool = false
     ) {
         self.conversionVersion = conversionVersion
@@ -262,9 +262,20 @@ public struct CausalDatasetCompiler {
                 .number("selectionStartCharacters"))?.intValue
             let cursorFidelity = target.object["cursorFidelity"] as? [String: Any] ?? [:]
             let cursorFidelityStatus = cursorFidelity.string("status")
+            let cursorContext = conditioningState["cursorContext"] as? [String: Any]
+            let usesRangeSemanticContext = (
+                conditioningState.number("schemaVersion")?.intValue ?? 0
+            ) >= 2
+            let hasCompleteSemanticContext = cursorContext?.string("leftContext") != nil
+                && cursorContext?.string("selectedText") != nil
+                && cursorContext?.string("rightContext") != nil
             let targetExclusionReason: String?
             if content.isEmpty {
                 targetExclusionReason = "empty_content"
+            } else if usesRangeSemanticContext, !hasCompleteSemanticContext {
+                targetExclusionReason = "missing_semantic_cursor_context"
+            } else if usesRangeSemanticContext {
+                targetExclusionReason = nil
             } else if initialOffset == nil {
                 targetExclusionReason = "missing_initial_cursor_context"
             } else if cursorFidelityStatus
@@ -288,12 +299,13 @@ public struct CausalDatasetCompiler {
                     reason: targetExclusionReason,
                     content: content,
                     initialOffset: initialOffset,
-                    outcomeOffset: outcomeOffset
+                    outcomeOffset: outcomeOffset,
+                    conditioningState: conditioningState
                 ))
                 continue
             }
             examples.append([
-                "schemaVersion": 6,
+                "schemaVersion": 7,
                 "exampleID": "\(sessionID):\(target.sourceEventID)",
                 "conversionVersion": configuration.conversionVersion,
                 "sessionID": sessionID,
@@ -356,7 +368,7 @@ public struct CausalDatasetCompiler {
             "raw.jsonl": try sha256(of: rawURL),
         ]
         let datasetManifest: [String: Any] = [
-            "schemaVersion": 6,
+            "schemaVersion": 7,
             "conversionVersion": configuration.conversionVersion,
             "sessionID": sessionID,
             "source": [
@@ -380,13 +392,13 @@ public struct CausalDatasetCompiler {
             ],
             "eligibility": [
                 "contextKinds": ["read", "verified_write"],
-                "targetKinds": ["verified_write_with_nonempty_content_and_independently_aligned_cursor"],
+                "targetKinds": ["verified_write_with_nonempty_content_and_semantic_cursor_context", "legacy_verified_write_with_independently_aligned_numeric_cursor"],
                 "targetExclusionRules": [
                     "content.isEmpty",
-                    "conditioning.cursorContext.selectionStartCharacters is missing",
-                    "earliest observed mutation is missing",
-                    "earliest observed mutation offset differs from the initial cursor",
-                    "outcome.characterOffset != conditioning.cursorContext.selectionStartCharacters",
+                    "new sessions require range-native left, selected, and right semantic strings",
+                    "legacy sessions require an initial numeric cursor",
+                    "legacy sessions require an earliest observed mutation",
+                    "legacy earliest mutation and terminal edit must agree with the initial cursor",
                 ],
                 "explicitExclusion": "phase1Eligible == false",
                 "writeVerification": "source outcome must reconstruct the used observation, except the identified legacy synthetic-deletion fallback",
@@ -394,8 +406,8 @@ public struct CausalDatasetCompiler {
             ],
             "serialization": [
                 "contextVersion": 1,
-                "queryVersion": 1,
-                "targetVersion": 6,
+                "queryVersion": 2,
+                "targetVersion": 7,
                 "targetFormat": "plain_text_content",
                 "timestampsInContext": configuration.includeTimestampsInContext,
                 "eventDelimiter": "newline",
@@ -732,7 +744,29 @@ private func writeConditioningState(
     attempt: [String: Any]
 ) throws -> [String: Any] {
     let eventState = event["conditioningState"] as? [String: Any]
-    if let rawState = attempt["conditioningState"] as? [String: Any] {
+    let rawState = attempt["conditioningState"] as? [String: Any]
+    if let before = attempt["before"] as? [String: Any],
+       before["axRangeCursorProbe"] as? [String: Any] != nil {
+        guard let rangeState = rangeSemanticConditioningState(
+            event: event,
+            attempt: attempt,
+            before: before
+        ) else {
+            throw CausalDatasetCompilerError.invalidManifest(
+                "verified write is missing its pre-mutation range observation"
+            )
+        }
+        for sourceState in [rawState, eventState].compactMap({ $0 })
+        where sourceState.number("schemaVersion")?.intValue ?? 0 >= 2 {
+            if try canonicalJSONString(sourceState) != canonicalJSONString(rangeState) {
+                throw CausalDatasetCompilerError.invalidManifest(
+                    "range-native conditioning state does not match raw evidence"
+                )
+            }
+        }
+        return rangeState
+    }
+    if let rawState {
         if let eventState,
            try canonicalJSONString(eventState) != canonicalJSONString(rawState) {
             throw CausalDatasetCompilerError.invalidManifest(
@@ -790,17 +824,112 @@ private func writeConditioningState(
     return state
 }
 
+private func rangeSemanticConditioningState(
+    event: [String: Any],
+    attempt: [String: Any],
+    before: [String: Any]
+) -> [String: Any]? {
+    guard let capturedAt = before.string("observedAt"),
+          let rawValue = before.string("value"),
+          let probe = before["axRangeCursorProbe"] as? [String: Any] else { return nil }
+    let targetIdentity = attempt["targetIdentity"] as? [String: Any] ?? [:]
+    let bundleIdentifier = event.string("bundleIdentifier")
+        ?? attempt.string("bundleIdentifier")
+    let fieldDescription = targetIdentity.string("fieldDescription")
+    let surfacePrompt = unpopulatedSurfacePrompt(
+        bundleIdentifier: bundleIdentifier,
+        fieldDescription: fieldDescription,
+        value: rawValue,
+        placeholderValue: before.string("placeholderValue"),
+        valueRepresentedPlaceholder: before.boolean("valueRepresentedPlaceholder") == true
+    )
+    var state: [String: Any] = [
+        "schemaVersion": 2,
+        "captureSemantics": "synchronous_before_application_mutation",
+        "inputInterceptedAt": event.string("beganAt") ?? "",
+        "capturedAt": capturedAt,
+        "destination": compactJSONObject([
+            "appName": event.string("appName") ?? "",
+            "bundleIdentifier": bundleIdentifier,
+            "processIdentifier": event.number("processIdentifier")?.intValue,
+            "windowTitle": event.string("windowTitle"),
+            "resource": nil,
+            "role": targetIdentity.string("role") ?? "",
+            "subrole": targetIdentity.string("subrole"),
+            "fieldIdentifier": targetIdentity.string("accessibilityIdentifier"),
+            "fieldLabel": targetIdentity.string("fieldLabel"),
+            "fieldDescription": fieldDescription,
+            "placeholder": before.string("placeholderValue"),
+        ]),
+        "sourceObservationID": before.string("observationID") ?? "",
+    ]
+    if let cursor = rangeSemanticCursorJSONObject(
+        probe: probe,
+        surfacePrompt: surfacePrompt
+    ) {
+        state["cursorContext"] = cursor
+    }
+    return state
+}
+
+private func rangeSemanticCursorJSONObject(
+    probe: [String: Any],
+    surfacePrompt: String?
+) -> [String: Any]? {
+    guard let leftQuery = probe["left"] as? [String: Any],
+          let selectedQuery = probe["selected"] as? [String: Any],
+          let rightQuery = probe["right"] as? [String: Any],
+          let left = leftQuery.string("text"),
+          let selected = selectedQuery.string("text") else { return nil }
+    let right: String
+    let captureStatus: String
+    if let capturedRight = rightQuery.string("text") {
+        right = capturedRight
+        captureStatus = "complete"
+    } else if rightQuery.string("axError") == "no_value",
+              rightQuery.number("rangeLength")?.intValue == 1 {
+        right = ""
+        captureStatus = "right_provider_no_value_after_minimum_probe"
+    } else {
+        return nil
+    }
+    return compactJSONObject([
+        "schemaVersion": 2,
+        "source": "accessibility_string_for_range",
+        "captureStatus": captureStatus,
+        "fieldState": surfacePrompt == nil ? "editable_text" : "unpopulated_prompt",
+        "leftContext": surfacePrompt == nil ? left : "",
+        "selectedText": surfacePrompt == nil ? selected : "",
+        "rightContext": surfacePrompt == nil ? right : "",
+        "surfacePrompt": surfacePrompt,
+    ])
+}
+
 private func serializeQuery(
     _ conditioningState: [String: Any],
     includeTimestamp: Bool
 ) throws -> String {
     var destination = conditioningState["destination"] as? [String: Any] ?? [:]
     destination.removeValue(forKey: "processIdentifier")
+    let cursor = conditioningState["cursorContext"] as? [String: Any]
+    let modelCursor: Any
+    if cursor?.string("source") == "accessibility_string_for_range" {
+        modelCursor = compactJSONObject([
+            "schemaVersion": 2,
+            "fieldState": cursor?.string("fieldState"),
+            "leftContext": cursor?.string("leftContext"),
+            "selectedText": cursor?.string("selectedText"),
+            "rightContext": cursor?.string("rightContext"),
+            "surfacePrompt": cursor?.string("surfacePrompt"),
+        ])
+    } else {
+        modelCursor = cursor.map { $0 as Any } ?? NSNull()
+    }
     var query: [String: Any] = [
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "kind": "write_conditioning_state",
         "destination": destination,
-        "cursorContext": conditioningState["cursorContext"] ?? NSNull(),
+        "cursorContext": modelCursor,
     ]
     if includeTimestamp {
         query["capturedAt"] = conditioningState.string("capturedAt") ?? ""
@@ -833,7 +962,8 @@ private func targetExclusion(
     reason: String,
     content: String,
     initialOffset: Int?,
-    outcomeOffset: Int?
+    outcomeOffset: Int?,
+    conditioningState: [String: Any]
 ) -> [String: Any] {
     compactJSONObject([
         "schemaVersion": 1,
@@ -844,6 +974,7 @@ private func targetExclusion(
         "contentCharacterCount": content.count,
         "initialCursorOffset": initialOffset,
         "outcomeCharacterOffset": outcomeOffset,
+        "conditioningState": conditioningState,
         "sourceRecordIDs": target.object.stringArray("sourceRecordIDs"),
         "cursorFidelity": target.object["cursorFidelity"],
     ])

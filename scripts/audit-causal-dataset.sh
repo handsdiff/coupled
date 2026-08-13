@@ -67,12 +67,24 @@ jq -e -s --slurpfile manifest "$manifest" --slurpfile examples "$examples" --slu
     ($m.loader.eosTokenCount == 1) and
     ($m.loader.contentTokensReceiveLoss == true) and
     ($m.loader.eosTokenReceivesLoss == true) and
-    (.cursorFidelity.status == "aligned") and
-    (.cursorFidelity.initialCursorOffsetCharacters
-      == .cursorFidelity.earliestObservedMutationOffsetCharacters) and
-    (.cursorFidelity.initialCursorOffsetCharacters
-      == .cursorFidelity.terminalEditOffsetCharacters) and
-    (.conditioningState.cursorContext.selectionStartCharacters == .targetMetadata.characterOffset) and
+    (if .conditioningState.schemaVersion >= 2 then
+       (.conditioningState.cursorContext.source == "accessibility_string_for_range") and
+       ((.conditioningState.cursorContext.leftContext | type) == "string") and
+       ((.conditioningState.cursorContext.selectedText | type) == "string") and
+       ((.conditioningState.cursorContext.rightContext | type) == "string") and
+       ($query.cursorContext.leftContext == .conditioningState.cursorContext.leftContext) and
+       ($query.cursorContext.selectedText == .conditioningState.cursorContext.selectedText) and
+       ($query.cursorContext.rightContext == .conditioningState.cursorContext.rightContext) and
+       (($query.cursorContext | has("selectionStartCharacters")) | not)
+     else
+       (.cursorFidelity.status == "aligned") and
+       (.cursorFidelity.initialCursorOffsetCharacters
+         == .cursorFidelity.earliestObservedMutationOffsetCharacters) and
+       (.cursorFidelity.initialCursorOffsetCharacters
+         == .cursorFidelity.terminalEditOffsetCharacters) and
+       (.conditioningState.cursorContext.selectionStartCharacters
+         == .targetMetadata.characterOffset)
+     end) and
     (.modelInput == (if .context == "" then .query else .context + "\n" + .query end)) and
     (all(.contextEventIDs[];
       ($by_id[.].availableAt < $example.targetBeganAt)
@@ -95,6 +107,9 @@ jq -e -s --slurpfile manifest "$manifest" --slurpfile examples "$examples" --slu
        (($by_id[.sourceEventID].serialized | fromjson).content == "")
      elif .reason == "missing_initial_cursor_context" then
        (.initialCursorOffset == null)
+     elif .reason == "missing_semantic_cursor_context" then
+       ((.conditioningState.schemaVersion >= 2) and
+        ((.conditioningState.cursorContext // null) == null))
      elif .reason == "missing_earliest_observed_mutation" then
        (.cursorFidelity.earliestObservedMutationOffsetCharacters == null)
      elif .reason == "initial_cursor_differs_from_earliest_observed_mutation" then

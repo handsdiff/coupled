@@ -156,9 +156,9 @@ the same live log. Source observations are appended separately to `raw.jsonl`:
   The raw BEFORE observation also carries an experimental
   `axRangeCursorProbe`. It asks the same Accessibility element for text before,
   inside, and after its selected range using `AXStringForRange`. These strings
-  are diagnostic evidence for a semantic cursor representation only: probe
-  errors and results do not change write reconstruction, derived events,
-  cursor-fidelity gating, or compiled training examples. If an
+  become the semantic cursor context for newly compiled training examples but
+  never change write reconstruction. Numeric offsets and their comparison with
+  later mutations remain diagnostic evidence only. If an
   Electron-provided right extent is rejected, the raw probe retries bounded
   shorter ranges from the same provider-native selection boundary.
 - `READ` captures the visible rectangle of the topmost window surface after the
@@ -263,9 +263,9 @@ reordering or modifying the source files:
 ```sh
 ./scripts/coupled compile \
   --input ./coupled-data/normal-work-dry-run-3 \
-  --output ./coupled-data/normal-work-dry-run-3-phase1-v6
+  --output ./coupled-data/normal-work-dry-run-3-phase1-v7
 ./scripts/audit-causal-dataset.sh \
-  ./coupled-data/normal-work-dry-run-3-phase1-v6
+  ./coupled-data/normal-work-dry-run-3-phase1-v7
 ```
 
 The fresh output directory contains:
@@ -277,8 +277,9 @@ The fresh output directory contains:
   `modelInput`, plain-text content `target`, target metadata, source lines, and raw-attempt
   lineage.
 - `target-exclusions.jsonl`: verified writes retained in causal history but not
-  used as Phase 1 targets, including pure deletions and bursts whose net edit
-  offset differs from the initial conditioned cursor.
+  used as Phase 1 targets, including pure deletions and new writes without a
+  complete semantic cursor capture. Legacy sessions retain their earlier
+  conservative numeric-cursor eligibility rule.
 - `rejections.jsonl`: writes that cannot be reconstructed exactly from their
   retained raw BEFORE and selected AFTER observation.
 - `dataset.json`: conversion rules, source digests, counts, and schema details.
@@ -291,22 +292,21 @@ prior writes at `terminalDecisionAt`. Records explicitly marked
 `phase1Eligible: false`—including future displayed model predictions—are
 excluded before contexts and targets are built.
 
-Conversion `phase1-causal-v6` defines the supervised example as:
+Conversion `phase1-causal-v7` defines the supervised example as:
 
 ```text
 modelInput = causal read/write history + known pre-mutation destination/cursor query
 target     = exact nonempty write.content string
 ```
 
-The known application, field metadata, initial caret and selection receive no
-loss. Operation, removed content and net edit offset remain event and example
-metadata but also receive no loss. Pure deletions, bursts without an earliest
-retained mutation observation, and bursts where either that observation or the
-terminal edit disagrees with the initial caret remain available to later
-history while being excluded from the initial content-at-cursor targets. Cursor
-agreement is diagnostic evidence; it never changes the independently derived
-edit. Older raw sessions are supported by deriving the same query and
-cursor-fidelity signal from their retained evidence.
+The model-facing cursor is range-native semantic state: bounded text before the
+caret, selected text, and text after it. Known empty AI prompt chrome is stored
+separately as `surfacePrompt` while editable context remains empty. Numeric AX
+offsets, operation, removed content, and net edit offset remain audit metadata
+and receive no loss. Numeric cursor agreement never changes a write or the
+eligibility of a new range-native example. Older raw sessions remain supported
+under their earlier conservative numeric-cursor gate because they do not
+contain range-native evidence.
 
 The compiled `modelInput` is intentionally complete rather than pretending that
 characters equal model tokens. The manifest freezes the Phase 1 packing rule:

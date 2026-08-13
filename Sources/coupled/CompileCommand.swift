@@ -10,7 +10,7 @@ struct CompileCommand {
     init(arguments: [String]) throws {
         var input: String?
         var output: String?
-        var version = "phase1-causal-v6"
+        var version = "phase1-causal-v7"
         var includeTimestamps = false
         var index = 0
         while index < arguments.count {

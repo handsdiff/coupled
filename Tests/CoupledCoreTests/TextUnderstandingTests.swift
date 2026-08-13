@@ -127,6 +127,41 @@ final class TextUnderstandingTests: XCTestCase {
         )
     }
 
+    func testKnownEmptyPromptChromeIsSeparatedFromEditableText() {
+        XCTAssertEqual(
+            unpopulatedSurfacePrompt(
+                bundleIdentifier: "com.openai.codex",
+                fieldDescription: "Do anything",
+                value: "\nDo anything",
+                placeholderValue: nil,
+                valueRepresentedPlaceholder: false
+            ),
+            "Do anything"
+        )
+        XCTAssertEqual(
+            unpopulatedSurfacePrompt(
+                bundleIdentifier: "com.google.Chrome",
+                fieldDescription: "Enter a prompt for Gemini",
+                value: "Ask Gemini\n",
+                placeholderValue: nil,
+                valueRepresentedPlaceholder: false
+            ),
+            "Ask Gemini"
+        )
+    }
+
+    func testOrdinaryPromptContentIsNotDiscarded() {
+        XCTAssertNil(
+            unpopulatedSurfacePrompt(
+                bundleIdentifier: "com.google.Chrome",
+                fieldDescription: "Enter a prompt for Gemini",
+                value: "actual draft",
+                placeholderValue: nil,
+                valueRepresentedPlaceholder: false
+            )
+        )
+    }
+
     func testNewlyVisibleLinesPreservesViewportOverlap() {
         XCTAssertEqual(
             newlyVisibleLines(previous: "alpha\nbeta", current: "beta\ngamma\ngamma"),

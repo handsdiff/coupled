@@ -4,8 +4,9 @@
 
 - **Baseline frozen:** Commit `fbb4fa8` preserves the post-run-5 content-only compiler and documentation before reconstruction changed.
 - **Cursor-independent reconstruction:** Commits after the baseline derive every write from the canonical minimum contiguous `BEFORE → observed AFTER` diff. Cursor metadata no longer changes edit boundaries.
-- **Synthetic deletion fallback removed:** The live collector no longer turns a delete-only transition into `BEFORE → empty`. The v6 compiler repairs the two known run-5 fallback events from their raw observed states.
-- **Cursor fidelity measured independently:** Raw attempts and derived writes now compare the initial AX cursor with the earliest retained post-input mutation and the terminal edit. Only `aligned` writes become initial Phase 1 targets; mismatches remain causally available history and audit evidence.
+- **Synthetic deletion fallback removed:** The live collector no longer turns a delete-only transition into `BEFORE → empty`. The compiler repairs the two known run-5 fallback events from their raw observed states.
+- **Cursor fidelity measured independently:** Raw attempts and derived writes compare the initial AX cursor with the earliest retained post-input mutation and the terminal edit. That comparison remains audit evidence and does not alter reconstruction. Legacy sessions without range-native context retain the earlier conservative alignment gate.
+- **Semantic cursor positioning validated and promoted:** New sessions use Accessibility range-native left, selected, and right text as model conditioning across Obsidian, Codex, and Chrome. Numeric AX coordinates remain diagnostic only. Known empty Codex and Gemini prompt chrome is represented separately from editable context. Legacy sessions retain their conservative numeric eligibility rule.
 
 ## Implemented decisions
 

@@ -312,3 +312,36 @@ public func valueRepresentsPlaceholder(_ value: String, placeholderValue: String
 public func logicalEditableValue(_ value: String, placeholderValue: String?) -> String {
     valueRepresentsPlaceholder(value, placeholderValue: placeholderValue) ? "" : value
 }
+
+/// Identifies UI prompt chrome that an application exposes as AXValue even
+/// though the editable field is logically empty. This is deliberately narrow:
+/// unknown short field values remain user content rather than being guessed
+/// away.
+public func unpopulatedSurfacePrompt(
+    bundleIdentifier: String?,
+    fieldDescription: String?,
+    value: String,
+    placeholderValue: String?,
+    valueRepresentedPlaceholder: Bool
+) -> String? {
+    let visible = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !visible.isEmpty else { return nil }
+    if valueRepresentedPlaceholder
+        || valueRepresentsPlaceholder(value, placeholderValue: placeholderValue) {
+        return placeholderValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+            .nonEmpty ?? visible
+    }
+    if bundleIdentifier == "com.openai.codex", visible == "Do anything" {
+        return visible
+    }
+    if bundleIdentifier == "com.google.Chrome",
+       fieldDescription?.localizedCaseInsensitiveContains("prompt for Gemini") == true,
+       visible == "Ask Gemini" {
+        return visible
+    }
+    return nil
+}
+
+private extension String {
+    var nonEmpty: String? { isEmpty ? nil : self }
+}
