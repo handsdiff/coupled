@@ -6,7 +6,7 @@ public struct CausalDatasetCompilerConfiguration: Sendable {
     public let includeTimestampsInContext: Bool
 
     public init(
-        conversionVersion: String = "phase1-causal-v3",
+        conversionVersion: String = "phase1-causal-v4",
         includeTimestampsInContext: Bool = false
     ) {
         self.conversionVersion = conversionVersion
@@ -278,7 +278,7 @@ public struct CausalDatasetCompiler {
                 continue
             }
             examples.append([
-                "schemaVersion": 3,
+                "schemaVersion": 4,
                 "exampleID": "\(sessionID):\(target.sourceEventID)",
                 "conversionVersion": configuration.conversionVersion,
                 "sessionID": sessionID,
@@ -298,8 +298,10 @@ public struct CausalDatasetCompiler {
                 "targetSourceRecordIDs": targetSourceRecordIDs,
                 "sourceRecordIDs": contextSourceRecordIDs + targetSourceRecordIDs,
                 "targetMask": [
-                    "type": "all_target_tokens",
-                    "includeInLoss": "entire_target_string",
+                    "type": "all_content_tokens_plus_eos",
+                    "contentReceivesLoss": true,
+                    "eosTokenCount": 1,
+                    "eosReceivesLoss": true,
                 ],
             ])
         }
@@ -338,7 +340,7 @@ public struct CausalDatasetCompiler {
             "raw.jsonl": try sha256(of: rawURL),
         ]
         let datasetManifest: [String: Any] = [
-            "schemaVersion": 3,
+            "schemaVersion": 4,
             "conversionVersion": configuration.conversionVersion,
             "sessionID": sessionID,
             "source": [
@@ -374,7 +376,7 @@ public struct CausalDatasetCompiler {
             "serialization": [
                 "contextVersion": 1,
                 "queryVersion": 1,
-                "targetVersion": 3,
+                "targetVersion": 4,
                 "targetFormat": "plain_text_content",
                 "timestampsInContext": configuration.includeTimestampsInContext,
                 "eventDelimiter": "newline",
@@ -395,9 +397,19 @@ public struct CausalDatasetCompiler {
                 "rightEdge": "write conditioning query",
                 "reason": "token suffixes are model-tokenizer dependent; query remains while older history truncates first",
             ],
+            "loader": [
+                "targetSource": "example.target",
+                "targetTokenization": "selected tokenizer with automatic special tokens disabled",
+                "targetTermination": "append exactly one selected-tokenizer eos_token_id",
+                "eosTokenCount": 1,
+                "contentTokensReceiveLoss": true,
+                "eosTokenReceivesLoss": true,
+            ],
             "targetMask": [
-                "type": "all_target_tokens",
-                "includeInLoss": "entire_target_string",
+                "type": "all_content_tokens_plus_eos",
+                "contentReceivesLoss": true,
+                "eosTokenCount": 1,
+                "eosReceivesLoss": true,
             ],
         ]
         try writeJSONObject(datasetManifest, to: outputFiles[0], pretty: true)

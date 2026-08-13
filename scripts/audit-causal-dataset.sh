@@ -57,7 +57,16 @@ jq -e -s --slurpfile manifest "$manifest" --slurpfile examples "$examples" --slu
     (.target == (($by_id[$example.targetEventID].serialized | fromjson).content)) and
     ($query.kind == "write_conditioning_state") and
     (.conditioningState.captureSemantics == "synchronous_before_application_mutation") and
-    (.targetMask.type == "all_target_tokens") and
+    (.targetMask.type == "all_content_tokens_plus_eos") and
+    (.targetMask.contentReceivesLoss == true) and
+    (.targetMask.eosTokenCount == 1) and
+    (.targetMask.eosReceivesLoss == true) and
+    ($m.loader.targetSource == "example.target") and
+    ($m.loader.targetTokenization == "selected tokenizer with automatic special tokens disabled") and
+    ($m.loader.targetTermination == "append exactly one selected-tokenizer eos_token_id") and
+    ($m.loader.eosTokenCount == 1) and
+    ($m.loader.contentTokensReceiveLoss == true) and
+    ($m.loader.eosTokenReceivesLoss == true) and
     (.conditioningState.cursorContext.selectionStartCharacters == .targetMetadata.characterOffset) and
     (.modelInput == (if .context == "" then .query else .context + "\n" + .query end)) and
     (all(.contextEventIDs[];

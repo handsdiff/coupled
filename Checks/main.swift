@@ -367,8 +367,13 @@ expect(
 )
 expect(
     (examples[0]["targetMask"] as! [String: Any])["type"] as! String
-        == "all_target_tokens",
-    "every content-target token receives loss"
+        == "all_content_tokens_plus_eos",
+    "every content-target token and one EOS receive loss"
+)
+expect(
+    (examples[0]["targetMask"] as! [String: Any])["eosTokenCount"] as! Int == 1
+        && (examples[0]["targetMask"] as! [String: Any])["eosReceivesLoss"] as! Bool,
+    "loader appends exactly one loss-bearing EOS token"
 )
 let firstQuery = try! JSONSerialization.jsonObject(
     with: Data((examples[0]["query"] as! String).utf8)

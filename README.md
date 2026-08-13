@@ -255,9 +255,9 @@ reordering or modifying the source files:
 ```sh
 ./scripts/coupled compile \
   --input ./coupled-data/normal-work-dry-run-3 \
-  --output ./coupled-data/normal-work-dry-run-3-phase1-v2
+  --output ./coupled-data/normal-work-dry-run-3-phase1-v4
 ./scripts/audit-causal-dataset.sh \
-  ./coupled-data/normal-work-dry-run-3-phase1-v2
+  ./coupled-data/normal-work-dry-run-3-phase1-v4
 ```
 
 The fresh output directory contains:
@@ -283,7 +283,7 @@ prior writes at `terminalDecisionAt`. Records explicitly marked
 `phase1Eligible: false`—including future displayed model predictions—are
 excluded before contexts and targets are built.
 
-Conversion `phase1-causal-v3` defines the supervised example as:
+Conversion `phase1-causal-v4` defines the supervised example as:
 
 ```text
 modelInput = causal read/write history + known pre-mutation destination/cursor query
@@ -303,8 +303,12 @@ characters equal model tokens. The manifest freezes the Phase 1 packing rule:
 after selecting the actual training tokenizer, retain the most recent `L`
 tokens of `modelInput` (`L = 32768` initially) and train only on the outcome
 target. Because the query is serialized at the right edge, older history is
-truncated before the current destination and cursor state. Thus tokenizer-specific packing is a deterministic loader step,
-not a sensor or causality assumption.
+truncated before the current destination and cursor state. The target loader
+tokenizes the exact `target` string with automatic special tokens disabled,
+appends exactly one `tokenizer.eos_token_id`, and applies loss to every content
+token and that EOS token. The EOS is a structural terminator added by the loader;
+it is not part of captured human content. Thus tokenizer-specific packing is a
+deterministic loader step, not a sensor or causality assumption.
 
 ## Experimental interpretation
 
