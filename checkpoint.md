@@ -7,6 +7,7 @@
 - **Synthetic deletion fallback removed:** The live collector no longer turns a delete-only transition into `BEFORE → empty`. The compiler repairs the two known run-5 fallback events from their raw observed states.
 - **Cursor fidelity measured independently:** Raw attempts and derived writes compare the initial AX cursor with the earliest retained post-input mutation and the terminal edit. That comparison remains audit evidence and does not alter reconstruction. Legacy sessions without range-native context retain the earlier conservative alignment gate.
 - **Semantic cursor positioning validated and promoted:** New sessions use Accessibility range-native left, selected, and right text as model conditioning across Obsidian, Codex, and Chrome. Numeric AX coordinates remain diagnostic only. Known empty Codex and Gemini prompt chrome is represented separately from editable context. Legacy sessions retain their conservative numeric eligibility rule.
+- **Write input now supersedes stale read timers:** A mutating key invalidates pending pointer-based reads on the same Core Graphics window before they can capture partially authored output. Raw suppression evidence links the candidate to its write attempt, and compiler v8 repairs the equivalent timing pattern in older sessions.
 
 ## Implemented decisions
 
@@ -24,7 +25,6 @@
 ## Remaining capture fixes
 
 - **Fix delayed read attribution:** Immediately before a delayed screenshot, re-resolve and validate the app, window, display, and relevant bounds. Suppress or restart the candidate if they no longer match, rather than attaching stale Obsidian or Chrome metadata to pixels from another app.
-- **Prevent authorship leakage into reads:** A read captured while a write is active can contain partially typed human output and incorrectly label it as inbound information. The causal compiler prevents it from conditioning that same write, but it can still contaminate later history. Such content must be suppressed, attributed as authored output, or otherwise excluded from ordinary READ events.
 
 ## Paste representation
 

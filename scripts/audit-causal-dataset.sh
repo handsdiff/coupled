@@ -11,9 +11,10 @@ manifest="$dataset_dir/dataset.json"
 events="$dataset_dir/events.jsonl"
 examples="$dataset_dir/examples.jsonl"
 target_exclusions="$dataset_dir/target-exclusions.jsonl"
+context_exclusions="$dataset_dir/context-exclusions.jsonl"
 rejections="$dataset_dir/rejections.jsonl"
 
-for dataset_file in "$manifest" "$events" "$examples" "$target_exclusions" "$rejections"; do
+for dataset_file in "$manifest" "$events" "$examples" "$target_exclusions" "$context_exclusions" "$rejections"; do
   if [[ ! -f "$dataset_file" ]]; then
     print -u2 "Missing compiled dataset file: $dataset_file"
     exit 1
@@ -25,12 +26,13 @@ command -v jq >/dev/null || {
   exit 1
 }
 
-jq -e -s --slurpfile manifest "$manifest" --slurpfile examples "$examples" --slurpfile exclusions "$target_exclusions" '
+jq -e -s --slurpfile manifest "$manifest" --slurpfile examples "$examples" --slurpfile exclusions "$target_exclusions" --slurpfile context_exclusions "$context_exclusions" '
   . as $events |
   ($events | INDEX(.sourceEventID)) as $by_id |
   ($manifest[0]) as $m |
   ($examples) as $examples |
   ($exclusions) as $exclusions |
+  ($context_exclusions) as $context_exclusions |
   ($examples | map(.targetEventID)) as $example_ids |
   ($exclusions | map(.sourceEventID)) as $excluded_ids |
   ($events | map(select(.kind == "write") | .sourceEventID)) as $write_ids |
@@ -38,6 +40,7 @@ jq -e -s --slurpfile manifest "$manifest" --slurpfile examples "$examples" --slu
   ($m.counts.convertedEvents == ($events | length)) and
   ($m.counts.examples == ($examples | length)) and
   ($m.counts.targetExclusions == ($exclusions | length)) and
+  ($m.counts.contextExclusions == ($context_exclusions | length)) and
   (($by_id | length) == ($events | length)) and
   (all($events[];
     .sessionID == $m.sessionID and
@@ -99,6 +102,17 @@ jq -e -s --slurpfile manifest "$manifest" --slurpfile examples "$examples" --slu
     )
   ) and
 
+  all($context_exclusions[];
+    .sessionID == $m.sessionID and
+    .conversionVersion == $m.conversionVersion and
+    .reason == "read_candidate_superseded_by_write" and
+    ($by_id[.sourceEventID] == null) and
+    ($by_id[.supersedingWriteEventID].kind == "write") and
+    (.lastActivityAt < .supersedingWriteLastInputAt) and
+    (.capturedAt >= .supersedingWriteBeganAt) and
+    (.capturedAt <= .supersedingWriteAvailableAt)
+  ) and
+
   all($exclusions[];
     .sessionID == $m.sessionID and
     .conversionVersion == $m.conversionVersion and
@@ -140,8 +154,10 @@ done
 
 actual_rejections="$(wc -l < "$rejections" | tr -d ' ')"
 actual_target_exclusions="$(wc -l < "$target_exclusions" | tr -d ' ')"
+actual_context_exclusions="$(wc -l < "$context_exclusions" | tr -d ' ')"
 manifest_rejections="$(jq -r '.counts.rejections' "$manifest")"
 manifest_target_exclusions="$(jq -r '.counts.targetExclusions' "$manifest")"
+manifest_context_exclusions="$(jq -r '.counts.contextExclusions' "$manifest")"
 [[ "$actual_rejections" == "$manifest_rejections" ]] || {
   print -u2 "Rejection count mismatch: manifest=$manifest_rejections file=$actual_rejections"
   exit 1
@@ -150,5 +166,9 @@ manifest_target_exclusions="$(jq -r '.counts.targetExclusions' "$manifest")"
   print -u2 "Target exclusion count mismatch: manifest=$manifest_target_exclusions file=$actual_target_exclusions"
   exit 1
 }
+[[ "$actual_context_exclusions" == "$manifest_context_exclusions" ]] || {
+  print -u2 "Context exclusion count mismatch: manifest=$manifest_context_exclusions file=$actual_context_exclusions"
+  exit 1
+}
 
-print "Causal dataset audit passed: $(jq -r '.counts.examples' "$manifest") examples, $(jq -r '.counts.convertedEvents' "$manifest") converted events, $actual_target_exclusions target exclusions, $actual_rejections rejections."
+print "Causal dataset audit passed: $(jq -r '.counts.examples' "$manifest") examples, $(jq -r '.counts.convertedEvents' "$manifest") converted events, $actual_target_exclusions target exclusions, $actual_context_exclusions context exclusions, $actual_rejections rejections."

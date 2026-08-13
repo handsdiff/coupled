@@ -9,6 +9,7 @@ final class ActiveTapWriteCollector {
     private let configuration: Configuration
     private let rawWriter: JSONLWriter
     private let eventWriter: JSONLWriter
+    private let mutatingInputObserver: ((MutatingWriteInput) -> Void)?
     private let systemWideElement = AXUIElementCreateSystemWide()
 
     private var eventTap: CFMachPort?
@@ -19,10 +20,16 @@ final class ActiveTapWriteCollector {
     private var sequence: UInt64 = 0
     private var tapTimeoutCount: UInt64 = 0
 
-    init(configuration: Configuration, rawWriter: JSONLWriter, eventWriter: JSONLWriter) {
+    init(
+        configuration: Configuration,
+        rawWriter: JSONLWriter,
+        eventWriter: JSONLWriter,
+        mutatingInputObserver: ((MutatingWriteInput) -> Void)? = nil
+    ) {
         self.configuration = configuration
         self.rawWriter = rawWriter
         self.eventWriter = eventWriter
+        self.mutatingInputObserver = mutatingInputObserver
     }
 
     func start() throws {
@@ -177,6 +184,11 @@ final class ActiveTapWriteCollector {
                     event: event,
                     inputObservedAt: inputObservedAt
                 )
+                reportMutatingInput(
+                    classification: classification,
+                    event: event,
+                    inputObservedAt: inputObservedAt
+                )
                 if classification.isPaste {
                     recordPasteSignal(
                         event: event,
@@ -220,6 +232,11 @@ final class ActiveTapWriteCollector {
                     sinceNanoseconds: beforeStarted
                 )
             )
+            reportMutatingInput(
+                classification: classification,
+                event: event,
+                inputObservedAt: inputObservedAt
+            )
             if classification.isPaste {
                 recordPasteSignal(event: event, inputObservedAt: inputObservedAt)
             } else {
@@ -237,6 +254,11 @@ final class ActiveTapWriteCollector {
             inputObservedAt: inputObservedAt,
             before: before,
             beforeDurationMilliseconds: milliseconds(sinceNanoseconds: beforeStarted)
+        )
+        reportMutatingInput(
+            classification: classification,
+            event: event,
+            inputObservedAt: inputObservedAt
         )
         if classification.isPaste {
             recordPasteSignal(event: event, inputObservedAt: inputObservedAt)
@@ -304,6 +326,22 @@ final class ActiveTapWriteCollector {
         ))
         self.pending = pending
         scheduleWriteTimer()
+    }
+
+    private func reportMutatingInput(
+        classification: KeyClassification,
+        event: CGEvent,
+        inputObservedAt: String
+    ) {
+        guard classification.canStartWrite,
+              let pending,
+              let processIdentifier = pending.target?.app.processIdentifier else { return }
+        mutatingInputObserver?(MutatingWriteInput(
+            attemptID: pending.attemptID,
+            observedAt: inputObservedAt,
+            eventTimestampNanoseconds: event.timestamp,
+            processIdentifier: processIdentifier
+        ))
     }
 
     private func scheduleWriteTimer() {

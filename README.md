@@ -130,6 +130,14 @@ editable fields in the allowlisted applications.
 Derived events are appended in emission order to `events.jsonl` and mirrored to
 the same live log. Source observations are appended separately to `raw.jsonl`:
 
+A mutating key is also an event boundary for a pending read on the same Core
+Graphics window. The key invalidates pointer activity whose read delay has not
+yet settled, so that timer cannot photograph partially authored text and emit
+it before the corresponding write. The invalidated candidate remains in
+`raw.jsonl` with `read_candidate_superseded_by_write`; it does not produce a
+derived read. Pointer or scroll activity after the final key starts a fresh
+read delay and therefore settles after the write.
+
 - `WRITE` is attempted in Obsidian, Chrome, and Codex by default. An active
   event tap attempts to capture a focused text area, text field, or combo box
   before returning the first mutating key. The same retained Accessibility
@@ -263,9 +271,9 @@ reordering or modifying the source files:
 ```sh
 ./scripts/coupled compile \
   --input ./coupled-data/normal-work-dry-run-3 \
-  --output ./coupled-data/normal-work-dry-run-3-phase1-v7
+  --output ./coupled-data/normal-work-dry-run-3-phase1-v8
 ./scripts/audit-causal-dataset.sh \
-  ./coupled-data/normal-work-dry-run-3-phase1-v7
+  ./coupled-data/normal-work-dry-run-3-phase1-v8
 ```
 
 The fresh output directory contains:
@@ -280,6 +288,9 @@ The fresh output directory contains:
   used as Phase 1 targets, including pure deletions and new writes without a
   complete semantic cursor capture. Legacy sessions retain their earlier
   conservative numeric-cursor eligibility rule.
+- `context-exclusions.jsonl`: stale delayed reads omitted from causal history
+  because later keyboard input superseded their pointer trigger before the
+  screenshot was captured.
 - `rejections.jsonl`: writes that cannot be reconstructed exactly from their
   retained raw BEFORE and selected AFTER observation.
 - `dataset.json`: conversion rules, source digests, counts, and schema details.
@@ -292,7 +303,7 @@ prior writes at `terminalDecisionAt`. Records explicitly marked
 `phase1Eligible: false`—including future displayed model predictions—are
 excluded before contexts and targets are built.
 
-Conversion `phase1-causal-v7` defines the supervised example as:
+Conversion `phase1-causal-v8` defines the supervised example as:
 
 ```text
 modelInput = causal read/write history + known pre-mutation destination/cursor query

@@ -20,6 +20,7 @@ final class ReadCandidateCollector {
     private var timersByContext: [ReadCandidateKey: Timer] = [:]
     private var cachedPointerWindow: PointerWindowContext?
     private var lastWindowLookupTimestamp: UInt64 = 0
+    private var latestMutatingInputBySurface: [ReadMutationSurfaceKey: ReadMutationBoundary] = [:]
     private var reportedCaptureError = false
 
     init(
@@ -52,6 +53,7 @@ final class ReadCandidateCollector {
         if captureScreenText {
             writeDiagnostic("screen-text reads: \(writer.path)")
             writeDiagnostic("visible pixels are captured and recognized locally after \(configuration.readDelay) seconds without pointer activity")
+            writeDiagnostic("same-window mutating input supersedes an unsettled read candidate")
             writeDiagnostic("viewport crop removes \(Int((configuration.viewportSideCropFraction * 100).rounded()))% from each side, \(Int((configuration.viewportTopCropFraction * 100).rounded()))% from the top, and \(Int((configuration.viewportBottomCropFraction * 100).rounded()))% from the bottom")
             writeDiagnostic("normalized line overlap is removed between adjacent OCR viewports in the same app/window/display")
             writeDiagnostic("Chrome auxiliary surfaces are retained raw and suppressed from derived reads")
@@ -66,6 +68,37 @@ final class ReadCandidateCollector {
         writeDiagnostic("allowed bundles: \(configuration.allowedBundles.sorted().joined(separator: ", "))")
         if let pauseFile = configuration.pauseFile {
             writeDiagnostic("collection pauses while this file exists: \(pauseFile)")
+        }
+    }
+
+    func supersedePendingReads(with input: MutatingWriteInput) {
+        let focusedWindowID = topmostWindow(
+            ownedBy: input.processIdentifier
+        )?.windowID
+        let boundary = ReadMutationBoundary(
+            attemptID: input.attemptID,
+            observedAt: input.observedAt,
+            eventTimestampNanoseconds: input.eventTimestampNanoseconds,
+            processIdentifier: input.processIdentifier,
+            windowID: focusedWindowID
+        )
+        latestMutatingInputBySurface[ReadMutationSurfaceKey(
+            processIdentifier: input.processIdentifier,
+            windowID: focusedWindowID
+        )] = boundary
+
+        let supersededKeys = pendingByContext.keys.filter {
+            sameReadSurface(
+                processIdentifier: $0.processIdentifier,
+                windowID: $0.windowID,
+                as: boundary
+            )
+        }
+        for key in supersededKeys {
+            timersByContext[key]?.invalidate()
+            timersByContext[key] = nil
+            guard let pending = pendingByContext.removeValue(forKey: key) else { continue }
+            persistSupersededCandidate(pending, boundary: boundary)
         }
     }
 
@@ -309,14 +342,18 @@ final class ReadCandidateCollector {
         retainedScreenshot: RetainedScreenshot?
     ) {
         guard !configuration.isPaused() else { return }
-        let suppressesDerivedRead = isChromeAuxiliarySurface(
+        let supersedingWrite = supersedingWriteInput(
+            for: pending,
+            capturedAt: capturedAt
+        )
+        let suppressesChromeAuxiliarySurface = isChromeAuxiliarySurface(
             bundleIdentifier: pending.bundleIdentifier,
             width: pending.windowBounds!.width,
             height: pending.windowBounds!.height
         )
-        let derivedSuppressionReason = suppressesDerivedRead
-            ? "chrome_auxiliary_surface"
-            : nil
+        let derivedSuppressionReason = supersedingWrite != nil
+            ? "read_candidate_superseded_by_write"
+            : suppressesChromeAuxiliarySurface ? "chrome_auxiliary_surface" : nil
         var sourceRecordIDs: [String] = []
         if let rawWriter {
             do {
@@ -341,6 +378,7 @@ final class ReadCandidateCollector {
                         screenshotPixelWidth: retainedScreenshot?.pixelWidth,
                         screenshotPixelHeight: retainedScreenshot?.pixelHeight,
                         derivedSuppressionReason: derivedSuppressionReason,
+                        supersedingWriteAttemptID: supersedingWrite?.attemptID,
                         viewportSideCropFraction: configuration.viewportSideCropFraction,
                         viewportTopCropFraction: configuration.viewportTopCropFraction,
                         viewportBottomCropFraction: configuration.viewportBottomCropFraction,
@@ -363,7 +401,7 @@ final class ReadCandidateCollector {
                 return
             }
         }
-        guard !suppressesDerivedRead else { return }
+        guard derivedSuppressionReason == nil else { return }
         let contextIdentifier = "\(pending.processIdentifier)|\(pending.windowID ?? 0)|\(pending.displayID)"
         do {
             if let data = try writer.writeViewport(
@@ -417,6 +455,53 @@ final class ReadCandidateCollector {
         guard !reportedCaptureError else { return }
         reportedCaptureError = true
         writeDiagnostic("screen-text capture unavailable: \(message)")
+    }
+
+    private func persistSupersededCandidate(
+        _ pending: PendingReadCandidate,
+        boundary: ReadMutationBoundary
+    ) {
+        guard let rawWriter else { return }
+        _ = try? rawWriter.write(RawReadCandidateSuppression(
+            recordID: UUID().uuidString,
+            observedAt: nowTimestamp(),
+            reason: "read_candidate_superseded_by_write",
+            supersedingWriteAttemptID: boundary.attemptID,
+            supersedingInputAt: boundary.observedAt,
+            supersedingEventTimestampNanoseconds: boundary.eventTimestampNanoseconds,
+            firstActivityAt: pending.firstActivityAt,
+            lastActivityAt: pending.lastActivityAt,
+            firstEventTimestampNanoseconds: pending.firstEventTimestampNanoseconds,
+            lastEventTimestampNanoseconds: pending.lastEventTimestampNanoseconds,
+            readDelaySeconds: configuration.readDelay,
+            triggerTypes: pending.triggerTypes.sorted(),
+            eventCount: pending.eventCount,
+            x: pending.lastX,
+            y: pending.lastY,
+            displayID: pending.displayID,
+            windowID: pending.windowID,
+            windowTitle: pending.windowTitle,
+            appName: pending.appName,
+            bundleIdentifier: pending.bundleIdentifier,
+            processIdentifier: pending.processIdentifier
+        ))
+    }
+
+    private func supersedingWriteInput(
+        for pending: PendingReadCandidate,
+        capturedAt: String
+    ) -> ReadMutationBoundary? {
+        latestMutatingInputBySurface.values
+            .filter {
+                sameReadSurface(
+                    processIdentifier: pending.processIdentifier,
+                    windowID: pending.windowID,
+                    as: $0
+                )
+                    && $0.observedAt > pending.lastActivityAt
+                    && $0.observedAt <= capturedAt
+            }
+            .max { $0.observedAt < $1.observedAt }
     }
 
     private func persistScreenshot(_ image: CGImage, recordID: String) throws
@@ -483,6 +568,29 @@ private struct ReadCandidateKey: Hashable {
     let displayID: UInt32
 }
 
+private struct ReadMutationSurfaceKey: Hashable {
+    let processIdentifier: Int32
+    let windowID: UInt32?
+}
+
+private struct ReadMutationBoundary {
+    let attemptID: String
+    let observedAt: String
+    let eventTimestampNanoseconds: UInt64
+    let processIdentifier: Int32
+    let windowID: UInt32?
+}
+
+private func sameReadSurface(
+    processIdentifier: Int32,
+    windowID: UInt32?,
+    as boundary: ReadMutationBoundary
+) -> Bool {
+    guard processIdentifier == boundary.processIdentifier else { return false }
+    guard let boundaryWindowID = boundary.windowID else { return true }
+    return windowID == nil || windowID == boundaryWindowID
+}
+
 private struct PendingReadCandidate {
     let firstActivityAt: String
     var lastActivityAt: String
@@ -527,6 +635,32 @@ private struct ReadCandidateRecord: Encodable {
     let processIdentifier: Int32
 }
 
+private struct RawReadCandidateSuppression: Encodable {
+    let schemaVersion = 1
+    let recordType = "read_candidate_suppression"
+    let recordID: String
+    let observedAt: String
+    let reason: String
+    let supersedingWriteAttemptID: String
+    let supersedingInputAt: String
+    let supersedingEventTimestampNanoseconds: UInt64
+    let firstActivityAt: String
+    let lastActivityAt: String
+    let firstEventTimestampNanoseconds: UInt64
+    let lastEventTimestampNanoseconds: UInt64
+    let readDelaySeconds: Double
+    let triggerTypes: [String]
+    let eventCount: Int
+    let x: Double
+    let y: Double
+    let displayID: UInt32
+    let windowID: UInt32?
+    let windowTitle: String?
+    let appName: String
+    let bundleIdentifier: String?
+    let processIdentifier: Int32
+}
+
 private struct ScreenReadRecord: Encodable {
     let schemaVersion = 6
     let kind = "read"
@@ -563,7 +697,7 @@ private struct ScreenReadRecord: Encodable {
 }
 
 private struct RawScreenReadRecord: Encodable {
-    let schemaVersion = 4
+    let schemaVersion = 5
     let recordType = "screen_ocr_observation"
     let recordID: String
     let observedAt: String
@@ -584,6 +718,7 @@ private struct RawScreenReadRecord: Encodable {
     let screenshotPixelWidth: Int?
     let screenshotPixelHeight: Int?
     let derivedSuppressionReason: String?
+    let supersedingWriteAttemptID: String?
     let viewportSideCropFraction: Double
     let viewportTopCropFraction: Double
     let viewportBottomCropFraction: Double
@@ -680,6 +815,35 @@ private func topmostWindow(at point: CGPoint) -> PointerWindowContext? {
         return PointerWindowContext(
             windowID: windowID,
             ownerProcessIdentifier: ownerPID,
+            ownerName: window[kCGWindowOwnerName as String] as? String,
+            title: rawTitle?.isEmpty == false ? rawTitle : nil,
+            bounds: bounds
+        )
+    }
+    return nil
+}
+
+private func topmostWindow(ownedBy processIdentifier: Int32) -> PointerWindowContext? {
+    let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
+    guard let rawList = CGWindowListCopyWindowInfo(options, kCGNullWindowID),
+          let windows = rawList as? [[String: Any]] else { return nil }
+    for window in windows {
+        let layer = (window[kCGWindowLayer as String] as? NSNumber)?.intValue
+        let ownerPID = (window[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value
+        guard layer == 0, ownerPID == processIdentifier else { continue }
+        let alpha = (window[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1
+        guard alpha > 0,
+              let boundsDictionary = window[kCGWindowBounds as String] as? NSDictionary,
+              let bounds = CGRect(dictionaryRepresentation: boundsDictionary),
+              bounds.width > 1,
+              bounds.height > 1,
+              let windowID = (window[kCGWindowNumber as String] as? NSNumber)?.uint32Value else {
+            continue
+        }
+        let rawTitle = window[kCGWindowName as String] as? String
+        return PointerWindowContext(
+            windowID: windowID,
+            ownerProcessIdentifier: processIdentifier,
             ownerName: window[kCGWindowOwnerName as String] as? String,
             title: rawTitle?.isEmpty == false ? rawTitle : nil,
             bounds: bounds

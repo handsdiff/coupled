@@ -10,7 +10,7 @@ struct CompileCommand {
     init(arguments: [String]) throws {
         var input: String?
         var output: String?
-        var version = "phase1-causal-v7"
+        var version = "phase1-causal-v8"
         var includeTimestamps = false
         var index = 0
         while index < arguments.count {
@@ -53,10 +53,12 @@ struct CompileCommand {
         print("Converted events:  \(result.convertedEventCount)")
         print("Training examples: \(result.exampleCount)")
         print("Target exclusions: \(result.targetExcludedEventCount)")
+        print("Context exclusions: \(result.contextExcludedEventCount)")
         print("Rejected events:   \(result.rejectedEventCount)")
         print("Manifest:          \(outputDirectory.appendingPathComponent("dataset.json").path)")
         print("Examples:          \(outputDirectory.appendingPathComponent("examples.jsonl").path)")
         print("Target exclusions: \(outputDirectory.appendingPathComponent("target-exclusions.jsonl").path)")
+        print("Context exclusions: \(outputDirectory.appendingPathComponent("context-exclusions.jsonl").path)")
     }
 }
 

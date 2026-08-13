@@ -43,6 +43,13 @@ struct DisplayContext {
     let bounds: RectValue
 }
 
+struct MutatingWriteInput {
+    let attemptID: String
+    let observedAt: String
+    let eventTimestampNanoseconds: UInt64
+    let processIdentifier: Int32
+}
+
 func displayContext(at point: CGPoint) -> DisplayContext? {
     var displayID = CGDirectDisplayID()
     var count: UInt32 = 0

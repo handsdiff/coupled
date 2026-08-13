@@ -314,6 +314,7 @@ func writeEvent(
         "sequence": sequence,
         "eventID": id,
         "beganAt": began,
+        "lastInputAt": began,
         "terminalDecisionAt": available,
         "operation": removed.isEmpty ? "insert" : (inserted.isEmpty ? "delete" : "replace"),
         "content": inserted,
@@ -324,6 +325,7 @@ func writeEvent(
         "appName": "Fixture",
         "bundleIdentifier": "fixture.app",
         "windowTitle": "Fixture",
+        "processIdentifier": 42,
         "sourceRecordIDs": [sourceID],
     ]
 }
@@ -340,7 +342,10 @@ try! jsonData([
 
 let readLate: [String: Any] = [
     "sessionID": "fixture-session", "kind": "read", "sequence": 1,
+    "firstActivityAt": "2026-01-01T00:00:01.000Z",
+    "lastActivityAt": "2026-01-01T00:00:01.900Z",
     "capturedAt": "2026-01-01T00:00:03.000Z", "content": "late",
+    "processIdentifier": 42,
     "provenance": "screen_ocr", "sourceRecordIDs": ["raw-read-late"],
 ]
 let firstWrite = writeEvent(
@@ -424,9 +429,10 @@ let compilerResult = try! CausalDatasetCompiler().compile(
     outputDirectory: fixtureOutput
 )
 expect(compilerResult.sourceEventCount == 8, "compiler source count")
-expect(compilerResult.convertedEventCount == 6, "compiler excludes invalid writes")
+expect(compilerResult.convertedEventCount == 5, "compiler excludes invalid and stale events")
 expect(compilerResult.exampleCount == 3, "compiler creates one example per verified write")
 expect(compilerResult.targetExcludedEventCount == 1, "compiler separates valid history from targets")
+expect(compilerResult.contextExcludedEventCount == 1, "compiler removes a read superseded by later keyboard input")
 expect(compilerResult.rejectedEventCount == 2, "compiler records exclusions and rejections")
 
 let examples = readFixtureJSONL(fixtureOutput.appendingPathComponent("examples.jsonl"))
@@ -436,7 +442,7 @@ expect(
 )
 expect(
     examples[1]["contextEventIDs"] as! [String]
-        == ["fixture-session:read:2", "fixture-session:read:1", "write-1"],
+        == ["fixture-session:read:2", "write-1"],
     "context is stably ordered by causal availability"
 )
 expect(
@@ -487,6 +493,15 @@ expect(
     "pure deletion remains history but is excluded as a content target"
 )
 let rejections = readFixtureJSONL(fixtureOutput.appendingPathComponent("rejections.jsonl"))
+let contextExclusions = readFixtureJSONL(
+    fixtureOutput.appendingPathComponent("context-exclusions.jsonl")
+)
+expect(
+    contextExclusions.count == 1
+        && contextExclusions[0]["reason"] as? String == "read_candidate_superseded_by_write"
+        && contextExclusions[0]["supersedingWriteEventID"] as? String == "write-1",
+    "stale delayed read remains explicit audit evidence"
+)
 expect(
     rejections.contains {
         $0["reason"] as? String == "derived_edit_does_not_reconstruct_used_observation"

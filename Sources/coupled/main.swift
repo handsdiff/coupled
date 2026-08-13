@@ -37,7 +37,7 @@ OPTIONS
 COMPILE OPTIONS
   --input PATH                 Session directory containing session/events/raw JSON
   --output PATH                Fresh directory for compiled dataset files
-  --conversion-version NAME    Frozen conversion name (default: phase1-causal-v7)
+  --conversion-version NAME    Frozen conversion name (default: phase1-causal-v8)
   --include-timestamps-in-context
                                Include availableAt in serialized context events
 
@@ -123,16 +123,19 @@ do {
             path: configuration.rawPath,
             sessionID: configuration.sessionID
         )
-        let writes = ActiveTapWriteCollector(
-            configuration: configuration,
-            rawWriter: rawWriter,
-            eventWriter: eventWriter
-        )
         let reads = try ReadCandidateCollector(
             configuration: configuration,
             captureScreenText: true,
             writer: eventWriter,
             rawWriter: rawWriter
+        )
+        let writes = ActiveTapWriteCollector(
+            configuration: configuration,
+            rawWriter: rawWriter,
+            eventWriter: eventWriter,
+            mutatingInputObserver: { [weak reads] input in
+                reads?.supersedePendingReads(with: input)
+            }
         )
         try writes.start()
         try reads.start()

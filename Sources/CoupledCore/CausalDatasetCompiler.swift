@@ -6,7 +6,7 @@ public struct CausalDatasetCompilerConfiguration: Sendable {
     public let includeTimestampsInContext: Bool
 
     public init(
-        conversionVersion: String = "phase1-causal-v7",
+        conversionVersion: String = "phase1-causal-v8",
         includeTimestampsInContext: Bool = false
     ) {
         self.conversionVersion = conversionVersion
@@ -19,6 +19,7 @@ public struct CausalDatasetCompilerResult: Sendable, Equatable {
     public let convertedEventCount: Int
     public let exampleCount: Int
     public let targetExcludedEventCount: Int
+    public let contextExcludedEventCount: Int
     public let rejectedEventCount: Int
 
     public init(
@@ -26,12 +27,14 @@ public struct CausalDatasetCompilerResult: Sendable, Equatable {
         convertedEventCount: Int,
         exampleCount: Int,
         targetExcludedEventCount: Int,
+        contextExcludedEventCount: Int,
         rejectedEventCount: Int
     ) {
         self.sourceEventCount = sourceEventCount
         self.convertedEventCount = convertedEventCount
         self.exampleCount = exampleCount
         self.targetExcludedEventCount = targetExcludedEventCount
+        self.contextExcludedEventCount = contextExcludedEventCount
         self.rejectedEventCount = rejectedEventCount
     }
 }
@@ -92,6 +95,7 @@ public struct CausalDatasetCompiler {
             output.appendingPathComponent("events.jsonl"),
             output.appendingPathComponent("examples.jsonl"),
             output.appendingPathComponent("target-exclusions.jsonl"),
+            output.appendingPathComponent("context-exclusions.jsonl"),
             output.appendingPathComponent("rejections.jsonl"),
         ]
         if FileManager.default.fileExists(atPath: output.path),
@@ -228,6 +232,19 @@ public struct CausalDatasetCompiler {
             }
         }
 
+        var contextExclusions = [[String: Any]]()
+        let verifiedWrites = converted.filter { $0.kind == "write" }
+        converted.removeAll { candidate in
+            guard candidate.kind == "read",
+                  let supersedingWrite = verifiedWrites.first(where: {
+                      staleReadCandidate(candidate, wasSupersededBy: $0)
+                  }) else { return false }
+            contextExclusions.append(contextExclusion(
+                read: candidate,
+                supersedingWrite: supersedingWrite
+            ))
+            return true
+        }
         converted.sort(by: causalOrder)
         let targets = converted
             .filter { $0.kind == "write" }
@@ -358,9 +375,16 @@ public struct CausalDatasetCompiler {
             result["conversionVersion"] = configuration.conversionVersion
             return result
         }
+        contextExclusions = contextExclusions.map { exclusion in
+            var result = exclusion
+            result["sessionID"] = sessionID
+            result["conversionVersion"] = configuration.conversionVersion
+            return result
+        }
         try writeJSONL(examples, to: outputFiles[2])
         try writeJSONL(targetExclusions, to: outputFiles[3])
-        try writeJSONL(rejections, to: outputFiles[4])
+        try writeJSONL(contextExclusions, to: outputFiles[4])
+        try writeJSONL(rejections, to: outputFiles[5])
 
         let sourceDigests: [String: Any] = [
             "session.json": try sha256(of: sessionURL),
@@ -368,7 +392,7 @@ public struct CausalDatasetCompiler {
             "raw.jsonl": try sha256(of: rawURL),
         ]
         let datasetManifest: [String: Any] = [
-            "schemaVersion": 7,
+            "schemaVersion": 8,
             "conversionVersion": configuration.conversionVersion,
             "sessionID": sessionID,
             "source": [
@@ -381,6 +405,7 @@ public struct CausalDatasetCompiler {
                 "convertedEvents": converted.count,
                 "examples": examples.count,
                 "targetExclusions": targetExclusions.count,
+                "contextExclusions": contextExclusions.count,
                 "rejections": rejections.count,
             ],
             "timing": [
@@ -388,6 +413,7 @@ public struct CausalDatasetCompiler {
                 "writeAvailableAt": "terminalDecisionAt",
                 "targetBeganAt": "beganAt",
                 "causalFilter": "event.availableAt < target.beganAt",
+                "readSupersession": "exclude a same-process read whose last pointer activity precedes a later key and whose delayed screenshot lands inside that write interval",
                 "tieBreak": "source JSONL line order",
             ],
             "eligibility": [
@@ -450,6 +476,7 @@ public struct CausalDatasetCompiler {
             convertedEventCount: converted.count,
             exampleCount: examples.count,
             targetExcludedEventCount: targetExclusions.count,
+            contextExcludedEventCount: contextExclusions.count,
             rejectedEventCount: rejections.count
         )
     }
@@ -468,6 +495,49 @@ private struct ConvertedEvent {
     let availableAt: String
     let beganAt: String?
     let serialized: String
+}
+
+private func staleReadCandidate(
+    _ read: ConvertedEvent,
+    wasSupersededBy write: ConvertedEvent
+) -> Bool {
+    guard read.kind == "read", write.kind == "write",
+          let readPID = read.object.number("processIdentifier")?.intValue,
+          let writePID = write.object.number("processIdentifier")?.intValue,
+          readPID == writePID,
+          let lastActivityAt = read.object.string("lastActivityAt"),
+          let capturedAt = read.object.string("capturedAt"),
+          let writeBeganAt = write.object.string("beganAt"),
+          let lastInputAt = write.object.string("lastInputAt"),
+          let terminalDecisionAt = write.object.string("terminalDecisionAt"),
+          let lastActivity = parseTimestamp(lastActivityAt),
+          let captured = parseTimestamp(capturedAt),
+          let writeBegan = parseTimestamp(writeBeganAt),
+          let lastInput = parseTimestamp(lastInputAt),
+          let terminalDecision = parseTimestamp(terminalDecisionAt) else { return false }
+    return lastActivity < lastInput
+        && captured >= writeBegan
+        && captured <= terminalDecision
+}
+
+private func contextExclusion(
+    read: ConvertedEvent,
+    supersedingWrite: ConvertedEvent
+) -> [String: Any] {
+    compactJSONObject([
+        "schemaVersion": 1,
+        "reason": "read_candidate_superseded_by_write",
+        "sourceEventID": read.sourceEventID,
+        "sourceLine": read.source.line,
+        "capturedAt": read.object.string("capturedAt"),
+        "lastActivityAt": read.object.string("lastActivityAt"),
+        "processIdentifier": read.object.number("processIdentifier")?.intValue,
+        "supersedingWriteEventID": supersedingWrite.sourceEventID,
+        "supersedingWriteBeganAt": supersedingWrite.object.string("beganAt"),
+        "supersedingWriteLastInputAt": supersedingWrite.object.string("lastInputAt"),
+        "supersedingWriteAvailableAt": supersedingWrite.object.string("terminalDecisionAt"),
+        "sourceRecordIDs": read.object.stringArray("sourceRecordIDs"),
+    ])
 }
 
 private func readJSONL(_ url: URL) throws -> [SourceRecord] {
