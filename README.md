@@ -158,7 +158,9 @@ the same live log. Source observations are appended separately to `raw.jsonl`:
   inside, and after its selected range using `AXStringForRange`. These strings
   are diagnostic evidence for a semantic cursor representation only: probe
   errors and results do not change write reconstruction, derived events,
-  cursor-fidelity gating, or compiled training examples.
+  cursor-fidelity gating, or compiled training examples. If an
+  Electron-provided right extent is rejected, the raw probe retries bounded
+  shorter ranges from the same provider-native selection boundary.
 - `READ` captures the visible rectangle of the topmost window surface after the
   read delay, removes 10% from both the left and right, 10% from the top, and
   35% from the bottom, then uses macOS Vision recognition locally to emit its

@@ -1379,7 +1379,7 @@ private struct WriteDerivationDecision {
 }
 
 private struct RawActiveTapWriteAttempt: Encodable {
-    let schemaVersion = 9
+    let schemaVersion = 10
     let recordType = "active_tap_write_attempt"
     let recordID: String
     let bundleIdentifier: String
@@ -1653,11 +1653,10 @@ private func captureAXRangeCursorProbe(
         )
     }
     let right = plan.map {
-        axRangeTextQuery(
+        axRightRangeTextQuery(
             element,
             range: $0.right,
-            maximumRetainedCharacters: maximumRetainedCharacters,
-            retainSuffix: false
+            maximumRetainedCharacters: maximumRetainedCharacters
         )
     }
 
@@ -1673,6 +1672,36 @@ private func captureAXRangeCursorProbe(
         right: right,
         errors: errors
     )
+}
+
+/// Some Chromium/Electron editors report AXNumberOfCharacters in a different
+/// coordinate space from AXSelectedTextRange. Keep the start anchored to the
+/// provider-native selection and retry a bounded shorter suffix when the
+/// advertised right extent is rejected.
+private func axRightRangeTextQuery(
+    _ element: AXUIElement,
+    range: CFRange,
+    maximumRetainedCharacters: Int
+) -> ActiveTapAXRangeTextQuery {
+    var length = range.length
+    var last = axRangeTextQuery(
+        element,
+        range: range,
+        maximumRetainedCharacters: maximumRetainedCharacters,
+        retainSuffix: false
+    )
+    while last.text == nil,
+          last.axError == axErrorName(.noValue),
+          length > 1 {
+        length = max(1, length / 2)
+        last = axRangeTextQuery(
+            element,
+            range: CFRange(location: range.location, length: length),
+            maximumRetainedCharacters: maximumRetainedCharacters,
+            retainSuffix: false
+        )
+    }
+    return last
 }
 
 private func axRangeProbePlan(
