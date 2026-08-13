@@ -394,7 +394,6 @@ final class ActiveTapWriteCollector {
                 checkpoints: pending.returnCheckpoints,
                 pasteCheckpoints: pending.pasteCheckpoints,
                 mutationCheckpoints: pending.mutationCheckpoints,
-                inputHints: pending.inputHints,
                 lastEventTimestampNanoseconds: pending.lastEventTimestampNanoseconds,
                 boundaryReason: boundaryReason
             )
@@ -536,7 +535,6 @@ final class ActiveTapWriteCollector {
         checkpoints: [ActiveTapReturnCheckpoint],
         pasteCheckpoints: [ActiveTapPasteCheckpoint],
         mutationCheckpoints: [ActiveTapMutationCheckpoint],
-        inputHints: Set<String>,
         lastEventTimestampNanoseconds: UInt64,
         boundaryReason: String
     ) -> WriteDerivationDecision {
@@ -636,14 +634,7 @@ final class ActiveTapWriteCollector {
             return .checkpoint(latestCheckpoint, fallbackReason: "terminal_unpopulated")
         }
 
-        var edit = minimalTextEdit(from: beforeValue, to: terminalValue)
-        var fallbackReason: String?
-        if isRemovalOnlyWriteBurst(inputHints: inputHints),
-           !inputHints.contains("return"),
-           !edit.inserted.isEmpty {
-            edit = minimalTextEdit(from: beforeValue, to: "")
-            fallbackReason = "removal_only_terminal_unpopulated"
-        }
+        let edit = minimalTextEdit(from: beforeValue, to: terminalValue)
         guard !edit.isEmpty else {
             return .unresolved(
                 "no_change",
@@ -651,8 +642,7 @@ final class ActiveTapWriteCollector {
                 usedObservationCapturedAt: terminal.observedAt
             )
         }
-        let expectedAfter = fallbackReason == nil ? terminalValue : ""
-        guard applying(edit, to: beforeValue) == expectedAfter else {
+        guard applying(edit, to: beforeValue) == terminalValue else {
             return .unresolved(
                 "derivation_mismatch",
                 observationSource: "terminal_after",
@@ -663,7 +653,7 @@ final class ActiveTapWriteCollector {
             edit: edit,
             resolution: "validated",
             observationSource: "terminal_after",
-            fallbackReason: fallbackReason,
+            fallbackReason: nil,
             usedCheckpointID: nil,
             usedObservationCapturedAt: terminal.observedAt
         )
@@ -1254,7 +1244,7 @@ private struct WriteDerivationDecision {
 }
 
 private struct RawActiveTapWriteAttempt: Encodable {
-    let schemaVersion = 6
+    let schemaVersion = 7
     let recordType = "active_tap_write_attempt"
     let recordID: String
     let bundleIdentifier: String
@@ -1302,7 +1292,7 @@ private struct RawWriteSensorHealth: Encodable {
 }
 
 private struct ActiveTapWriteRecord: Encodable {
-    let schemaVersion = 5
+    let schemaVersion = 6
     let kind = "write"
     let provenance = "active_tap_accessibility_diff"
     let sequence: UInt64
