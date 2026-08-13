@@ -67,6 +67,11 @@ jq -e -s --slurpfile manifest "$manifest" --slurpfile examples "$examples" --slu
     ($m.loader.eosTokenCount == 1) and
     ($m.loader.contentTokensReceiveLoss == true) and
     ($m.loader.eosTokenReceivesLoss == true) and
+    (.cursorFidelity.status == "aligned") and
+    (.cursorFidelity.initialCursorOffsetCharacters
+      == .cursorFidelity.earliestObservedMutationOffsetCharacters) and
+    (.cursorFidelity.initialCursorOffsetCharacters
+      == .cursorFidelity.terminalEditOffsetCharacters) and
     (.conditioningState.cursorContext.selectionStartCharacters == .targetMetadata.characterOffset) and
     (.modelInput == (if .context == "" then .query else .context + "\n" + .query end)) and
     (all(.contextEventIDs[];
@@ -90,8 +95,15 @@ jq -e -s --slurpfile manifest "$manifest" --slurpfile examples "$examples" --slu
        (($by_id[.sourceEventID].serialized | fromjson).content == "")
      elif .reason == "missing_initial_cursor_context" then
        (.initialCursorOffset == null)
+     elif .reason == "missing_earliest_observed_mutation" then
+       (.cursorFidelity.earliestObservedMutationOffsetCharacters == null)
+     elif .reason == "initial_cursor_differs_from_earliest_observed_mutation" then
+       (.cursorFidelity.initialCursorOffsetCharacters
+         != .cursorFidelity.earliestObservedMutationOffsetCharacters)
      elif .reason == "net_edit_offset_differs_from_initial_cursor" then
        (.initialCursorOffset != .outcomeCharacterOffset)
+     elif .reason == "missing_cursor_fidelity" then
+       (.cursorFidelity.status != "aligned")
      else false end)
   )
 ' "$events" >/dev/null

@@ -1,5 +1,12 @@
 # Checkpoint after normal-work-dry-run-5
 
+## Implemented after this checkpoint
+
+- **Baseline frozen:** Commit `fbb4fa8` preserves the post-run-5 content-only compiler and documentation before reconstruction changed.
+- **Cursor-independent reconstruction:** Commits after the baseline derive every write from the canonical minimum contiguous `BEFORE → observed AFTER` diff. Cursor metadata no longer changes edit boundaries.
+- **Synthetic deletion fallback removed:** The live collector no longer turns a delete-only transition into `BEFORE → empty`. The v6 compiler repairs the two known run-5 fallback events from their raw observed states.
+- **Cursor fidelity measured independently:** Raw attempts and derived writes now compare the initial AX cursor with the earliest retained post-input mutation and the terminal edit. Only `aligned` writes become initial Phase 1 targets; mismatches remain causally available history and audit evidence.
+
 ## Implemented decisions
 
 - **Content-only objective:** Phase 1 predicts content, not destination, cursor position, operation, offset, removed text, provenance, or other write-event metadata. Those fields remain conditioning state or audit evidence and receive no loss.
@@ -7,11 +14,14 @@
 - **EOS contract:** The source content remains unchanged. The tokenizer-specific training loader tokenizes the target with automatic special tokens disabled, appends exactly one `eos_token_id`, and applies loss to every target token including EOS.
 - **Focus-time requirement:** Before live prediction, the interface must capture the equivalent destination and semantic cursor state when focus arrives. Current pre-mutation conditioning is sufficient for offline experiments but occurs too late for focus-time serving.
 
-## Remaining reconstruction and capture fixes
+## Reconstruction fixes completed in the next slice
 
-- **Remove cursor-biased diffing:** Initial cursor position must not alter the independently reconstructed `BEFORE → AFTER` edit. Cursor state conditions prediction; it is not evidence that can override the observed diff. Cursor-biased reconstruction can include unchanged earlier text in the target, such as combining the preceding line with the new write.
-- **Validate cursor fidelity:** Record whether the AX cursor coordinates agree with the first observed mutation. Rich-editor coordinates, particularly in Obsidian and some Chrome editors, cannot yet be assumed reliable.
-- **Remove the synthetic deletion fallback:** Do not replace an observed terminal state with a synthetic `BEFORE → empty` edit. This fallback produced false 22K–25K-character whole-document deletions. Derive from observed evidence or mark the attempt unresolved.
+- **Removed cursor-biased diffing:** Initial cursor position does not alter the independently reconstructed `BEFORE → AFTER` edit. Cursor state conditions prediction; it is not evidence that can override the observed diff.
+- **Added cursor-fidelity evidence:** Each attempt records whether the initial AX cursor agrees with the earliest retained mutation and terminal edit. This measures rather than assumes rich-editor cursor reliability.
+- **Removed the synthetic deletion fallback:** The collector never replaces an observed terminal state with a synthetic `BEFORE → empty` edit.
+
+## Remaining capture fixes
+
 - **Fix delayed read attribution:** Immediately before a delayed screenshot, re-resolve and validate the app, window, display, and relevant bounds. Suppress or restart the candidate if they no longer match, rather than attaching stale Obsidian or Chrome metadata to pixels from another app.
 - **Prevent authorship leakage into reads:** A read captured while a write is active can contain partially typed human output and incorrectly label it as inbound information. The causal compiler prevents it from conditioning that same write, but it can still contaminate later history. Such content must be suppressed, attributed as authored output, or otherwise excluded from ordinary READ events.
 

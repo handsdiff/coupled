@@ -76,6 +76,25 @@ final class TextUnderstandingTests: XCTestCase {
         )
     }
 
+    func testCursorFidelityDoesNotRepairOffsets() {
+        XCTAssertEqual(
+            cursorFidelityStatus(
+                initialCursorOffset: 4,
+                earliestObservedMutationOffset: 8,
+                terminalEditOffset: 8
+            ),
+            .initialCursorDiffersFromEarliestObservedMutation
+        )
+        XCTAssertEqual(
+            cursorFidelityStatus(
+                initialCursorOffset: 4,
+                earliestObservedMutationOffset: 4,
+                terminalEditOffset: 9
+            ),
+            .terminalEditMovedAfterAlignedStart
+        )
+    }
+
     func testSupportedEditableRolesAcrossApplications() {
         XCTAssertTrue(isSupportedEditableSurface(role: "AXTextArea", subrole: nil))
         XCTAssertTrue(isSupportedEditableSurface(role: "AXTextField", subrole: nil))

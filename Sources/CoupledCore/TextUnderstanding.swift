@@ -91,6 +91,37 @@ public func characterOffset(in value: String, utf16Offset: Int?) -> Int? {
     return value.distance(from: value.startIndex, to: stringIndex)
 }
 
+public enum CursorFidelityStatus: String, Codable, Equatable, Sendable {
+    case aligned
+    case initialCursorUnavailable = "initial_cursor_unavailable"
+    case earliestObservedMutationUnavailable = "earliest_observed_mutation_unavailable"
+    case initialCursorDiffersFromEarliestObservedMutation =
+        "initial_cursor_differs_from_earliest_observed_mutation"
+    case terminalEditMovedAfterAlignedStart = "terminal_edit_moved_after_aligned_start"
+}
+
+/// Classifies independent observations without changing any edit boundary.
+/// The earliest mutation is the first retained post-input field observation,
+/// which can contain more than one keystroke when the application updates
+/// faster than the checkpoint timer.
+public func cursorFidelityStatus(
+    initialCursorOffset: Int?,
+    earliestObservedMutationOffset: Int?,
+    terminalEditOffset: Int?
+) -> CursorFidelityStatus {
+    guard let initialCursorOffset else { return .initialCursorUnavailable }
+    guard let earliestObservedMutationOffset else {
+        return .earliestObservedMutationUnavailable
+    }
+    guard initialCursorOffset == earliestObservedMutationOffset else {
+        return .initialCursorDiffersFromEarliestObservedMutation
+    }
+    guard terminalEditOffset == initialCursorOffset else {
+        return .terminalEditMovedAfterAlignedStart
+    }
+    return .aligned
+}
+
 /// A bounded semantic representation of a caret or selection inside an
 /// editable value. Accessibility reports selection coordinates in UTF-16;
 /// character coordinates count user-perceived Swift Characters.

@@ -401,6 +401,10 @@ final class ActiveTapWriteCollector {
 
         let proposedEventID = decision.edit == nil ? nil : UUID().uuidString
         let conditioningState = writeConditioningState(for: pending)
+        let cursorFidelity = cursorFidelityEvidence(
+            for: pending,
+            terminalEditOffset: decision.edit?.characterOffset
+        )
         let rawRecord = RawActiveTapWriteAttempt(
             recordID: pending.attemptID,
             bundleIdentifier: pending.bundleIdentifier,
@@ -422,6 +426,7 @@ final class ActiveTapWriteCollector {
             usedCheckpointID: decision.usedCheckpointID,
             usedObservationCapturedAt: decision.usedObservationCapturedAt,
             conditioningState: conditioningState,
+            cursorFidelity: cursorFidelity,
             targetIdentity: pending.target?.identity,
             before: pending.before,
             after: after.observation,
@@ -467,6 +472,7 @@ final class ActiveTapWriteCollector {
             usedObservationCapturedAt: decision.usedObservationCapturedAt!,
             configuredWriteDelaySeconds: configuration.writeDelay,
             conditioningState: conditioningState,
+            cursorFidelity: cursorFidelity,
             outcome: ActiveTapWriteOutcome(
                 operation: edit.operation.rawValue,
                 content: edit.inserted,
@@ -526,6 +532,80 @@ final class ActiveTapWriteCollector {
                 surroundingCharacterCount: configuration.cursorContextCharacters
             ),
             sourceObservationID: before.observationID
+        )
+    }
+
+    private func cursorFidelityEvidence(
+        for pending: PendingActiveTapWrite,
+        terminalEditOffset: Int?
+    ) -> ActiveTapCursorFidelityEvidence {
+        guard let before = pending.before else {
+            return ActiveTapCursorFidelityEvidence(
+                status: CursorFidelityStatus.initialCursorUnavailable.rawValue,
+                initialCursorOffsetCharacters: nil,
+                initialSelectionLengthCharacters: nil,
+                earliestObservedMutationOffsetCharacters: nil,
+                earliestObservedMutationObservationID: nil,
+                earliestObservedMutationCapturedAt: nil,
+                terminalEditOffsetCharacters: terminalEditOffset
+            )
+        }
+        let beforeValue = logicalEditableValue(
+            before.value,
+            placeholderValue: before.placeholderValue
+        )
+        let cursor = semanticCursorContext(
+            in: beforeValue,
+            selectionStartUTF16: before.selectedRangeLocation,
+            selectionLengthUTF16: before.selectedRangeLength,
+            surroundingCharacterCount: 1
+        )
+        var candidates = [ObservedMutationCandidate]()
+        func appendCandidate(
+            observation: ActiveTapEditableObservation?,
+            errors: [String]
+        ) {
+            guard errors.isEmpty,
+                  let observation,
+                  !observation.valueWasTruncated else { return }
+            let value = logicalEditableValue(
+                observation.value,
+                placeholderValue: observation.placeholderValue
+            )
+            let edit = minimalTextEdit(from: beforeValue, to: value)
+            guard !edit.isEmpty else { return }
+            candidates.append(ObservedMutationCandidate(
+                observationID: observation.observationID,
+                capturedAt: observation.observedAt,
+                editOffset: edit.characterOffset
+            ))
+        }
+        for checkpoint in pending.mutationCheckpoints {
+            appendCandidate(observation: checkpoint.observation, errors: checkpoint.axErrors)
+        }
+        for checkpoint in pending.pasteCheckpoints {
+            appendCandidate(observation: checkpoint.observation, errors: checkpoint.axErrors)
+        }
+        for checkpoint in pending.returnCheckpoints {
+            appendCandidate(observation: checkpoint.observation, errors: checkpoint.axErrors)
+        }
+        let earliest = candidates.min {
+            if $0.capturedAt != $1.capturedAt { return $0.capturedAt < $1.capturedAt }
+            return $0.observationID < $1.observationID
+        }
+        let status = cursorFidelityStatus(
+            initialCursorOffset: cursor?.selectionStartCharacters,
+            earliestObservedMutationOffset: earliest?.editOffset,
+            terminalEditOffset: terminalEditOffset
+        )
+        return ActiveTapCursorFidelityEvidence(
+            status: status.rawValue,
+            initialCursorOffsetCharacters: cursor?.selectionStartCharacters,
+            initialSelectionLengthCharacters: cursor?.selectionLengthCharacters,
+            earliestObservedMutationOffsetCharacters: earliest?.editOffset,
+            earliestObservedMutationObservationID: earliest?.observationID,
+            earliestObservedMutationCapturedAt: earliest?.capturedAt,
+            terminalEditOffsetCharacters: terminalEditOffset
         )
     }
 
@@ -1139,6 +1219,23 @@ private struct ActiveTapWriteOutcome: Encodable {
     let characterOffset: Int
 }
 
+private struct ActiveTapCursorFidelityEvidence: Encodable {
+    let schemaVersion = 1
+    let status: String
+    let initialCursorOffsetCharacters: Int?
+    let initialSelectionLengthCharacters: Int?
+    let earliestObservedMutationOffsetCharacters: Int?
+    let earliestObservedMutationObservationID: String?
+    let earliestObservedMutationCapturedAt: String?
+    let terminalEditOffsetCharacters: Int?
+}
+
+private struct ObservedMutationCandidate {
+    let observationID: String
+    let capturedAt: String
+    let editOffset: Int
+}
+
 private struct ActiveTapEditableObservation: Encodable {
     let observationID: String
     let observedAt: String
@@ -1244,7 +1341,7 @@ private struct WriteDerivationDecision {
 }
 
 private struct RawActiveTapWriteAttempt: Encodable {
-    let schemaVersion = 7
+    let schemaVersion = 8
     let recordType = "active_tap_write_attempt"
     let recordID: String
     let bundleIdentifier: String
@@ -1266,6 +1363,7 @@ private struct RawActiveTapWriteAttempt: Encodable {
     let usedCheckpointID: String?
     let usedObservationCapturedAt: String?
     let conditioningState: ActiveTapWriteConditioningState?
+    let cursorFidelity: ActiveTapCursorFidelityEvidence
     let targetIdentity: ActiveTapTargetIdentity?
     let before: ActiveTapEditableObservation?
     let after: ActiveTapEditableObservation?
@@ -1292,7 +1390,7 @@ private struct RawWriteSensorHealth: Encodable {
 }
 
 private struct ActiveTapWriteRecord: Encodable {
-    let schemaVersion = 6
+    let schemaVersion = 7
     let kind = "write"
     let provenance = "active_tap_accessibility_diff"
     let sequence: UInt64
@@ -1308,6 +1406,7 @@ private struct ActiveTapWriteRecord: Encodable {
     let usedObservationCapturedAt: String
     let configuredWriteDelaySeconds: Double
     let conditioningState: ActiveTapWriteConditioningState
+    let cursorFidelity: ActiveTapCursorFidelityEvidence
     let outcome: ActiveTapWriteOutcome
     let operation: String
     let content: String

@@ -255,9 +255,9 @@ reordering or modifying the source files:
 ```sh
 ./scripts/coupled compile \
   --input ./coupled-data/normal-work-dry-run-3 \
-  --output ./coupled-data/normal-work-dry-run-3-phase1-v5
+  --output ./coupled-data/normal-work-dry-run-3-phase1-v6
 ./scripts/audit-causal-dataset.sh \
-  ./coupled-data/normal-work-dry-run-3-phase1-v5
+  ./coupled-data/normal-work-dry-run-3-phase1-v6
 ```
 
 The fresh output directory contains:
@@ -283,7 +283,7 @@ prior writes at `terminalDecisionAt`. Records explicitly marked
 `phase1Eligible: false`—including future displayed model predictions—are
 excluded before contexts and targets are built.
 
-Conversion `phase1-causal-v5` defines the supervised example as:
+Conversion `phase1-causal-v6` defines the supervised example as:
 
 ```text
 modelInput = causal read/write history + known pre-mutation destination/cursor query
@@ -292,11 +292,13 @@ target     = exact nonempty write.content string
 
 The known application, field metadata, initial caret and selection receive no
 loss. Operation, removed content and net edit offset remain event and example
-metadata but also receive no loss. Pure deletions and bursts whose net edit
-offset differs from the initial caret remain available to later history while
-being excluded from the initial content-at-cursor targets. Older raw sessions
-are supported by deriving the same query from their retained BEFORE observation
-and target identity.
+metadata but also receive no loss. Pure deletions, bursts without an earliest
+retained mutation observation, and bursts where either that observation or the
+terminal edit disagrees with the initial caret remain available to later
+history while being excluded from the initial content-at-cursor targets. Cursor
+agreement is diagnostic evidence; it never changes the independently derived
+edit. Older raw sessions are supported by deriving the same query and
+cursor-fidelity signal from their retained evidence.
 
 The compiled `modelInput` is intentionally complete rather than pretending that
 characters equal model tokens. The manifest freezes the Phase 1 packing rule:

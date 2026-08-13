@@ -41,6 +41,22 @@ expect(
     "AX UTF-16 selection offset conversion"
 )
 expect(
+    cursorFidelityStatus(
+        initialCursorOffset: 10,
+        earliestObservedMutationOffset: 10,
+        terminalEditOffset: 10
+    ) == .aligned,
+    "independent cursor and mutation observations align"
+)
+expect(
+    cursorFidelityStatus(
+        initialCursorOffset: 10,
+        earliestObservedMutationOffset: 12,
+        terminalEditOffset: 12
+    ) == .initialCursorDiffersFromEarliestObservedMutation,
+    "cursor disagreement is measured rather than changing the diff"
+)
+expect(
     semanticCursorContext(
         in: "α🐈beta",
         selectionStartUTF16: 1,
@@ -195,7 +211,8 @@ func rawAttempt(
     selectionLocation: Int? = nil,
     selectionLength: Int = 0
 ) -> [String: Any] {
-    [
+    let terminal = observation(after, at: timestamp)
+    return [
         "recordType": "active_tap_write_attempt",
         "recordID": id,
         "resolution": "validated",
@@ -213,9 +230,17 @@ func rawAttempt(
             selectionLocation: selectionLocation,
             selectionLength: selectionLength
         ),
-        "after": observation(after, at: timestamp),
+        "after": terminal,
         "returnCheckpoints": [],
         "pasteCheckpoints": [],
+        "mutationCheckpoints": [[
+            "checkpointID": UUID().uuidString,
+            "inputObservedAt": timestamp,
+            "eventTimestampNanoseconds": 1,
+            "captureRequestedAt": timestamp,
+            "observation": terminal,
+            "axErrors": [],
+        ]],
     ]
 }
 
@@ -284,7 +309,7 @@ let excludedModelRead: [String: Any] = [
 let secondWrite = writeEvent(
     id: "write-2", sourceID: "attempt-2", sequence: 2,
     began: "2026-01-01T00:00:06.000Z", available: "2026-01-01T00:00:07.000Z",
-    before: "HELLO world", inserted: "!", offset: 11
+    before: "HELLO world", inserted: "world!", removed: "world", offset: 6
 )
 let cursorMovedWrite = writeEvent(
     id: "write-cursor-moved", sourceID: "attempt-cursor-moved", sequence: 3,
@@ -395,9 +420,10 @@ let targetExclusions = readFixtureJSONL(
 )
 expect(
     targetExclusions.contains {
-        $0["reason"] as? String == "net_edit_offset_differs_from_initial_cursor"
+        $0["reason"] as? String
+            == "initial_cursor_differs_from_earliest_observed_mutation"
     },
-    "cursor-moving burst remains history but is excluded as a content target"
+    "independently observed cursor mismatch remains history but is excluded as a target"
 )
 expect(
     targetExclusions.contains { $0["reason"] as? String == "empty_content" },

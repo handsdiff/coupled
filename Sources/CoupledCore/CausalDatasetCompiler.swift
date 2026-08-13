@@ -6,7 +6,7 @@ public struct CausalDatasetCompilerConfiguration: Sendable {
     public let includeTimestampsInContext: Bool
 
     public init(
-        conversionVersion: String = "phase1-causal-v5",
+        conversionVersion: String = "phase1-causal-v6",
         includeTimestampsInContext: Bool = false
     ) {
         self.conversionVersion = conversionVersion
@@ -260,13 +260,25 @@ public struct CausalDatasetCompiler {
             let outcomeOffset = outcome.number("characterOffset")?.intValue
             let initialOffset = ((conditioningState["cursorContext"] as? [String: Any])?
                 .number("selectionStartCharacters"))?.intValue
+            let cursorFidelity = target.object["cursorFidelity"] as? [String: Any] ?? [:]
+            let cursorFidelityStatus = cursorFidelity.string("status")
             let targetExclusionReason: String?
             if content.isEmpty {
                 targetExclusionReason = "empty_content"
             } else if initialOffset == nil {
                 targetExclusionReason = "missing_initial_cursor_context"
-            } else if outcomeOffset != initialOffset {
+            } else if cursorFidelityStatus
+                == CursorFidelityStatus.earliestObservedMutationUnavailable.rawValue {
+                targetExclusionReason = "missing_earliest_observed_mutation"
+            } else if cursorFidelityStatus
+                == CursorFidelityStatus.initialCursorDiffersFromEarliestObservedMutation.rawValue {
+                targetExclusionReason = "initial_cursor_differs_from_earliest_observed_mutation"
+            } else if cursorFidelityStatus
+                == CursorFidelityStatus.terminalEditMovedAfterAlignedStart.rawValue
+                || outcomeOffset != initialOffset {
                 targetExclusionReason = "net_edit_offset_differs_from_initial_cursor"
+            } else if cursorFidelityStatus != CursorFidelityStatus.aligned.rawValue {
+                targetExclusionReason = "missing_cursor_fidelity"
             } else {
                 targetExclusionReason = nil
             }
@@ -281,7 +293,7 @@ public struct CausalDatasetCompiler {
                 continue
             }
             examples.append([
-                "schemaVersion": 5,
+                "schemaVersion": 6,
                 "exampleID": "\(sessionID):\(target.sourceEventID)",
                 "conversionVersion": configuration.conversionVersion,
                 "sessionID": sessionID,
@@ -290,6 +302,7 @@ public struct CausalDatasetCompiler {
                 "conditioningState": conditioningState,
                 "query": query,
                 "modelInput": modelInput,
+                "cursorFidelity": cursorFidelity,
                 "contextEventIDs": contextIDs,
                 "contextSourceRecordIDs": contextSourceRecordIDs,
                 "target": content,
@@ -343,7 +356,7 @@ public struct CausalDatasetCompiler {
             "raw.jsonl": try sha256(of: rawURL),
         ]
         let datasetManifest: [String: Any] = [
-            "schemaVersion": 5,
+            "schemaVersion": 6,
             "conversionVersion": configuration.conversionVersion,
             "sessionID": sessionID,
             "source": [
@@ -367,10 +380,12 @@ public struct CausalDatasetCompiler {
             ],
             "eligibility": [
                 "contextKinds": ["read", "verified_write"],
-                "targetKinds": ["verified_write_with_nonempty_content_and_stable_initial_cursor"],
+                "targetKinds": ["verified_write_with_nonempty_content_and_independently_aligned_cursor"],
                 "targetExclusionRules": [
                     "content.isEmpty",
                     "conditioning.cursorContext.selectionStartCharacters is missing",
+                    "earliest observed mutation is missing",
+                    "earliest observed mutation offset differs from the initial cursor",
                     "outcome.characterOffset != conditioning.cursorContext.selectionStartCharacters",
                 ],
                 "explicitExclusion": "phase1Eligible == false",
@@ -380,7 +395,7 @@ public struct CausalDatasetCompiler {
             "serialization": [
                 "contextVersion": 1,
                 "queryVersion": 1,
-                "targetVersion": 5,
+                "targetVersion": 6,
                 "targetFormat": "plain_text_content",
                 "timestampsInContext": configuration.includeTimestampsInContext,
                 "eventDelimiter": "newline",
@@ -545,7 +560,106 @@ private func canonicalWrite(
         && removed == canonicalEdit.removed
         && offset == canonicalEdit.characterOffset
     canonicalEvent["sourceOutcomeReconstructedUsedObservation"] = sourceReconstructsObservation
+    let cursorFidelity = cursorFidelityEvidence(
+        attempt: attempt,
+        terminalEditOffset: canonicalEdit.characterOffset
+    )
+    if let sourceCursorFidelity = event["cursorFidelity"] as? [String: Any],
+       (try? canonicalJSONString(sourceCursorFidelity))
+        != (try? canonicalJSONString(cursorFidelity)) {
+        return .failure("derived_cursor_fidelity_does_not_match_raw_evidence")
+    }
+    canonicalEvent["cursorFidelity"] = cursorFidelity
     return .success(canonicalEvent)
+}
+
+private func cursorFidelityEvidence(
+    attempt: [String: Any],
+    terminalEditOffset: Int
+) -> [String: Any] {
+    guard let before = attempt["before"] as? [String: Any],
+          let rawBefore = before.string("value") else {
+        return cursorFidelityJSONObject(
+            status: .initialCursorUnavailable,
+            initialCursorOffset: nil,
+            initialSelectionLength: nil,
+            earliest: nil,
+            terminalEditOffset: terminalEditOffset
+        )
+    }
+    let beforeValue = logicalEditableValue(
+        rawBefore,
+        placeholderValue: before.string("placeholderValue")
+    )
+    let cursor = semanticCursorContext(
+        in: beforeValue,
+        selectionStartUTF16: before.number("selectedRangeLocation")?.intValue,
+        selectionLengthUTF16: before.number("selectedRangeLength")?.intValue,
+        surroundingCharacterCount: 1
+    )
+    var candidates = [CompilerObservedMutation]()
+    for key in ["mutationCheckpoints", "pasteCheckpoints", "returnCheckpoints"] {
+        for checkpoint in attempt[key] as? [[String: Any]] ?? [] {
+            guard checkpoint.stringArray("axErrors").isEmpty,
+                  let observation = checkpoint["observation"] as? [String: Any],
+                  observation.boolean("valueWasTruncated") != true,
+                  let rawValue = observation.string("value"),
+                  let observationID = observation.string("observationID"),
+                  let capturedAt = observation.string("observedAt") else { continue }
+            let value = logicalEditableValue(
+                rawValue,
+                placeholderValue: observation.string("placeholderValue")
+            )
+            let edit = minimalTextEdit(from: beforeValue, to: value)
+            guard !edit.isEmpty else { continue }
+            candidates.append(CompilerObservedMutation(
+                observationID: observationID,
+                capturedAt: capturedAt,
+                editOffset: edit.characterOffset
+            ))
+        }
+    }
+    let earliest = candidates.min {
+        if $0.capturedAt != $1.capturedAt { return $0.capturedAt < $1.capturedAt }
+        return $0.observationID < $1.observationID
+    }
+    let status = cursorFidelityStatus(
+        initialCursorOffset: cursor?.selectionStartCharacters,
+        earliestObservedMutationOffset: earliest?.editOffset,
+        terminalEditOffset: terminalEditOffset
+    )
+    return cursorFidelityJSONObject(
+        status: status,
+        initialCursorOffset: cursor?.selectionStartCharacters,
+        initialSelectionLength: cursor?.selectionLengthCharacters,
+        earliest: earliest,
+        terminalEditOffset: terminalEditOffset
+    )
+}
+
+private struct CompilerObservedMutation {
+    let observationID: String
+    let capturedAt: String
+    let editOffset: Int
+}
+
+private func cursorFidelityJSONObject(
+    status: CursorFidelityStatus,
+    initialCursorOffset: Int?,
+    initialSelectionLength: Int?,
+    earliest: CompilerObservedMutation?,
+    terminalEditOffset: Int
+) -> [String: Any] {
+    compactJSONObject([
+        "schemaVersion": 1,
+        "status": status.rawValue,
+        "initialCursorOffsetCharacters": initialCursorOffset,
+        "initialSelectionLengthCharacters": initialSelectionLength,
+        "earliestObservedMutationOffsetCharacters": earliest?.editOffset,
+        "earliestObservedMutationObservationID": earliest?.observationID,
+        "earliestObservedMutationCapturedAt": earliest?.capturedAt,
+        "terminalEditOffsetCharacters": terminalEditOffset,
+    ])
 }
 
 private func usedObservation(_ attempt: [String: Any]) -> [String: Any]? {
@@ -731,6 +845,7 @@ private func targetExclusion(
         "initialCursorOffset": initialOffset,
         "outcomeCharacterOffset": outcomeOffset,
         "sourceRecordIDs": target.object.stringArray("sourceRecordIDs"),
+        "cursorFidelity": target.object["cursorFidelity"],
     ])
 }
 
@@ -819,6 +934,7 @@ private func convertedRecord(
         record["sourceOutcomeReconstructedUsedObservation"] = event.object.boolean(
             "sourceOutcomeReconstructedUsedObservation"
         ) ?? false
+        record["cursorFidelity"] = event.object["cursorFidelity"] ?? NSNull()
     }
     return record
 }
