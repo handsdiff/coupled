@@ -255,9 +255,9 @@ reordering or modifying the source files:
 ```sh
 ./scripts/coupled compile \
   --input ./coupled-data/normal-work-dry-run-3 \
-  --output ./coupled-data/normal-work-dry-run-3-phase1-v4
+  --output ./coupled-data/normal-work-dry-run-3-phase1-v5
 ./scripts/audit-causal-dataset.sh \
-  ./coupled-data/normal-work-dry-run-3-phase1-v4
+  ./coupled-data/normal-work-dry-run-3-phase1-v5
 ```
 
 The fresh output directory contains:
@@ -283,7 +283,7 @@ prior writes at `terminalDecisionAt`. Records explicitly marked
 `phase1Eligible: false`—including future displayed model predictions—are
 excluded before contexts and targets are built.
 
-Conversion `phase1-causal-v4` defines the supervised example as:
+Conversion `phase1-causal-v5` defines the supervised example as:
 
 ```text
 modelInput = causal read/write history + known pre-mutation destination/cursor query

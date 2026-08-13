@@ -14,9 +14,14 @@ expect(
     "middle insertion"
 )
 expect(
-    minimalTextEdit(from: "one two three", to: "one three", preferredOffset: 4)
-        == TextEdit(operation: .delete, characterOffset: 4, removed: "two ", inserted: ""),
-    "middle deletion"
+    minimalTextEdit(from: "one two three", to: "one three")
+        == TextEdit(operation: .delete, characterOffset: 5, removed: "wo t", inserted: ""),
+    "cursor-independent deletion uses the deterministic longest prefix"
+)
+expect(
+    minimalTextEdit(from: "older line\n", to: "older line\nnew line")
+        == TextEdit(operation: .insert, characterOffset: 11, removed: "", inserted: "new line"),
+    "canonical diff never absorbs an unchanged prefix to match cursor metadata"
 )
 expect(
     minimalTextEdit(from: "A 🐈 sat", to: "A 🐕 ran")

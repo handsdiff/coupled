@@ -6,7 +6,7 @@ public struct CausalDatasetCompilerConfiguration: Sendable {
     public let includeTimestampsInContext: Bool
 
     public init(
-        conversionVersion: String = "phase1-causal-v4",
+        conversionVersion: String = "phase1-causal-v5",
         includeTimestampsInContext: Bool = false
     ) {
         self.conversionVersion = conversionVersion
@@ -176,6 +176,7 @@ public struct CausalDatasetCompiler {
                 }
                 converted.append(ConvertedEvent(
                     source: source,
+                    object: event,
                     sourceEventID: eventID,
                     kind: kind,
                     availableAt: capturedAt,
@@ -205,24 +206,26 @@ public struct CausalDatasetCompiler {
                 ))
                 continue
             }
-            guard let verificationFailure = verifyWrite(event: event, attempts: attempts) else {
+            switch canonicalWrite(event: event, attempts: attempts) {
+            case .success(let canonicalEvent):
                 converted.append(ConvertedEvent(
                     source: source,
+                    object: canonicalEvent,
                     sourceEventID: eventID,
                     kind: kind,
                     availableAt: availableAt,
                     beganAt: beganAt,
                     serialized: try serializeContextEvent(
-                        event,
+                        canonicalEvent,
                         availableAt: availableAt,
                         includeTimestamp: configuration.includeTimestampsInContext
                     )
                 ))
-                continue
+            case .failure(let reason):
+                rejections.append(rejection(
+                    source: source, sourceEventID: eventID, reason: reason
+                ))
             }
-            rejections.append(rejection(
-                source: source, sourceEventID: eventID, reason: verificationFailure
-            ))
         }
 
         converted.sort(by: causalOrder)
@@ -239,12 +242,12 @@ public struct CausalDatasetCompiler {
             let context = contextEvents.map(\.serialized).joined(separator: "\n")
             let contextIDs = contextEvents.map(\.sourceEventID)
             let contextSourceRecordIDs = contextEvents.flatMap {
-                $0.source.object.stringArray("sourceRecordIDs")
+                $0.object.stringArray("sourceRecordIDs")
             }
-            let targetSourceRecordIDs = target.source.object.stringArray("sourceRecordIDs")
+            let targetSourceRecordIDs = target.object.stringArray("sourceRecordIDs")
             let attempt = attempts[targetSourceRecordIDs[0]]!
             let conditioningState = try writeConditioningState(
-                event: target.source.object,
+                event: target.object,
                 attempt: attempt
             )
             let query = try serializeQuery(
@@ -252,7 +255,7 @@ public struct CausalDatasetCompiler {
                 includeTimestamp: configuration.includeTimestampsInContext
             )
             let modelInput = context.isEmpty ? query : context + "\n" + query
-            let outcome = writeOutcome(target.source.object)
+            let outcome = writeOutcome(target.object)
             let content = outcome.string("content") ?? ""
             let outcomeOffset = outcome.number("characterOffset")?.intValue
             let initialOffset = ((conditioningState["cursorContext"] as? [String: Any])?
@@ -278,7 +281,7 @@ public struct CausalDatasetCompiler {
                 continue
             }
             examples.append([
-                "schemaVersion": 4,
+                "schemaVersion": 5,
                 "exampleID": "\(sessionID):\(target.sourceEventID)",
                 "conversionVersion": configuration.conversionVersion,
                 "sessionID": sessionID,
@@ -291,7 +294,7 @@ public struct CausalDatasetCompiler {
                 "contextSourceRecordIDs": contextSourceRecordIDs,
                 "target": content,
                 "targetMetadata": writeOutcomeMetadata(
-                    event: target.source.object,
+                    event: target.object,
                     outcome: outcome
                 ),
                 "targetEventID": target.sourceEventID,
@@ -340,7 +343,7 @@ public struct CausalDatasetCompiler {
             "raw.jsonl": try sha256(of: rawURL),
         ]
         let datasetManifest: [String: Any] = [
-            "schemaVersion": 4,
+            "schemaVersion": 5,
             "conversionVersion": configuration.conversionVersion,
             "sessionID": sessionID,
             "source": [
@@ -371,12 +374,13 @@ public struct CausalDatasetCompiler {
                     "outcome.characterOffset != conditioning.cursorContext.selectionStartCharacters",
                 ],
                 "explicitExclusion": "phase1Eligible == false",
-                "writeVerification": "raw_before_plus_derived_edit_equals_used_observation",
+                "writeVerification": "source outcome must reconstruct the used observation, except the identified legacy synthetic-deletion fallback",
+                "writeProjection": "canonical minimum contiguous diff of raw logical BEFORE and used observation",
             ],
             "serialization": [
                 "contextVersion": 1,
                 "queryVersion": 1,
-                "targetVersion": 4,
+                "targetVersion": 5,
                 "targetFormat": "plain_text_content",
                 "timestampsInContext": configuration.includeTimestampsInContext,
                 "eventDelimiter": "newline",
@@ -431,6 +435,7 @@ private struct SourceRecord {
 
 private struct ConvertedEvent {
     let source: SourceRecord
+    let object: [String: Any]
     let sourceEventID: String
     let kind: String
     let availableAt: String
@@ -459,57 +464,88 @@ private func sourceEventID(event: [String: Any], sessionID: String, line: Int) -
     return "\(sessionID):line:\(line)"
 }
 
-private func verifyWrite(event: [String: Any], attempts: [String: [String: Any]]) -> String? {
+private enum CanonicalWriteResult {
+    case success([String: Any])
+    case failure(String)
+}
+
+private func canonicalWrite(
+    event: [String: Any],
+    attempts: [String: [String: Any]]
+) -> CanonicalWriteResult {
     let sourceIDs = event.stringArray("sourceRecordIDs")
     guard sourceIDs.count == 1, let attempt = attempts[sourceIDs[0]] else {
-        return "missing_unique_raw_write_attempt"
+        return .failure("missing_unique_raw_write_attempt")
     }
     guard attempt.string("resolution") == "validated" else {
-        return "raw_write_attempt_not_validated"
+        return .failure("raw_write_attempt_not_validated")
     }
     guard attempt.string("proposedEventID") == event.string("eventID") else {
-        return "raw_derived_event_id_mismatch"
+        return .failure("raw_derived_event_id_mismatch")
     }
     guard let before = attempt["before"] as? [String: Any],
-          let rawBefore = before.string("value") else {
-        return "raw_before_missing"
+          let rawBefore = before.string("value"),
+          before.boolean("valueWasTruncated") != true else {
+        return .failure("raw_before_missing_or_truncated")
     }
     let beforeValue = logicalEditableValue(
         rawBefore,
         placeholderValue: before.string("placeholderValue")
     )
     guard let used = usedObservation(attempt) else {
-        return "used_observation_missing"
+        return .failure("used_observation_missing")
     }
-    var afterValue = logicalEditableValue(
-        used.string("value") ?? "",
+    guard let rawAfter = used.string("value"),
+          used.boolean("valueWasTruncated") != true else {
+        return .failure("used_observation_missing_or_truncated")
+    }
+    let afterValue = logicalEditableValue(
+        rawAfter,
         placeholderValue: used.string("placeholderValue")
     )
     guard let operation = event.string("operation"),
           let inserted = event.string("content"),
           let removed = event.string("removedContent"),
           let offset = event.number("characterOffset")?.intValue else {
-        return "derived_edit_fields_missing"
+        return .failure("derived_edit_fields_missing")
     }
-    // Schema 4 briefly used a delete-only placeholder fallback. It was valid
-    // only when the entire prior field was selected, but the collector applied
-    // it too broadly. Preserve the valid select-all deletion while rejecting
-    // the overbroad cases through the reconstruction invariant below.
-    if event.string("fallbackReason") == "removal_only_terminal_unpopulated",
-       before.number("selectedRangeLocation")?.intValue == 0,
-       before.number("selectedRangeLength")?.intValue == beforeValue.utf16.count {
-        afterValue = ""
-    }
-    guard let reconstructed = applyEdit(
+    let reconstructed = applyEdit(
         operation: operation,
         offset: offset,
         removed: removed,
         inserted: inserted,
         to: beforeValue
-    ) else {
-        return "derived_edit_does_not_apply_to_before"
+    )
+    let sourceReconstructsObservation = reconstructed == afterValue
+    let knownSyntheticDeletion = event.string("fallbackReason")
+        == "removal_only_terminal_unpopulated"
+    guard sourceReconstructsObservation || knownSyntheticDeletion else {
+        return .failure(
+            reconstructed == nil
+                ? "derived_edit_does_not_apply_to_before"
+                : "derived_edit_does_not_reconstruct_used_observation"
+        )
     }
-    return reconstructed == afterValue ? nil : "derived_edit_does_not_reconstruct_used_observation"
+
+    let canonicalEdit = minimalTextEdit(from: beforeValue, to: afterValue)
+    guard !canonicalEdit.isEmpty else { return .failure("canonical_raw_edit_is_empty") }
+    var canonicalEvent = event
+    canonicalEvent["operation"] = canonicalEdit.operation.rawValue
+    canonicalEvent["content"] = canonicalEdit.inserted
+    canonicalEvent["removedContent"] = canonicalEdit.removed
+    canonicalEvent["characterOffset"] = canonicalEdit.characterOffset
+    canonicalEvent["outcome"] = [
+        "operation": canonicalEdit.operation.rawValue,
+        "content": canonicalEdit.inserted,
+        "removedContent": canonicalEdit.removed,
+        "characterOffset": canonicalEdit.characterOffset,
+    ]
+    canonicalEvent["sourceOutcomeMatchesCanonical"] = operation == canonicalEdit.operation.rawValue
+        && inserted == canonicalEdit.inserted
+        && removed == canonicalEdit.removed
+        && offset == canonicalEdit.characterOffset
+    canonicalEvent["sourceOutcomeReconstructedUsedObservation"] = sourceReconstructsObservation
+    return .success(canonicalEvent)
 }
 
 private func usedObservation(_ attempt: [String: Any]) -> [String: Any]? {
@@ -674,6 +710,7 @@ private func writeOutcomeMetadata(
         "boundaryReason": event.string("boundaryReason"),
         "derivationObservationSource": event.string("derivationObservationSource"),
         "fallbackReason": event.string("fallbackReason"),
+        "sourceOutcomeMatchesCanonical": event.boolean("sourceOutcomeMatchesCanonical"),
     ])
 }
 
@@ -693,7 +730,7 @@ private func targetExclusion(
         "contentCharacterCount": content.count,
         "initialCursorOffset": initialOffset,
         "outcomeCharacterOffset": outcomeOffset,
-        "sourceRecordIDs": target.source.object.stringArray("sourceRecordIDs"),
+        "sourceRecordIDs": target.object.stringArray("sourceRecordIDs"),
     ])
 }
 
@@ -772,9 +809,17 @@ private func convertedRecord(
         "kind": event.kind,
         "availableAt": event.availableAt,
         "serialized": event.serialized,
-        "sourceRecordIDs": event.source.object.stringArray("sourceRecordIDs"),
+        "sourceRecordIDs": event.object.stringArray("sourceRecordIDs"),
     ]
     if let beganAt = event.beganAt { record["beganAt"] = beganAt }
+    if event.kind == "write" {
+        record["sourceOutcomeMatchesCanonical"] = event.object.boolean(
+            "sourceOutcomeMatchesCanonical"
+        ) ?? false
+        record["sourceOutcomeReconstructedUsedObservation"] = event.object.boolean(
+            "sourceOutcomeReconstructedUsedObservation"
+        ) ?? false
+    }
     return record
 }
 

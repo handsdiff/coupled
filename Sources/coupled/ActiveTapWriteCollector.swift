@@ -544,10 +544,6 @@ final class ActiveTapWriteCollector {
             before.value,
             placeholderValue: before.placeholderValue
         )
-        let preferredOffset = characterOffset(
-            in: beforeValue,
-            utf16Offset: before.selectedRangeLocation
-        )
         let returnCheckpoint = checkpoints.last.flatMap {
             meaningfulCheckpoint(
                 checkpointID: $0.checkpointID,
@@ -555,8 +551,7 @@ final class ActiveTapWriteCollector {
                 observationSource: "pre_return_checkpoint",
                 observation: $0.observation,
                 errors: $0.axErrors,
-                beforeValue: beforeValue,
-                preferredOffset: preferredOffset
+                beforeValue: beforeValue
             )
         }
         let latestCheckpoint: MeaningfulCheckpoint? = {
@@ -603,8 +598,7 @@ final class ActiveTapWriteCollector {
                 observationSource: latest.observationSource,
                 observation: latest.observation,
                 errors: latest.errors,
-                beforeValue: beforeValue,
-                preferredOffset: preferredOffset
+                beforeValue: beforeValue
             )
         }()
 
@@ -642,11 +636,7 @@ final class ActiveTapWriteCollector {
             return .checkpoint(latestCheckpoint, fallbackReason: "terminal_unpopulated")
         }
 
-        var edit = minimalTextEdit(
-            from: beforeValue,
-            to: terminalValue,
-            preferredOffset: preferredOffset
-        )
+        var edit = minimalTextEdit(from: beforeValue, to: terminalValue)
         var fallbackReason: String?
         if isRemovalOnlyWriteBurst(inputHints: inputHints),
            !inputHints.contains("return"),
@@ -685,8 +675,7 @@ final class ActiveTapWriteCollector {
         observationSource: String,
         observation: ActiveTapEditableObservation?,
         errors: [String],
-        beforeValue: String,
-        preferredOffset: Int?
+        beforeValue: String
     ) -> MeaningfulCheckpoint? {
         guard errors.isEmpty,
               let observation,
@@ -697,11 +686,7 @@ final class ActiveTapWriteCollector {
             observation.value,
             placeholderValue: observation.placeholderValue
         )
-        let edit = minimalTextEdit(
-            from: beforeValue,
-            to: value,
-            preferredOffset: preferredOffset
-        )
+        let edit = minimalTextEdit(from: beforeValue, to: value)
         guard !edit.isEmpty, applying(edit, to: beforeValue) == value else { return nil }
         return MeaningfulCheckpoint(
             checkpointID: checkpointID,

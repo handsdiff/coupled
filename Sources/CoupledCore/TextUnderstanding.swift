@@ -32,8 +32,7 @@ public struct TextEdit: Codable, Equatable {
 /// This intentionally models one settled write burst, not individual keystrokes.
 public func minimalTextEdit(
     from before: String,
-    to after: String,
-    preferredOffset: Int? = nil
+    to after: String
 ) -> TextEdit {
     guard before != after else {
         return TextEdit(operation: .none, characterOffset: before.count, removed: "", inserted: "")
@@ -46,13 +45,6 @@ public func minimalTextEdit(
 
     while prefix < sharedLimit, old[prefix] == new[prefix] {
         prefix += 1
-    }
-
-    // Repeated characters at an edit boundary can make a pure prefix/suffix
-    // diff choose a technically minimal but behaviorally misleading offset.
-    // The pre-edit cursor or selection is stronger evidence when available.
-    if let preferredOffset, preferredOffset >= 0 {
-        prefix = min(prefix, preferredOffset)
     }
 
     var oldSuffix = old.count

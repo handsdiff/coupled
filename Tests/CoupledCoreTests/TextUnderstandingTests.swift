@@ -11,8 +11,23 @@ final class TextUnderstandingTests: XCTestCase {
 
     func testDeletion() {
         XCTAssertEqual(
-            minimalTextEdit(from: "one two three", to: "one three", preferredOffset: 4),
-            TextEdit(operation: .delete, characterOffset: 4, removed: "two ", inserted: "")
+            minimalTextEdit(from: "one two three", to: "one three"),
+            TextEdit(operation: .delete, characterOffset: 5, removed: "wo t", inserted: "")
+        )
+    }
+
+    func testCursorCannotPullCanonicalEditIntoUnchangedPrefix() {
+        XCTAssertEqual(
+            minimalTextEdit(
+                from: "older line\n",
+                to: "older line\nnew line"
+            ),
+            TextEdit(
+                operation: .insert,
+                characterOffset: 11,
+                removed: "",
+                inserted: "new line"
+            )
         )
     }
 

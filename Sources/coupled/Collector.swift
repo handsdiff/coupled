@@ -206,8 +206,7 @@ final class Collector {
             }
             let edit = minimalTextEdit(
                 from: start.editable.value,
-                to: terminal.editable.value,
-                preferredOffset: start.editable.selectedRangeLocation
+                to: terminal.editable.value
             )
             if !edit.isEmpty {
                 let provenance = writeProvenance()
