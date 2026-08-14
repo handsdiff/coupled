@@ -447,8 +447,8 @@ expect(
 )
 expect(
     (examples[0]["targetMask"] as! [String: Any])["type"] as! String
-        == "all_content_tokens_plus_eos",
-    "every content-target token and one EOS receive loss"
+        == "authored_text_and_paste_actions_plus_eos",
+    "authored text, paste actions, and one EOS receive loss"
 )
 expect(
     (examples[0]["targetMask"] as! [String: Any])["eosTokenCount"] as! Int == 1
@@ -466,7 +466,7 @@ expect(
     "compiler conditions on semantic pre-mutation cursor context"
 )
 expect(
-    examples[0]["target"] as! String == "HELLO"
+    ((examples[0]["target"] as! [String: Any])["resolvedContent"] as! String) == "HELLO"
         && (examples[0]["targetMetadata"] as! [String: Any])["characterOffset"] as! Int == 0,
     "Phase 1 target is exact written content while edit metadata remains available"
 )
@@ -485,8 +485,43 @@ let rangeCursor = rangeQuery["cursorContext"] as! [String: Any]
 expect(
     rangeCursor["leftContext"] as! String == ""
         && rangeCursor["rightContext"] as! String == "abc"
-        && examples[2]["target"] as! String == "X",
+        && ((examples[2]["target"] as! [String: Any])["resolvedContent"] as! String) == "X",
     "range-native semantic context admits a target independently of numeric cursor mismatch"
+)
+
+let mixedAuthorship = writeAuthorship(
+    overallEdit: TextEdit(
+        operation: .insert,
+        characterOffset: 4,
+        removed: "",
+        inserted: "please review COPIED tomorrow"
+    ),
+    pasteMutations: [ProvenPasteMutation(
+        checkpointID: "paste-1",
+        clipboardSnapshotID: "clipboard-1",
+        characterOffset: 18,
+        inserted: "COPIED"
+    )]
+)
+expect(
+    mixedAuthorship.resolution == "resolved"
+        && mixedAuthorship.segments.map(\.type)
+            == ["authored_text", "paste", "authored_text"]
+        && mixedAuthorship.segments.map(\.content)
+            == ["please review ", "COPIED", " tomorrow"],
+    "mixed writes preserve exact resolved text with paste provenance"
+)
+let loadedTarget = try! loadPhase1Target(
+    segments: mixedAuthorship.segments,
+    pasteTokenID: 900,
+    eosTokenID: 901,
+    tokenizeAuthoredText: { Array($0.utf8).map(Int.init) }
+)
+expect(
+    loadedTarget.tokenIDs.filter { $0 == 900 }.count == 1
+        && loadedTarget.tokenIDs.last == 901
+        && loadedTarget.lossMask.allSatisfy { $0 },
+    "loader emits one atomic paste token and exactly one loss-bearing EOS"
 )
 expect(
     targetExclusions.contains { $0["reason"] as? String == "empty_content" },
@@ -513,6 +548,97 @@ expect(
         $0["reason"] as? String == "explicitly_excluded_from_phase1"
     },
     "explicit Phase 1 exclusions never enter context"
+)
+
+let pasteFixtureInput = fixtureRoot.appendingPathComponent("paste-input")
+let pasteFixtureOutput = fixtureRoot.appendingPathComponent("paste-output")
+try! FileManager.default.createDirectory(
+    at: pasteFixtureInput,
+    withIntermediateDirectories: true
+)
+try! jsonData([
+    "sessionID": "paste-session",
+    "schemas": ["timingSemanticsVersion": 2],
+], pretty: true).write(to: pasteFixtureInput.appendingPathComponent("session.json"))
+var pasteRaw = rawAttempt(
+    id: "paste-attempt", eventID: "paste-write",
+    before: "", after: "please COPIED tomorrow",
+    timestamp: "2026-01-01T00:00:02.000Z",
+    rangeCursor: ["left": "", "selected": "", "right": ""]
+)
+let pasteBefore = pasteRaw["before"] as! [String: Any]
+let clipboard: [String: Any] = [
+    "schemaVersion": 1, "snapshotID": "clipboard-1",
+    "capturedAt": "2026-01-01T00:00:01.000Z", "changeCount": 7,
+    "types": ["public.utf8-plain-text"], "text": "COPIED",
+    "textSHA256": "fixture", "textWasTruncated": false,
+]
+let conditioning: [String: Any] = [
+    "schemaVersion": 3,
+    "captureSemantics": "synchronous_before_application_mutation",
+    "inputInterceptedAt": "2026-01-01T00:00:01.000Z",
+    "capturedAt": "2026-01-01T00:00:01.000Z",
+    "destination": ["appName": "Fixture", "role": "AXTextArea"],
+    "cursorContext": [
+        "schemaVersion": 2, "source": "accessibility_string_for_range",
+        "captureStatus": "complete", "fieldState": "editable_text",
+        "leftContext": "", "selectedText": "", "rightContext": "",
+    ],
+    "clipboard": clipboard,
+    "sourceObservationID": pasteBefore["observationID"] as! String,
+]
+pasteRaw["conditioningState"] = conditioning
+pasteRaw["authorshipResolution"] = "resolved"
+pasteRaw["authorshipSegments"] = [
+    ["type": "authored_text", "content": "please "],
+    [
+        "type": "paste", "content": "COPIED",
+        "clipboardSnapshotID": "clipboard-1", "pasteCheckpointID": "paste-1",
+    ],
+    ["type": "authored_text", "content": " tomorrow"],
+]
+var pasteEvent = writeEvent(
+    id: "paste-write", sourceID: "paste-attempt", sequence: 1,
+    began: "2026-01-01T00:00:01.000Z", available: "2026-01-01T00:00:02.000Z",
+    before: "", inserted: "please COPIED tomorrow", offset: 0
+)
+pasteEvent["sessionID"] = "paste-session"
+pasteEvent["conditioningState"] = conditioning
+pasteEvent["authorshipResolution"] = "resolved"
+pasteEvent["authorshipSegments"] = pasteRaw["authorshipSegments"]
+var laterEvent = writeEvent(
+    id: "later-write", sourceID: "later-attempt", sequence: 2,
+    began: "2026-01-01T00:00:03.000Z", available: "2026-01-01T00:00:04.000Z",
+    before: "please COPIED tomorrow", inserted: "!", offset: 22
+)
+laterEvent["sessionID"] = "paste-session"
+writeFixtureJSONL([pasteEvent, laterEvent], to: pasteFixtureInput.appendingPathComponent("events.jsonl"))
+writeFixtureJSONL([
+    pasteRaw,
+    rawAttempt(
+        id: "later-attempt", eventID: "later-write",
+        before: "please COPIED tomorrow", after: "please COPIED tomorrow!",
+        timestamp: "2026-01-01T00:00:04.000Z"
+    ),
+], to: pasteFixtureInput.appendingPathComponent("raw.jsonl"))
+_ = try! CausalDatasetCompiler().compile(
+    inputDirectory: pasteFixtureInput,
+    outputDirectory: pasteFixtureOutput
+)
+let pasteExamples = readFixtureJSONL(
+    pasteFixtureOutput.appendingPathComponent("examples.jsonl")
+)
+let pasteTargetSegments = ((pasteExamples[0]["target"] as! [String: Any])["segments"]
+    as! [[String: Any]])
+expect(
+    pasteTargetSegments[1]["type"] as! String == "paste"
+        && pasteTargetSegments[1]["content"] == nil,
+    "current target omits pasted payload and preserves a grounded paste action"
+)
+expect(
+    (pasteExamples[1]["context"] as! String).contains("COPIED")
+        && (pasteExamples[1]["context"] as! String).contains("authorshipSegments"),
+    "later history retains resolved pasted content and paste provenance"
 )
 try! FileManager.default.removeItem(at: fixtureRoot)
 

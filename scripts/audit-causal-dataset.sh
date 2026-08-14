@@ -55,20 +55,24 @@ jq -e -s --slurpfile manifest "$manifest" --slurpfile examples "$examples" --slu
     (.sessionID == $m.sessionID) and
     (.conversionVersion == $m.conversionVersion) and
     ($by_id[$example.targetEventID].kind == "write") and
-    ((.target | type) == "string") and
-    (.target != "") and
-    (.target == (($by_id[$example.targetEventID].serialized | fromjson).content)) and
+    ((.target | type) == "object") and
+    (.target.resolvedContent != "") and
+    (.target.resolvedContent == (($by_id[$example.targetEventID].serialized | fromjson).content)) and
+    ((.target.segments | type) == "array") and
     ($query.kind == "write_conditioning_state") and
     (.conditioningState.captureSemantics == "synchronous_before_application_mutation") and
-    (.targetMask.type == "all_content_tokens_plus_eos") and
-    (.targetMask.contentReceivesLoss == true) and
+    (.targetMask.type == "authored_text_and_paste_actions_plus_eos") and
+    (.targetMask.authoredTextReceivesLoss == true) and
+    (.targetMask.pasteActionsReceiveLoss == true) and
+    (.targetMask.pastedPayloadReceivesLoss == false) and
     (.targetMask.eosTokenCount == 1) and
     (.targetMask.eosReceivesLoss == true) and
-    ($m.loader.targetSource == "example.target") and
-    ($m.loader.targetTokenization == "selected tokenizer with automatic special tokens disabled") and
+    ($m.loader.targetSource == "example.target.segments") and
     ($m.loader.targetTermination == "append exactly one selected-tokenizer eos_token_id") and
     ($m.loader.eosTokenCount == 1) and
-    ($m.loader.contentTokensReceiveLoss == true) and
+    ($m.loader.authoredTextTokensReceiveLoss == true) and
+    ($m.loader.pasteActionTokensReceiveLoss == true) and
+    ($m.loader.pastedPayloadTokensReceiveLoss == false) and
     ($m.loader.eosTokenReceivesLoss == true) and
     (if .conditioningState.schemaVersion >= 2 then
        (.conditioningState.cursorContext.source == "accessibility_string_for_range") and

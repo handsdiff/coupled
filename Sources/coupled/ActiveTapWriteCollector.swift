@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import CoupledCore
+import CryptoKit
 import Foundation
 
 /// Captures a focused editable immediately before its first mutation, retains
@@ -158,6 +159,14 @@ final class ActiveTapWriteCollector {
         }
 
         let classification = classifyKey(event)
+        if let active = pending,
+           active.conditioningClipboard.changeCount != NSPasteboard.general.changeCount {
+            completeCapture(
+                boundaryReason: "clipboard_changed",
+                deferPersistence: true,
+                callbackStartedNanoseconds: callbackStarted
+            )
+        }
         if let pending {
             let focused = captureFocusedTarget(includeValue: false, reason: "key_target")
             let remainsOnTarget: Bool
@@ -169,6 +178,7 @@ final class ActiveTapWriteCollector {
             }
 
             if remainsOnTarget {
+                completeOutstandingPasteCheckpointsSynchronously()
                 let returnCheckpoint = classification.isUnmodifiedReturn
                     ? captureReturnCheckpoint(
                         for: pending,
@@ -279,6 +289,7 @@ final class ActiveTapWriteCollector {
         }
 
         let attemptID = UUID().uuidString
+        let conditioningClipboard = clipboardSnapshot()
         pending = PendingActiveTapWrite(
             attemptID: attemptID,
             bundleIdentifier: bundleIdentifier,
@@ -300,6 +311,7 @@ final class ActiveTapWriteCollector {
             returnCheckpoints: [],
             pasteCheckpoints: [],
             mutationCheckpoints: [],
+            conditioningClipboard: conditioningClipboard,
             beforeCaptureDurationMilliseconds: beforeDurationMilliseconds,
             firstCallbackDurationMilliseconds: nil,
             maximumCallbackDurationMilliseconds: 0,
@@ -438,6 +450,12 @@ final class ActiveTapWriteCollector {
         }
 
         let proposedEventID = decision.edit == nil ? nil : UUID().uuidString
+        let authorship = decision.edit.map {
+            deriveAuthorship(
+                overallEdit: $0,
+                pending: pending
+            )
+        }
         let conditioningState = writeConditioningState(for: pending)
         let cursorFidelity = cursorFidelityEvidence(
             for: pending,
@@ -471,6 +489,8 @@ final class ActiveTapWriteCollector {
             returnCheckpoints: pending.returnCheckpoints,
             pasteCheckpoints: pending.pasteCheckpoints,
             mutationCheckpoints: pending.mutationCheckpoints,
+            authorshipResolution: authorship?.resolution,
+            authorshipSegments: authorship?.segments ?? [],
             beforeAXErrors: pending.beforeAXErrors,
             afterAXErrors: after.errors,
             beforeCaptureDurationMilliseconds: pending.beforeCaptureDurationMilliseconds,
@@ -511,6 +531,8 @@ final class ActiveTapWriteCollector {
             configuredWriteDelaySeconds: configuration.writeDelay,
             conditioningState: conditioningState,
             cursorFidelity: cursorFidelity,
+            authorshipResolution: authorship?.resolution ?? "unresolved",
+            authorshipSegments: authorship?.segments ?? [],
             outcome: ActiveTapWriteOutcome(
                 operation: edit.operation.rawValue,
                 content: edit.inserted,
@@ -542,7 +564,7 @@ final class ActiveTapWriteCollector {
     ) -> ActiveTapWriteConditioningState? {
         guard let target = pending.target, let before = pending.before else { return nil }
         return ActiveTapWriteConditioningState(
-            schemaVersion: 2,
+            schemaVersion: 3,
             captureSemantics: "synchronous_before_application_mutation",
             inputInterceptedAt: pending.beganAt,
             capturedAt: before.observedAt,
@@ -563,8 +585,62 @@ final class ActiveTapWriteCollector {
                 target: target,
                 before: before
             ),
+            clipboard: pending.conditioningClipboard,
             sourceObservationID: before.observationID
         )
+    }
+
+    private func deriveAuthorship(
+        overallEdit: TextEdit,
+        pending: PendingActiveTapWrite
+    ) -> WriteAuthorshipResult {
+        var pasteMutations = [ProvenPasteMutation]()
+        for checkpoint in pending.pasteCheckpoints {
+            guard checkpoint.clipboardSnapshotID
+                    == pending.conditioningClipboard.snapshotID,
+                  checkpoint.clipboardChangeCount
+                    == pending.conditioningClipboard.changeCount else {
+                return WriteAuthorshipResult(
+                    segments: [],
+                    resolution: "clipboard_changed_after_conditioning"
+                )
+            }
+            guard checkpoint.prePasteAXErrors.isEmpty,
+                  checkpoint.axErrors.isEmpty,
+                  let before = checkpoint.prePasteObservation,
+                  let after = checkpoint.observation,
+                  !before.valueWasTruncated,
+                  !after.valueWasTruncated,
+                  let clipboardText = checkpoint.clipboardText else {
+                return WriteAuthorshipResult(
+                    segments: [],
+                    resolution: "paste_checkpoint_incomplete"
+                )
+            }
+            let pasteEdit = minimalTextEdit(
+                from: logicalEditableValue(
+                    before.value,
+                    placeholderValue: before.placeholderValue
+                ),
+                to: logicalEditableValue(
+                    after.value,
+                    placeholderValue: after.placeholderValue
+                )
+            )
+            guard !pasteEdit.isEmpty, pasteEdit.inserted == clipboardText else {
+                return WriteAuthorshipResult(
+                    segments: [],
+                    resolution: "paste_transition_does_not_match_clipboard"
+                )
+            }
+            pasteMutations.append(ProvenPasteMutation(
+                checkpointID: checkpoint.checkpointID,
+                clipboardSnapshotID: checkpoint.clipboardSnapshotID,
+                characterOffset: pasteEdit.characterOffset,
+                inserted: pasteEdit.inserted
+            ))
+        }
+        return writeAuthorship(overallEdit: overallEdit, pasteMutations: pasteMutations)
     }
 
     private func rangeSemanticCursorContext(
@@ -878,6 +954,9 @@ final class ActiveTapWriteCollector {
         guard var pending else { return }
         let checkpointID = UUID().uuidString
         let pasteboard = NSPasteboard.general
+        let prePaste = pending.target.map {
+            captureHeldTarget($0, reason: "pre_paste_checkpoint")
+        } ?? TargetCapture(errors: ["target:unavailable"])
         let clipboardValue = pasteboard.string(forType: .string)
         let clipped = clipboardValue.map {
             String($0.prefix(configuration.maxCharacters))
@@ -885,6 +964,7 @@ final class ActiveTapWriteCollector {
         pending.pasteCheckpoints.append(
             ActiveTapPasteCheckpoint(
                 checkpointID: checkpointID,
+                clipboardSnapshotID: pending.conditioningClipboard.snapshotID,
                 inputObservedAt: inputObservedAt,
                 eventTimestampNanoseconds: event.timestamp,
                 clipboardObservedAt: nowTimestamp(),
@@ -894,6 +974,8 @@ final class ActiveTapWriteCollector {
                 clipboardTextWasTruncated: clipboardValue.map {
                     clipped!.count < $0.count
                 } ?? false,
+                prePasteObservation: prePaste.observation,
+                prePasteAXErrors: prePaste.errors,
                 postPasteCaptureRequestedAt: nil,
                 observation: nil,
                 axErrors: []
@@ -921,6 +1003,24 @@ final class ActiveTapWriteCollector {
         }
     }
 
+    private func clipboardSnapshot() -> ActiveTapClipboardSnapshot {
+        let pasteboard = NSPasteboard.general
+        let value = pasteboard.string(forType: .string)
+        let clipped = value.map { String($0.prefix(configuration.maxCharacters)) }
+        let hash = value.map {
+            SHA256.hash(data: Data($0.utf8)).map { String(format: "%02x", $0) }.joined()
+        }
+        return ActiveTapClipboardSnapshot(
+            snapshotID: UUID().uuidString,
+            capturedAt: nowTimestamp(),
+            changeCount: pasteboard.changeCount,
+            types: pasteboard.types?.map(\.rawValue).sorted() ?? [],
+            text: clipped,
+            textSHA256: hash,
+            textWasTruncated: value.map { clipped!.count < $0.count } ?? false
+        )
+    }
+
     private func completePasteCheckpoint(
         attemptID: String,
         checkpointID: String,
@@ -931,12 +1031,30 @@ final class ActiveTapWriteCollector {
               pending.attemptID == attemptID,
               let index = pending.pasteCheckpoints.firstIndex(where: {
                   $0.checkpointID == checkpointID
-              }) else {
+              }),
+              pending.pasteCheckpoints[index].observation == nil else {
             return
         }
         pending.pasteCheckpoints[index].postPasteCaptureRequestedAt = requestedAt
         pending.pasteCheckpoints[index].observation = capture.observation
         pending.pasteCheckpoints[index].axErrors = capture.errors
+        self.pending = pending
+    }
+
+    private func completeOutstandingPasteCheckpointsSynchronously() {
+        guard var pending,
+              let target = pending.target else { return }
+        let unresolved = pending.pasteCheckpoints.indices.filter {
+            pending.pasteCheckpoints[$0].observation == nil
+        }
+        guard !unresolved.isEmpty else { return }
+        for index in unresolved {
+            let requestedAt = nowTimestamp()
+            let capture = captureHeldTarget(target, reason: "post_paste_before_next_input")
+            pending.pasteCheckpoints[index].postPasteCaptureRequestedAt = requestedAt
+            pending.pasteCheckpoints[index].observation = capture.observation
+            pending.pasteCheckpoints[index].axErrors = capture.errors
+        }
         self.pending = pending
     }
 
@@ -1214,6 +1332,7 @@ private struct PendingActiveTapWrite {
     var returnCheckpoints: [ActiveTapReturnCheckpoint]
     var pasteCheckpoints: [ActiveTapPasteCheckpoint]
     var mutationCheckpoints: [ActiveTapMutationCheckpoint]
+    let conditioningClipboard: ActiveTapClipboardSnapshot
     let beforeCaptureDurationMilliseconds: Double
     var firstCallbackDurationMilliseconds: Double?
     var maximumCallbackDurationMilliseconds: Double
@@ -1288,7 +1407,19 @@ private struct ActiveTapWriteConditioningState: Encodable {
     let capturedAt: String
     let destination: ActiveTapWriteDestination
     let cursorContext: ActiveTapRangeSemanticCursorContext?
+    let clipboard: ActiveTapClipboardSnapshot
     let sourceObservationID: String
+}
+
+private struct ActiveTapClipboardSnapshot: Encodable {
+    let schemaVersion = 1
+    let snapshotID: String
+    let capturedAt: String
+    let changeCount: Int
+    let types: [String]
+    let text: String?
+    let textSHA256: String?
+    let textWasTruncated: Bool
 }
 
 private struct ActiveTapRangeSemanticCursorContext: Encodable {
@@ -1384,6 +1515,7 @@ private struct ActiveTapReturnCheckpoint: Encodable {
 
 private struct ActiveTapPasteCheckpoint: Encodable {
     let checkpointID: String
+    let clipboardSnapshotID: String
     let inputObservedAt: String
     let eventTimestampNanoseconds: UInt64
     let clipboardObservedAt: String
@@ -1391,6 +1523,8 @@ private struct ActiveTapPasteCheckpoint: Encodable {
     let clipboardTypes: [String]
     let clipboardText: String?
     let clipboardTextWasTruncated: Bool
+    let prePasteObservation: ActiveTapEditableObservation?
+    let prePasteAXErrors: [String]
     var postPasteCaptureRequestedAt: String?
     var observation: ActiveTapEditableObservation?
     var axErrors: [String]
@@ -1460,7 +1594,7 @@ private struct WriteDerivationDecision {
 }
 
 private struct RawActiveTapWriteAttempt: Encodable {
-    let schemaVersion = 11
+    let schemaVersion = 12
     let recordType = "active_tap_write_attempt"
     let recordID: String
     let bundleIdentifier: String
@@ -1489,6 +1623,8 @@ private struct RawActiveTapWriteAttempt: Encodable {
     let returnCheckpoints: [ActiveTapReturnCheckpoint]
     let pasteCheckpoints: [ActiveTapPasteCheckpoint]
     let mutationCheckpoints: [ActiveTapMutationCheckpoint]
+    let authorshipResolution: String?
+    let authorshipSegments: [WriteAuthorshipSegment]
     let beforeAXErrors: [String]
     let afterAXErrors: [String]
     let beforeCaptureDurationMilliseconds: Double
@@ -1509,7 +1645,7 @@ private struct RawWriteSensorHealth: Encodable {
 }
 
 private struct ActiveTapWriteRecord: Encodable {
-    let schemaVersion = 8
+    let schemaVersion = 9
     let kind = "write"
     let provenance = "active_tap_accessibility_diff"
     let sequence: UInt64
@@ -1526,6 +1662,8 @@ private struct ActiveTapWriteRecord: Encodable {
     let configuredWriteDelaySeconds: Double
     let conditioningState: ActiveTapWriteConditioningState
     let cursorFidelity: ActiveTapCursorFidelityEvidence
+    let authorshipResolution: String
+    let authorshipSegments: [WriteAuthorshipSegment]
     let outcome: ActiveTapWriteOutcome
     let operation: String
     let content: String

@@ -6,7 +6,7 @@ public struct CausalDatasetCompilerConfiguration: Sendable {
     public let includeTimestampsInContext: Bool
 
     public init(
-        conversionVersion: String = "phase1-causal-v8",
+        conversionVersion: String = "phase1-causal-v9",
         includeTimestampsInContext: Bool = false
     ) {
         self.conversionVersion = conversionVersion
@@ -274,6 +274,10 @@ public struct CausalDatasetCompiler {
             let modelInput = context.isEmpty ? query : context + "\n" + query
             let outcome = writeOutcome(target.object)
             let content = outcome.string("content") ?? ""
+            let targetSegments = trainingTargetSegments(
+                event: target.object,
+                resolvedContent: content
+            )
             let outcomeOffset = outcome.number("characterOffset")?.intValue
             let initialOffset = ((conditioningState["cursorContext"] as? [String: Any])?
                 .number("selectionStartCharacters"))?.intValue
@@ -289,6 +293,8 @@ public struct CausalDatasetCompiler {
             let targetExclusionReason: String?
             if content.isEmpty {
                 targetExclusionReason = "empty_content"
+            } else if targetSegments == nil {
+                targetExclusionReason = "unresolved_paste_authorship"
             } else if usesRangeSemanticContext, !hasCompleteSemanticContext {
                 targetExclusionReason = "missing_semantic_cursor_context"
             } else if usesRangeSemanticContext {
@@ -322,7 +328,7 @@ public struct CausalDatasetCompiler {
                 continue
             }
             examples.append([
-                "schemaVersion": 7,
+                "schemaVersion": 8,
                 "exampleID": "\(sessionID):\(target.sourceEventID)",
                 "conversionVersion": configuration.conversionVersion,
                 "sessionID": sessionID,
@@ -334,7 +340,11 @@ public struct CausalDatasetCompiler {
                 "cursorFidelity": cursorFidelity,
                 "contextEventIDs": contextIDs,
                 "contextSourceRecordIDs": contextSourceRecordIDs,
-                "target": content,
+                "target": [
+                    "schemaVersion": 1,
+                    "segments": targetSegments!,
+                    "resolvedContent": content,
+                ],
                 "targetMetadata": writeOutcomeMetadata(
                     event: target.object,
                     outcome: outcome
@@ -343,8 +353,10 @@ public struct CausalDatasetCompiler {
                 "targetSourceRecordIDs": targetSourceRecordIDs,
                 "sourceRecordIDs": contextSourceRecordIDs + targetSourceRecordIDs,
                 "targetMask": [
-                    "type": "all_content_tokens_plus_eos",
-                    "contentReceivesLoss": true,
+                    "type": "authored_text_and_paste_actions_plus_eos",
+                    "authoredTextReceivesLoss": true,
+                    "pasteActionsReceiveLoss": true,
+                    "pastedPayloadReceivesLoss": false,
                     "eosTokenCount": 1,
                     "eosReceivesLoss": true,
                 ],
@@ -392,7 +404,7 @@ public struct CausalDatasetCompiler {
             "raw.jsonl": try sha256(of: rawURL),
         ]
         let datasetManifest: [String: Any] = [
-            "schemaVersion": 8,
+            "schemaVersion": 9,
             "conversionVersion": configuration.conversionVersion,
             "sessionID": sessionID,
             "source": [
@@ -432,16 +444,16 @@ public struct CausalDatasetCompiler {
             ],
             "serialization": [
                 "contextVersion": 1,
-                "queryVersion": 2,
-                "targetVersion": 7,
-                "targetFormat": "plain_text_content",
+                "queryVersion": 3,
+                "targetVersion": 8,
+                "targetFormat": "structured_authorship_segments",
                 "timestampsInContext": configuration.includeTimestampsInContext,
                 "eventDelimiter": "newline",
                 "jsonKeys": "sorted",
             ],
             "objective": [
                 "modelInput": "causal_history_plus_pre_mutation_conditioning_state",
-                "target": "human_written_content",
+                "target": "authored_text_plus_grounded_paste_actions",
                 "knownDestinationAndInitialSelectionReceiveLoss": false,
                 "operationReceivesLoss": false,
                 "removedContentReceivesLoss": false,
@@ -455,16 +467,20 @@ public struct CausalDatasetCompiler {
                 "reason": "token suffixes are model-tokenizer dependent; query remains while older history truncates first",
             ],
             "loader": [
-                "targetSource": "example.target",
-                "targetTokenization": "selected tokenizer with automatic special tokens disabled",
+                "targetSource": "example.target.segments",
+                "targetTokenization": "tokenize authored_text normally; map every paste segment to one atomic paste_token_id; automatic special tokens disabled",
                 "targetTermination": "append exactly one selected-tokenizer eos_token_id",
                 "eosTokenCount": 1,
-                "contentTokensReceiveLoss": true,
+                "authoredTextTokensReceiveLoss": true,
+                "pasteActionTokensReceiveLoss": true,
+                "pastedPayloadTokensReceiveLoss": false,
                 "eosTokenReceivesLoss": true,
             ],
             "targetMask": [
-                "type": "all_content_tokens_plus_eos",
-                "contentReceivesLoss": true,
+                "type": "authored_text_and_paste_actions_plus_eos",
+                "authoredTextReceivesLoss": true,
+                "pasteActionsReceiveLoss": true,
+                "pastedPayloadReceivesLoss": false,
                 "eosTokenCount": 1,
                 "eosReceivesLoss": true,
             ],
@@ -805,6 +821,14 @@ private func serializeContextEvent(
         serialized["removedContent"] = event.string("removedContent") ?? ""
         serialized["characterOffset"] = event.number("characterOffset")?.intValue ?? 0
         serialized["boundaryReason"] = event.string("boundaryReason") ?? ""
+        if let segments = event["authorshipSegments"] as? [[String: Any]] {
+            // Historical writes retain the resolved document text and the
+            // provenance of pasted spans. Unlike the current target, paste
+            // payloads remain visible here because they were causally available.
+            serialized["authorshipSegments"] = segments
+            serialized["authorshipResolution"] = event.string("authorshipResolution")
+                ?? "unresolved"
+        }
     }
     return try canonicalJSONString(serialized)
 }
@@ -815,6 +839,16 @@ private func writeConditioningState(
 ) throws -> [String: Any] {
     let eventState = event["conditioningState"] as? [String: Any]
     let rawState = attempt["conditioningState"] as? [String: Any]
+    if let rawState,
+       rawState.number("schemaVersion")?.intValue ?? 0 >= 3 {
+        guard let eventState,
+              try canonicalJSONString(eventState) == canonicalJSONString(rawState) else {
+            throw CausalDatasetCompilerError.invalidManifest(
+                "derived write conditioning state does not match raw clipboard evidence"
+            )
+        }
+        return rawState
+    }
     if let before = attempt["before"] as? [String: Any],
        before["axRangeCursorProbe"] as? [String: Any] != nil {
         guard let rangeState = rangeSemanticConditioningState(
@@ -892,6 +926,43 @@ private func writeConditioningState(
         )
     }
     return state
+}
+
+private func trainingTargetSegments(
+    event: [String: Any],
+    resolvedContent: String
+) -> [[String: Any]]? {
+    guard let segments = event["authorshipSegments"] as? [[String: Any]] else {
+        // Backward-compatible conversion of sessions collected before explicit
+        // Cmd-V provenance. New records always carry authorshipResolution.
+        return [["type": "authored_text", "content": resolvedContent]]
+    }
+    guard event.string("authorshipResolution") == "resolved" else { return nil }
+    var target = [[String: Any]]()
+    var reconstructed = ""
+    for segment in segments {
+        guard let type = segment.string("type"),
+              let content = segment.string("content") else { return nil }
+        reconstructed += content
+        switch type {
+        case "authored_text":
+            target.append(["type": type, "content": content])
+        case "paste":
+            guard let snapshotID = segment.string("clipboardSnapshotID"),
+                  let checkpointID = segment.string("pasteCheckpointID") else { return nil }
+            // Deliberately omit the payload from the supervised target. The
+            // loader maps this object to one atomic paste action token.
+            target.append([
+                "type": type,
+                "clipboardSnapshotID": snapshotID,
+                "pasteCheckpointID": checkpointID,
+            ])
+        default:
+            return nil
+        }
+    }
+    guard reconstructed == resolvedContent else { return nil }
+    return target
 }
 
 private func rangeSemanticConditioningState(
@@ -996,11 +1067,18 @@ private func serializeQuery(
         modelCursor = cursor.map { $0 as Any } ?? NSNull()
     }
     var query: [String: Any] = [
-        "schemaVersion": 2,
+        "schemaVersion": conditioningState["clipboard"] == nil ? 2 : 3,
         "kind": "write_conditioning_state",
         "destination": destination,
         "cursorContext": modelCursor,
     ]
+    if let clipboard = conditioningState["clipboard"] as? [String: Any] {
+        query["clipboard"] = compactJSONObject([
+            "changeCount": clipboard.number("changeCount")?.intValue,
+            "content": clipboard.string("text"),
+            "contentWasTruncated": clipboard.boolean("textWasTruncated"),
+        ])
+    }
     if includeTimestamp {
         query["capturedAt"] = conditioningState.string("capturedAt") ?? ""
     }

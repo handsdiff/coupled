@@ -150,9 +150,11 @@ read delay and therefore settles after the write.
   the normal delay. If terminal capture is invalid, empty, or equal to BEFORE,
   a meaningful checkpoint can supply the write; otherwise AFTER remains the
   source. Every checkpoint and its selection, timestamp, and AX errors remains
-  raw. Cmd-V also retains clipboard text synchronously and requests a snapshot
-  of the held field 50 milliseconds after the paste. This preserves paste
-  evidence even when a transient field disappears before normal settlement.
+  raw. The clipboard snapshot available at write onset is part of conditioning.
+  Cmd-V synchronously captures the held field before paste and again 50
+  milliseconds afterward. A paste is grounded only when that transition
+  exactly matches the conditioned clipboard version; ambiguous paste spans are
+  retained raw but excluded from training targets.
   A removal-only burst (Backspace/Delete or Cmd-X) cannot treat newly exposed
   prompt text as user-authored insertion. Every validated write also carries a
   `conditioningState` captured synchronously before the application receives
@@ -284,9 +286,9 @@ reordering or modifying the source files:
 ```sh
 ./scripts/coupled compile \
   --input ./coupled-data/normal-work-dry-run-3 \
-  --output ./coupled-data/normal-work-dry-run-3-phase1-v8
+  --output ./coupled-data/normal-work-dry-run-3-phase1-v9
 ./scripts/audit-causal-dataset.sh \
-  ./coupled-data/normal-work-dry-run-3-phase1-v8
+  ./coupled-data/normal-work-dry-run-3-phase1-v9
 ```
 
 The fresh output directory contains:
@@ -295,7 +297,7 @@ The fresh output directory contains:
   `availableAt` and original JSONL line for ties.
 - `examples.jsonl`: one example per eligible nonempty content write, with the exact causal
   prefix, pre-mutation `conditioningState`, serialized `query`, complete
-  `modelInput`, plain-text content `target`, target metadata, source lines, and raw-attempt
+  `modelInput`, structured authorship `target`, target metadata, source lines, and raw-attempt
   lineage.
 - `target-exclusions.jsonl`: verified writes retained in causal history but not
   used as Phase 1 targets, including pure deletions and new writes without a
@@ -316,11 +318,11 @@ prior writes at `terminalDecisionAt`. Records explicitly marked
 `phase1Eligible: false`—including future displayed model predictions—are
 excluded before contexts and targets are built.
 
-Conversion `phase1-causal-v8` defines the supervised example as:
+Conversion `phase1-causal-v9` defines the supervised example as:
 
 ```text
-modelInput = causal read/write history + known pre-mutation destination/cursor query
-target     = exact nonempty write.content string
+modelInput = causal read/write history + destination/cursor/clipboard query
+target     = authored-text segments + grounded paste-action segments
 ```
 
 The model-facing cursor is range-native semantic state: bounded text before the
@@ -337,10 +339,12 @@ characters equal model tokens. The manifest freezes the Phase 1 packing rule:
 after selecting the actual training tokenizer, retain the most recent `L`
 tokens of `modelInput` (`L = 32768` initially) and train only on the outcome
 target. Because the query is serialized at the right edge, older history is
-truncated before the current destination and cursor state. The target loader
-tokenizes the exact `target` string with automatic special tokens disabled,
-appends exactly one `tokenizer.eos_token_id`, and applies loss to every content
-token and that EOS token. The EOS is a structural terminator added by the loader;
+truncated before the current destination, cursor, and clipboard state. WRITE
+history retains resolved pasted content and its provenance, while the current
+target omits pasted payloads. The target loader tokenizes authored spans with
+automatic special tokens disabled, maps each proven paste to one atomic paste
+token, appends exactly one `tokenizer.eos_token_id`, and applies loss to authored
+tokens, paste actions, and EOS—not pasted payload tokens. EOS is structural;
 it is not part of captured human content. Thus tokenizer-specific packing is a
 deterministic loader step, not a sensor or causality assumption.
 

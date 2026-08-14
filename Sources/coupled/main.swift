@@ -37,7 +37,7 @@ OPTIONS
 COMPILE OPTIONS
   --input PATH                 Session directory containing session/events/raw JSON
   --output PATH                Fresh directory for compiled dataset files
-  --conversion-version NAME    Frozen conversion name (default: phase1-causal-v8)
+  --conversion-version NAME    Frozen conversion name (default: phase1-causal-v9)
   --include-timestamps-in-context
                                Include availableAt in serialized context events
 
@@ -58,7 +58,7 @@ FILES
 COMPILED FILES
   dataset.json                 Conversion manifest, timing rules, and source digests
   events.jsonl                 Causally timed eligible event projection
-  examples.jsonl               Causal model inputs and plain-text content targets
+  examples.jsonl               Causal inputs and structured authorship targets
   target-exclusions.jsonl      Valid history writes excluded as Phase 1 targets
   rejections.jsonl             Ineligible or unverifiable source events
 

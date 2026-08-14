@@ -1,6 +1,6 @@
 # Coupled checkpoint
 
-Implementation baseline: `9f0457b`
+Base commit for this checkpoint: `9f0457b`
 
 ## Objective
 
@@ -65,7 +65,8 @@ Implemented safeguards:
 - The synthetic `BEFORE → empty` deletion fallback has been removed.
 - Invalid terminal elements become unresolved unless a valid Return or paste checkpoint exists.
 - Immediate Return is handled with synchronous pre-Return checkpoints.
-- Paste payload and post-paste state are retained raw.
+- Clipboard state is captured with pre-mutation conditioning.
+- Cmd-V payload plus immediate pre/post-paste field states are retained raw.
 - Large deletions must be supported by complete observed `BEFORE` and `AFTER` states.
 - Numeric cursor fidelity remains diagnostic and does not alter the diff.
 
@@ -108,7 +109,7 @@ Implemented safeguards:
 
 ## Implemented causal compilation
 
-Current compiler: `phase1-causal-v8`
+Current compiler: `phase1-causal-v9`
 
 Timing:
 
@@ -127,8 +128,8 @@ The compiler:
 - repairs known legacy synthetic deletions;
 - excludes stale reads from older sessions;
 - serializes causal READ/WRITE history;
-- appends pre-mutation destination/cursor conditioning as the query;
-- emits plain-text content targets;
+- appends pre-mutation destination/cursor/clipboard conditioning as the query;
+- emits structured authored-text and grounded paste-action targets;
 - excludes pure deletions;
 - records target and context exclusions explicitly;
 - audits lineage back to source records.
@@ -139,14 +140,10 @@ For range-native semantic cursor contexts, current compiler behavior accepts com
 
 Implemented:
 
-- Stored targets contain only source content.
-- Dataset metadata requires exactly one EOS token.
-- EOS receives loss.
+- Stored compiler targets remain tokenizer-independent structured segments.
+- The loader contract tokenizes authored spans, maps each paste action to one atomic token, and appends exactly one EOS.
+- Authored tokens, paste-action tokens, and EOS receive loss; pasted payload tokens do not.
 - Dataset checks enforce the contract.
-
-Not implemented:
-
-- A tokenizer-specific training loader that disables automatic special tokens, appends exactly one `eos_token_id`, and constructs labels with loss only on target content and EOS.
 
 A literal EOS string must not be inserted into source targets.
 
@@ -168,27 +165,24 @@ It also exposed:
 
 The helper-window issue was fixed in `9f0457b` but has not yet been validated in a new live trace.
 
-## Unresolved target-authorship questions
+## Target authorship
 
 ### Paste
 
-Current behavior is not training-ready: literal pasted payloads still become content targets.
-
-Proposed representation:
+Implemented representation:
 
 ```text
 typed text + <|paste|> + typed text + EOS
 ```
 
-Requirements:
+Rules:
 
-- capture clipboard-copy state as causal context;
-- retain literal clipboard payload raw;
-- capture editable state immediately before and after every paste;
-- represent pasted spans as grounded actions;
-- apply loss to `<|paste|>`, not copied payload tokens;
-- preserve resolved final content for audit and later history;
-- exclude ambiguous paste-containing bursts until segmentation is reliable.
+- Clipboard state at write onset is causal conditioning; COPY is not a third event type.
+- Cmd-V captures immediate pre/post editable states and the pasteboard version used.
+- Current targets represent each proven paste as one atomic action without its payload.
+- Later WRITE history retains the resolved payload and marks it as paste-derived.
+- Ambiguous paste-containing bursts remain events but are target-ineligible.
+- Context-menu paste, drag-and-drop, and application-driven insertion are outside the initial proven-paste scope.
 
 ### Automatic formatting and generated text
 
@@ -208,8 +202,8 @@ Current and intended Phase 1 policy:
 - Backspace and Delete are folded into the final net edit.
 - Pure deletions remain history events but are not content targets.
 - Cursor movement and selection are conditioning state.
-- Copy should update clipboard/context state; standalone copy capture is not yet implemented.
-- Paste should eventually become a grounded action marker.
+- A changed clipboard closes the current opportunity before the next mutation; COPY remains raw evidence, not a derived event.
+- Proven Cmd-V paste is a grounded action in the target.
 - A general motor-action policy is outside the current content-prediction objective.
 
 ## Remaining requirements
@@ -218,16 +212,15 @@ Current and intended Phase 1 policy:
 
 1. Validate the auxiliary-window activation fix.
 2. Inspect another short trace for READ attribution and active-write exclusion.
-3. Decide on a conservative interim paste policy, likely excluding paste-containing targets.
+3. Validate typed, paste-only, and mixed Cmd-V writes against the new authorship fields.
 4. Freeze the next compiler version only after that trace passes.
 
 ### Before initial offline training
 
-1. Implement the tokenizer-specific EOS loader.
-2. Implement or conservatively exclude paste targets.
-3. Reconcile Phase 1's cursor-eligibility language with compiler behavior.
-4. Audit sampled examples for authorship, boundaries, future leakage, and destination correctness.
-5. Freeze the conversion version and immutable dataset.
+1. Connect the tested target-loader contract to the chosen model tokenizer.
+2. Reconcile Phase 1's cursor-eligibility language with compiler behavior.
+3. Audit sampled examples for authorship, boundaries, future leakage, and destination correctness.
+4. Freeze the conversion version and immutable dataset.
 
 ### Before live prediction
 

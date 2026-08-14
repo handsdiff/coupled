@@ -18,6 +18,8 @@ SDKROOT="$sdk_root" \
 CLANG_MODULE_CACHE_PATH="$module_cache" \
 swiftc \
   "$project_dir/Sources/CoupledCore/TextUnderstanding.swift" \
+  "$project_dir/Sources/CoupledCore/WriteAuthorship.swift" \
+  "$project_dir/Sources/CoupledCore/Phase1TargetLoader.swift" \
   "$project_dir/Sources/CoupledCore/AdjacentViewportDeduplicator.swift" \
   "$project_dir/Sources/CoupledCore/ViewportCrop.swift" \
   "$project_dir/Sources/CoupledCore/CausalDatasetCompiler.swift" \
