@@ -18,6 +18,7 @@ final class ActiveTapWriteCollector {
     private var writeTimer: Timer?
     private var mutationCheckpointTimer: Timer?
     private var pending: PendingActiveTapWrite?
+    private var opaqueShadow: OpaqueShadowSession?
     private var sequence: UInt64 = 0
     private var tapTimeoutCount: UInt64 = 0
 
@@ -191,7 +192,28 @@ final class ActiveTapWriteCollector {
 
             if remainsOnTarget {
                 completeOutstandingPasteCheckpointsSynchronously()
+                if isUnmodifiedCopy(event) {
+                    completeCapture(
+                        boundaryReason: "clipboard_copy",
+                        deferPersistence: true,
+                        callbackStartedNanoseconds: callbackStarted
+                    )
+                    return
+                }
                 if classification.isSelectionBoundary {
+                    if pending.opaqueKeyboard != nil {
+                        completeCapture(
+                            boundaryReason: "selection_navigation",
+                            deferPersistence: true,
+                            callbackStartedNanoseconds: callbackStarted
+                        )
+                        applyOpaqueNavigationAfterBoundary(
+                            event: event,
+                            classification: classification,
+                            target: pending.target
+                        )
+                        return
+                    }
                     completeCapture(
                         boundaryReason: "selection_navigation",
                         deferPersistence: true,
@@ -212,6 +234,11 @@ final class ActiveTapWriteCollector {
                 extendPending(
                     with: classification,
                     event: event,
+                    inputObservedAt: inputObservedAt
+                )
+                recordOpaqueKeyboardInput(
+                    event: event,
+                    classification: classification,
                     inputObservedAt: inputObservedAt
                 )
                 reportMutatingInput(
@@ -247,6 +274,7 @@ final class ActiveTapWriteCollector {
                 ? "focus_unavailable"
                 : "target_changed"
             completeCapture(boundaryReason: boundary, deferPersistence: true)
+            opaqueShadow = nil
             guard classification.canStartWrite else { return }
 
             let beforeStarted = DispatchTime.now().uptimeNanoseconds
@@ -262,6 +290,11 @@ final class ActiveTapWriteCollector {
                     sinceNanoseconds: beforeStarted
                 )
             )
+            recordOpaqueKeyboardInput(
+                event: event,
+                classification: classification,
+                inputObservedAt: inputObservedAt
+            )
             reportMutatingInput(
                 classification: classification,
                 event: event,
@@ -275,6 +308,17 @@ final class ActiveTapWriteCollector {
             return
         }
 
+        if classification.isSelectionBoundary {
+            applyOpaqueNavigationWithoutPending(
+                event: event,
+                classification: classification
+            )
+            return
+        }
+        if classification.isUnmodifiedReturn {
+            armKnownEmptyOpaqueShadow()
+            return
+        }
         guard classification.canStartWrite else { return }
         let beforeStarted = DispatchTime.now().uptimeNanoseconds
         let before = captureFocusedTarget(includeValue: true, reason: "write_before")
@@ -284,6 +328,11 @@ final class ActiveTapWriteCollector {
             inputObservedAt: inputObservedAt,
             before: before,
             beforeDurationMilliseconds: milliseconds(sinceNanoseconds: beforeStarted)
+        )
+        recordOpaqueKeyboardInput(
+            event: event,
+            classification: classification,
+            inputObservedAt: inputObservedAt
         )
         reportMutatingInput(
             classification: classification,
@@ -308,6 +357,7 @@ final class ActiveTapWriteCollector {
             deferPersistence: true,
             callbackStartedNanoseconds: callbackStarted
         )
+        opaqueShadow = nil
     }
 
     private func startPending(
@@ -323,6 +373,10 @@ final class ActiveTapWriteCollector {
 
         let attemptID = UUID().uuidString
         let conditioningClipboard = clipboardSnapshot()
+        let opaqueKeyboard = stagedOpaqueKeyboardAttempt(
+            target: before.target,
+            before: before.observation
+        )
         pending = PendingActiveTapWrite(
             attemptID: attemptID,
             bundleIdentifier: bundleIdentifier,
@@ -344,6 +398,7 @@ final class ActiveTapWriteCollector {
             returnCheckpoints: [],
             pasteCheckpoints: [],
             mutationCheckpoints: [],
+            opaqueKeyboard: opaqueKeyboard,
             conditioningClipboard: conditioningClipboard,
             beforeCaptureDurationMilliseconds: beforeDurationMilliseconds,
             firstCallbackDurationMilliseconds: nil,
@@ -436,6 +491,12 @@ final class ActiveTapWriteCollector {
         }
         let tapTimeoutCountAtCompletion = tapTimeoutCount
         let terminalDecisionAt = nowTimestamp()
+        let confirmedOpaque = isConfirmedOpaque(pending: pending, after: after)
+        updateOpaqueShadowAfterCompletion(
+            pending: pending,
+            confirmedOpaque: confirmedOpaque,
+            boundaryReason: boundaryReason
+        )
 
         let work: () -> Void = { [weak self] in
             guard let self else { return }
@@ -444,7 +505,8 @@ final class ActiveTapWriteCollector {
                 after: after,
                 boundaryReason: boundaryReason,
                 terminalDecisionAt: terminalDecisionAt,
-                tapTimeoutCountAtCompletion: tapTimeoutCountAtCompletion
+                tapTimeoutCountAtCompletion: tapTimeoutCountAtCompletion,
+                confirmedOpaque: confirmedOpaque
             )
         }
         if deferPersistence {
@@ -459,7 +521,8 @@ final class ActiveTapWriteCollector {
         after: TargetCapture,
         boundaryReason: String,
         terminalDecisionAt: String,
-        tapTimeoutCountAtCompletion: UInt64
+        tapTimeoutCountAtCompletion: UInt64,
+        confirmedOpaque: Bool
     ) {
         let decision: WriteDerivationDecision
         if tapTimeoutCountAtCompletion > pending.tapTimeoutCountAtStart {
@@ -471,7 +534,7 @@ final class ActiveTapWriteCollector {
         } else if pending.before!.valueWasTruncated {
             decision = .unresolved("value_truncated")
         } else {
-            decision = deriveWrite(
+            let semanticDecision = deriveWrite(
                 before: pending.before!,
                 after: after,
                 checkpoints: pending.returnCheckpoints,
@@ -480,20 +543,37 @@ final class ActiveTapWriteCollector {
                 lastEventTimestampNanoseconds: pending.lastEventTimestampNanoseconds,
                 boundaryReason: boundaryReason
             )
+            if confirmedOpaque, semanticDecision.edit == nil {
+                decision = deriveOpaqueKeyboardWrite(
+                    pending: pending,
+                    after: after,
+                    terminalDecisionAt: terminalDecisionAt
+                )
+            } else {
+                decision = semanticDecision
+            }
         }
 
         let proposedEventID = decision.edit == nil ? nil : UUID().uuidString
+        let usesOpaqueKeyboard = decision.observationSource == "opaque_keyboard_shadow"
         let authorship = decision.edit.map {
-            deriveAuthorship(
-                overallEdit: $0,
-                pending: pending
-            )
+            usesOpaqueKeyboard
+                ? deriveOpaqueAuthorship(overallEdit: $0, pending: pending)
+                : deriveAuthorship(overallEdit: $0, pending: pending)
         }
-        let conditioningState = writeConditioningState(for: pending)
-        let cursorFidelity = cursorFidelityEvidence(
+        let conditioningState = writeConditioningState(
             for: pending,
-            terminalEditOffset: decision.edit?.characterOffset
+            useOpaqueKeyboard: usesOpaqueKeyboard
         )
+        let cursorFidelity = usesOpaqueKeyboard
+            ? opaqueCursorFidelityEvidence(
+                for: pending,
+                terminalEditOffset: decision.edit?.characterOffset
+            )
+            : cursorFidelityEvidence(
+                for: pending,
+                terminalEditOffset: decision.edit?.characterOffset
+            )
         let rawRecord = RawActiveTapWriteAttempt(
             recordID: pending.attemptID,
             bundleIdentifier: pending.bundleIdentifier,
@@ -522,6 +602,9 @@ final class ActiveTapWriteCollector {
             returnCheckpoints: pending.returnCheckpoints,
             pasteCheckpoints: pending.pasteCheckpoints,
             mutationCheckpoints: pending.mutationCheckpoints,
+            keyboardReconstruction: confirmedOpaque
+                ? rawOpaqueKeyboardReconstruction(pending.opaqueKeyboard)
+                : nil,
             authorshipResolution: authorship?.resolution,
             authorshipSegments: authorship?.segments ?? [],
             beforeAXErrors: pending.beforeAXErrors,
@@ -550,6 +633,9 @@ final class ActiveTapWriteCollector {
 
         sequence += 1
         let record = ActiveTapWriteRecord(
+            provenance: usesOpaqueKeyboard
+                ? "opaque_keyboard_reconstruction"
+                : "active_tap_accessibility_diff",
             sequence: sequence,
             eventID: proposedEventID,
             observedAt: nowTimestamp(),
@@ -593,12 +679,18 @@ final class ActiveTapWriteCollector {
     }
 
     private func writeConditioningState(
-        for pending: PendingActiveTapWrite
+        for pending: PendingActiveTapWrite,
+        useOpaqueKeyboard: Bool
     ) -> ActiveTapWriteConditioningState? {
         guard let target = pending.target, let before = pending.before else { return nil }
+        let cursorContext = useOpaqueKeyboard
+            ? opaqueSemanticCursorContext(for: pending)
+            : rangeSemanticCursorContext(target: target, before: before)
         return ActiveTapWriteConditioningState(
             schemaVersion: 3,
-            captureSemantics: "synchronous_before_application_mutation",
+            captureSemantics: useOpaqueKeyboard
+                ? "keyboard_shadow_before_application_mutation"
+                : "synchronous_before_application_mutation",
             inputInterceptedAt: pending.beganAt,
             capturedAt: before.observedAt,
             destination: ActiveTapWriteDestination(
@@ -614,10 +706,7 @@ final class ActiveTapWriteCollector {
                 fieldDescription: target.identity.fieldDescription,
                 placeholder: before.placeholderValue
             ),
-            cursorContext: rangeSemanticCursorContext(
-                target: target,
-                before: before
-            ),
+            cursorContext: cursorContext,
             clipboard: pending.conditioningClipboard,
             sourceObservationID: before.observationID
         )
@@ -676,6 +765,44 @@ final class ActiveTapWriteCollector {
         return writeAuthorship(overallEdit: overallEdit, pasteMutations: pasteMutations)
     }
 
+    private func deriveOpaqueAuthorship(
+        overallEdit: TextEdit,
+        pending: PendingActiveTapWrite
+    ) -> WriteAuthorshipResult {
+        guard let reconstruction = pending.opaqueKeyboard else {
+            return WriteAuthorshipResult(segments: [], resolution: "opaque_keyboard_missing")
+        }
+        return writeAuthorship(
+            overallEdit: overallEdit,
+            pasteMutations: reconstruction.pasteMutations
+        )
+    }
+
+    private func opaqueSemanticCursorContext(
+        for pending: PendingActiveTapWrite
+    ) -> ActiveTapRangeSemanticCursorContext? {
+        guard let state = pending.opaqueKeyboard?.beforeState,
+              let cursor = state.semanticCursorContext(
+                surroundingCharacterCount: configuration.cursorContextCharacters
+              ) else { return nil }
+        return ActiveTapRangeSemanticCursorContext(
+            schemaVersion: 3,
+            source: "keyboard_shadow_state",
+            captureStatus: "complete",
+            fieldState: "editable_text",
+            leftContext: cursor.leftContext,
+            selectedText: cursor.selectedText,
+            rightContext: cursor.rightContext,
+            surfacePrompt: nil,
+            selectionStartCharacters: cursor.selectionStartCharacters,
+            selectionLengthCharacters: cursor.selectionLengthCharacters,
+            fieldCharacterCount: cursor.fieldCharacterCount,
+            leftContextWasTruncated: cursor.leftContextWasTruncated,
+            selectedTextWasTruncated: cursor.selectedTextWasTruncated,
+            rightContextWasTruncated: cursor.rightContextWasTruncated
+        )
+    }
+
     private func rangeSemanticCursorContext(
         target: HeldEditableTarget,
         before: ActiveTapEditableObservation
@@ -710,7 +837,29 @@ final class ActiveTapWriteCollector {
             leftContext: surfacePrompt == nil ? left : "",
             selectedText: surfacePrompt == nil ? selected : "",
             rightContext: surfacePrompt == nil ? right : "",
-            surfacePrompt: surfacePrompt
+            surfacePrompt: surfacePrompt,
+            selectionStartCharacters: nil,
+            selectionLengthCharacters: nil,
+            fieldCharacterCount: nil,
+            leftContextWasTruncated: nil,
+            selectedTextWasTruncated: nil,
+            rightContextWasTruncated: nil
+        )
+    }
+
+    private func opaqueCursorFidelityEvidence(
+        for pending: PendingActiveTapWrite,
+        terminalEditOffset: Int?
+    ) -> ActiveTapCursorFidelityEvidence {
+        let state = pending.opaqueKeyboard?.beforeState
+        return ActiveTapCursorFidelityEvidence(
+            status: state == nil ? "opaque_keyboard_unbaselined" : "keyboard_shadow_state",
+            initialCursorOffsetCharacters: state?.selectionStart,
+            initialSelectionLengthCharacters: state?.selectionLength,
+            earliestObservedMutationOffsetCharacters: terminalEditOffset,
+            earliestObservedMutationObservationID: nil,
+            earliestObservedMutationCapturedAt: pending.beganAt,
+            terminalEditOffsetCharacters: terminalEditOffset
         )
     }
 
@@ -956,12 +1105,307 @@ final class ActiveTapWriteCollector {
         )
     }
 
+    private func stagedOpaqueKeyboardAttempt(
+        target: HeldEditableTarget?,
+        before: ActiveTapEditableObservation?
+    ) -> PendingOpaqueKeyboardAttempt? {
+        guard let target, let before,
+              target.identity.role == (kAXTextFieldRole as String),
+              logicalEditableValue(
+                before.value,
+                placeholderValue: before.placeholderValue
+              ).isEmpty else { return nil }
+        let knownState: OpaqueTextState?
+        if let shadow = opaqueShadow, sameTarget(shadow.target, target) {
+            knownState = shadow.state
+        } else {
+            knownState = nil
+        }
+        return PendingOpaqueKeyboardAttempt(
+            beforeState: knownState,
+            afterState: knownState,
+            events: [],
+            pasteMutations: [],
+            invalidReason: nil
+        )
+    }
+
+    private func recordOpaqueKeyboardInput(
+        event: CGEvent,
+        classification: KeyClassification,
+        inputObservedAt: String
+    ) {
+        guard var pending, var reconstruction = pending.opaqueKeyboard else { return }
+        let decoded = decodeOpaqueKeyboardAction(
+            event: event,
+            classification: classification,
+            clipboardText: NSPasteboard.general.string(forType: .string)
+        )
+        var applyResolution = "unbaselined"
+        if reconstruction.invalidReason != nil {
+            applyResolution = "already_invalid"
+        } else if classification.isUnmodifiedReturn {
+            applyResolution = "boundary_only"
+        } else if let action = decoded.action, var state = reconstruction.afterState {
+            let pasteOffset = classification.isPaste ? state.selectionStart : nil
+            switch state.apply(action) {
+            case .applied:
+                reconstruction.afterState = state
+                applyResolution = "applied"
+                if classification.isPaste,
+                   let pasted = decoded.unicodeText,
+                   !pasted.isEmpty,
+                   let pasteOffset {
+                    reconstruction.pasteMutations.append(ProvenPasteMutation(
+                        checkpointID: UUID().uuidString,
+                        clipboardSnapshotID: pending.conditioningClipboard.snapshotID,
+                        characterOffset: pasteOffset,
+                        inserted: pasted
+                    ))
+                }
+            case .unsupported(let reason):
+                reconstruction.invalidReason = reason
+                applyResolution = "unsupported:\(reason)"
+            }
+        } else if decoded.action == nil, !classification.isUnmodifiedReturn {
+            let reason = decoded.invalidReason ?? "unknown_key_action"
+            reconstruction.invalidReason = reason
+            applyResolution = "unsupported:\(reason)"
+        }
+        reconstruction.events.append(OpaqueKeyboardInputEvidence(
+            observedAt: inputObservedAt,
+            eventTimestampNanoseconds: event.timestamp,
+            keyCode: event.getIntegerValueField(.keyboardEventKeycode),
+            modifierFlags: event.flags.rawValue,
+            action: decoded.label,
+            unicodeText: decoded.unicodeText,
+            applyResolution: applyResolution
+        ))
+        pending.opaqueKeyboard = reconstruction
+        self.pending = pending
+    }
+
+    private func decodeOpaqueKeyboardAction(
+        event: CGEvent,
+        classification: KeyClassification,
+        clipboardText: String?
+    ) -> (action: OpaqueTextAction?, label: String, unicodeText: String?, invalidReason: String?) {
+        let code = event.getIntegerValueField(.keyboardEventKeycode)
+        if classification.isUnmodifiedReturn {
+            return (nil, "submit", nil, nil)
+        }
+        if classification.isPaste {
+            guard let clipboardText else {
+                return (nil, "paste", nil, "clipboard_text_unavailable")
+            }
+            return (.insert(clipboardText), "paste", clipboardText, nil)
+        }
+        if event.flags.contains(.maskCommand) {
+            if code == 7 { return (.insert(""), "cut", nil, nil) }
+            return (nil, classification.hint, nil, "unsupported_command_shortcut")
+        }
+        if event.flags.contains(.maskControl) {
+            return (nil, classification.hint, nil, "unsupported_control_shortcut")
+        }
+        if code == 51 { return (.backspace, "backspace", nil, nil) }
+        if code == 117 { return (.deleteForward, "delete_forward", nil, nil) }
+        if [36, 76].contains(code), event.flags.contains(.maskShift) {
+            return (.insert("\n"), "insert_newline", "\n", nil)
+        }
+        let text = String(writableCharacters(in: opaqueUnicodeText(from: event)))
+        guard !text.isEmpty else {
+            return (nil, classification.hint, nil, "unicode_text_unavailable")
+        }
+        return (.insert(text), "insert_text", text, nil)
+    }
+
+    private func opaqueNavigationAction(
+        event: CGEvent
+    ) -> OpaqueTextAction? {
+        let code = event.getIntegerValueField(.keyboardEventKeycode)
+        let flags = event.flags
+        let extending = flags.contains(.maskShift)
+        if flags.contains(.maskAlternate) || flags.contains(.maskControl) { return nil }
+        if flags.contains(.maskCommand), code == 0 { return .selectAll }
+        switch code {
+        case 123:
+            return flags.contains(.maskCommand)
+                ? .moveToStart(extendingSelection: extending)
+                : .moveLeft(extendingSelection: extending)
+        case 124:
+            return flags.contains(.maskCommand)
+                ? .moveToEnd(extendingSelection: extending)
+                : .moveRight(extendingSelection: extending)
+        case 115: return .moveToStart(extendingSelection: extending)
+        case 119: return .moveToEnd(extendingSelection: extending)
+        default: return nil
+        }
+    }
+
+    private func applyOpaqueNavigationAfterBoundary(
+        event: CGEvent,
+        classification: KeyClassification,
+        target: HeldEditableTarget?
+    ) {
+        guard classification.isSelectionBoundary,
+              let target,
+              let action = opaqueNavigationAction(event: event),
+              var shadow = opaqueShadow,
+              sameTarget(shadow.target, target),
+              shadow.state.apply(action) == .applied else {
+            opaqueShadow = nil
+            return
+        }
+        opaqueShadow = shadow
+    }
+
+    private func applyOpaqueNavigationWithoutPending(
+        event: CGEvent,
+        classification: KeyClassification
+    ) {
+        guard classification.isSelectionBoundary,
+              let action = opaqueNavigationAction(event: event),
+              let focused = captureFocusedTarget(
+                includeValue: false,
+                reason: "opaque_navigation"
+              ).target,
+              var shadow = opaqueShadow,
+              sameTarget(shadow.target, focused),
+              shadow.state.apply(action) == .applied else {
+            opaqueShadow = nil
+            return
+        }
+        opaqueShadow = shadow
+    }
+
+    private func armKnownEmptyOpaqueShadow() {
+        let capture = captureFocusedTarget(includeValue: true, reason: "opaque_empty_boundary")
+        guard capture.errors.isEmpty,
+              let target = capture.target,
+              target.identity.role == (kAXTextFieldRole as String),
+              let observation = capture.observation,
+              logicalEditableValue(
+                observation.value,
+                placeholderValue: observation.placeholderValue
+              ).isEmpty else {
+            opaqueShadow = nil
+            return
+        }
+        opaqueShadow = OpaqueShadowSession(target: target, state: OpaqueTextState())
+    }
+
+    private func isConfirmedOpaque(
+        pending: PendingActiveTapWrite,
+        after: TargetCapture
+    ) -> Bool {
+        guard pending.opaqueKeyboard != nil,
+              pending.beforeAXErrors.isEmpty,
+              after.errors.isEmpty,
+              let before = pending.before,
+              let terminal = after.observation,
+              !before.valueWasTruncated,
+              !terminal.valueWasTruncated,
+              pending.mutationCheckpoints.allSatisfy({ $0.axErrors.isEmpty }),
+              pending.pasteCheckpoints.allSatisfy({
+                  $0.prePasteAXErrors.isEmpty && $0.axErrors.isEmpty
+              }),
+              pending.returnCheckpoints.allSatisfy({ $0.axErrors.isEmpty }),
+              logicalEditableValue(
+                before.value,
+                placeholderValue: before.placeholderValue
+              ).isEmpty,
+              logicalEditableValue(
+                terminal.value,
+                placeholderValue: terminal.placeholderValue
+              ).isEmpty else { return false }
+        let observations = pending.mutationCheckpoints.compactMap(\.observation)
+            + pending.pasteCheckpoints.compactMap(\.observation)
+            + pending.returnCheckpoints.compactMap(\.observation)
+        guard !observations.isEmpty else { return false }
+        return observations.allSatisfy {
+            !$0.valueWasTruncated
+                && logicalEditableValue(
+                    $0.value,
+                    placeholderValue: $0.placeholderValue
+                ).isEmpty
+        }
+    }
+
+    private func updateOpaqueShadowAfterCompletion(
+        pending: PendingActiveTapWrite,
+        confirmedOpaque: Bool,
+        boundaryReason: String
+    ) {
+        guard confirmedOpaque, let target = pending.target else {
+            opaqueShadow = nil
+            return
+        }
+        if boundaryReason == "return_pressed" {
+            opaqueShadow = OpaqueShadowSession(target: target, state: OpaqueTextState())
+            return
+        }
+        guard let reconstruction = pending.opaqueKeyboard,
+              reconstruction.invalidReason == nil,
+              let state = reconstruction.afterState else {
+            opaqueShadow = nil
+            return
+        }
+        opaqueShadow = OpaqueShadowSession(target: target, state: state)
+    }
+
+    private func deriveOpaqueKeyboardWrite(
+        pending: PendingActiveTapWrite,
+        after: TargetCapture,
+        terminalDecisionAt: String
+    ) -> WriteDerivationDecision {
+        guard let reconstruction = pending.opaqueKeyboard else {
+            return .unresolved("opaque_keyboard_missing")
+        }
+        guard reconstruction.invalidReason == nil else {
+            return .unresolved("opaque_keyboard_unsupported")
+        }
+        guard let before = reconstruction.beforeState,
+              let terminal = reconstruction.afterState else {
+            return .unresolved("opaque_keyboard_unbaselined")
+        }
+        let edit = minimalTextEdit(from: before.text, to: terminal.text)
+        guard !edit.isEmpty else {
+            return .unresolved(
+                "no_change",
+                observationSource: "opaque_keyboard_shadow",
+                usedObservationCapturedAt: after.observation?.observedAt ?? terminalDecisionAt
+            )
+        }
+        return WriteDerivationDecision(
+            edit: edit,
+            resolution: "validated",
+            observationSource: "opaque_keyboard_shadow",
+            fallbackReason: "accessibility_value_opaque",
+            usedCheckpointID: nil,
+            usedObservationCapturedAt: after.observation?.observedAt ?? terminalDecisionAt
+        )
+    }
+
+    private func rawOpaqueKeyboardReconstruction(
+        _ reconstruction: PendingOpaqueKeyboardAttempt?
+    ) -> RawOpaqueKeyboardReconstruction? {
+        guard let reconstruction else { return nil }
+        return RawOpaqueKeyboardReconstruction(
+            baselineStatus: reconstruction.beforeState == nil ? "unbaselined" : "known",
+            before: reconstruction.beforeState.map(RawOpaqueTextState.init),
+            after: reconstruction.afterState.map(RawOpaqueTextState.init),
+            inputEvents: reconstruction.events,
+            invalidReason: reconstruction.invalidReason
+        )
+    }
+
     private func discardPendingForPause() {
         writeTimer?.invalidate()
         writeTimer = nil
         mutationCheckpointTimer?.invalidate()
         mutationCheckpointTimer = nil
         pending = nil
+        opaqueShadow = nil
     }
 
     private func captureReturnCheckpoint(
@@ -1375,6 +1819,7 @@ private struct PendingActiveTapWrite {
     var returnCheckpoints: [ActiveTapReturnCheckpoint]
     var pasteCheckpoints: [ActiveTapPasteCheckpoint]
     var mutationCheckpoints: [ActiveTapMutationCheckpoint]
+    var opaqueKeyboard: PendingOpaqueKeyboardAttempt?
     let conditioningClipboard: ActiveTapClipboardSnapshot
     let beforeCaptureDurationMilliseconds: Double
     var firstCallbackDurationMilliseconds: Double?
@@ -1393,6 +1838,19 @@ private struct HeldEditableTarget {
     let identity: ActiveTapTargetIdentity
     let app: AppContext
     let window: WindowContext
+}
+
+private struct OpaqueShadowSession {
+    let target: HeldEditableTarget
+    var state: OpaqueTextState
+}
+
+private struct PendingOpaqueKeyboardAttempt {
+    let beforeState: OpaqueTextState?
+    var afterState: OpaqueTextState?
+    var events: [OpaqueKeyboardInputEvidence]
+    var pasteMutations: [ProvenPasteMutation]
+    var invalidReason: String?
 }
 
 private struct TargetCapture {
@@ -1474,6 +1932,12 @@ private struct ActiveTapRangeSemanticCursorContext: Encodable {
     let selectedText: String
     let rightContext: String
     let surfacePrompt: String?
+    let selectionStartCharacters: Int?
+    let selectionLengthCharacters: Int?
+    let fieldCharacterCount: Int?
+    let leftContextWasTruncated: Bool?
+    let selectedTextWasTruncated: Bool?
+    let rightContextWasTruncated: Bool?
 }
 
 private struct ActiveTapWriteOutcome: Encodable {
@@ -1546,6 +2010,37 @@ private struct ActiveTapInputEvidence: Encodable {
     let eventTimestampNanoseconds: UInt64
     let hint: String
     let mutationCapable: Bool
+}
+
+private struct OpaqueKeyboardInputEvidence: Encodable {
+    let observedAt: String
+    let eventTimestampNanoseconds: UInt64
+    let keyCode: Int64
+    let modifierFlags: UInt64
+    let action: String
+    let unicodeText: String?
+    let applyResolution: String
+}
+
+private struct RawOpaqueTextState: Encodable {
+    let text: String
+    let selectionStartCharacters: Int
+    let selectionLengthCharacters: Int
+
+    init(_ state: OpaqueTextState) {
+        text = state.text
+        selectionStartCharacters = state.selectionStart
+        selectionLengthCharacters = state.selectionLength
+    }
+}
+
+private struct RawOpaqueKeyboardReconstruction: Encodable {
+    let schemaVersion = 1
+    let baselineStatus: String
+    let before: RawOpaqueTextState?
+    let after: RawOpaqueTextState?
+    let inputEvents: [OpaqueKeyboardInputEvidence]
+    let invalidReason: String?
 }
 
 private struct ActiveTapReturnCheckpoint: Encodable {
@@ -1637,7 +2132,7 @@ private struct WriteDerivationDecision {
 }
 
 private struct RawActiveTapWriteAttempt: Encodable {
-    let schemaVersion = 12
+    let schemaVersion = 13
     let recordType = "active_tap_write_attempt"
     let recordID: String
     let bundleIdentifier: String
@@ -1666,6 +2161,7 @@ private struct RawActiveTapWriteAttempt: Encodable {
     let returnCheckpoints: [ActiveTapReturnCheckpoint]
     let pasteCheckpoints: [ActiveTapPasteCheckpoint]
     let mutationCheckpoints: [ActiveTapMutationCheckpoint]
+    let keyboardReconstruction: RawOpaqueKeyboardReconstruction?
     let authorshipResolution: String?
     let authorshipSegments: [WriteAuthorshipSegment]
     let beforeAXErrors: [String]
@@ -1688,9 +2184,9 @@ private struct RawWriteSensorHealth: Encodable {
 }
 
 private struct ActiveTapWriteRecord: Encodable {
-    let schemaVersion = 9
+    let schemaVersion = 10
     let kind = "write"
-    let provenance = "active_tap_accessibility_diff"
+    let provenance: String
     let sequence: UInt64
     let eventID: String
     let observedAt: String
@@ -1784,6 +2280,33 @@ private func classifyKey(_ event: CGEvent) -> KeyClassification {
         return KeyClassification(canStartWrite: false, hint: "navigation")
     }
     return KeyClassification(canStartWrite: true, hint: "typed")
+}
+
+private func opaqueUnicodeText(from event: CGEvent) -> String {
+    var requiredLength = 0
+    event.keyboardGetUnicodeString(
+        maxStringLength: 0,
+        actualStringLength: &requiredLength,
+        unicodeString: nil
+    )
+    guard requiredLength > 0 else { return "" }
+    var buffer = [UniChar](repeating: 0, count: requiredLength)
+    var actualLength = 0
+    buffer.withUnsafeMutableBufferPointer { pointer in
+        event.keyboardGetUnicodeString(
+            maxStringLength: requiredLength,
+            actualStringLength: &actualLength,
+            unicodeString: pointer.baseAddress
+        )
+    }
+    return String(utf16CodeUnits: buffer, count: min(actualLength, requiredLength))
+}
+
+private func isUnmodifiedCopy(_ event: CGEvent) -> Bool {
+    event.getIntegerValueField(.keyboardEventKeycode) == 8
+        && event.flags.contains(.maskCommand)
+        && !event.flags.contains(.maskControl)
+        && !event.flags.contains(.maskAlternate)
 }
 
 private func sameTarget(_ left: HeldEditableTarget?, _ right: HeldEditableTarget?) -> Bool {

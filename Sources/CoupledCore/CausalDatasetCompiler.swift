@@ -608,6 +608,9 @@ private func canonicalWrite(
     guard attempt.string("proposedEventID") == event.string("eventID") else {
         return .failure("raw_derived_event_id_mismatch")
     }
+    if event.string("provenance") == "opaque_keyboard_reconstruction" {
+        return canonicalOpaqueKeyboardWrite(event: event, attempt: attempt)
+    }
     guard let before = attempt["before"] as? [String: Any],
           let rawBefore = before.string("value"),
           before.boolean("valueWasTruncated") != true else {
@@ -691,6 +694,122 @@ private func canonicalWrite(
     }
     canonicalEvent["cursorFidelity"] = cursorFidelity
     return .success(canonicalEvent)
+}
+
+private func canonicalOpaqueKeyboardWrite(
+    event: [String: Any],
+    attempt: [String: Any]
+) -> CanonicalWriteResult {
+    guard let reconstruction = attempt["keyboardReconstruction"] as? [String: Any],
+          reconstruction.string("baselineStatus") == "known",
+          reconstruction.string("invalidReason") == nil,
+          let before = reconstruction["before"] as? [String: Any],
+          let after = reconstruction["after"] as? [String: Any],
+          let beforeValue = before.string("text"),
+          let afterValue = after.string("text") else {
+        return .failure("opaque_keyboard_evidence_missing_or_unbaselined")
+    }
+    guard let replayed = replayOpaqueKeyboard(
+        before: before,
+        inputEvents: reconstruction["inputEvents"] as? [[String: Any]] ?? []
+    ) else {
+        return .failure("opaque_keyboard_input_replay_failed")
+    }
+    guard replayed.text == afterValue,
+          replayed.selectionStart == after.number("selectionStartCharacters")?.intValue,
+          replayed.selectionLength == after.number("selectionLengthCharacters")?.intValue else {
+        return .failure("opaque_keyboard_input_replay_mismatch")
+    }
+    guard let operation = event.string("operation"),
+          let inserted = event.string("content"),
+          let removed = event.string("removedContent"),
+          let offset = event.number("characterOffset")?.intValue else {
+        return .failure("derived_edit_fields_missing")
+    }
+    let reconstructed = applyEdit(
+        operation: operation,
+        offset: offset,
+        removed: removed,
+        inserted: inserted,
+        to: beforeValue
+    )
+    guard reconstructed == afterValue else {
+        return .failure(
+            reconstructed == nil
+                ? "opaque_keyboard_edit_does_not_apply"
+                : "opaque_keyboard_edit_does_not_reconstruct_state"
+        )
+    }
+    let canonicalEdit = minimalTextEdit(from: beforeValue, to: afterValue)
+    guard !canonicalEdit.isEmpty else { return .failure("canonical_raw_edit_is_empty") }
+    var canonicalEvent = event
+    canonicalEvent["operation"] = canonicalEdit.operation.rawValue
+    canonicalEvent["content"] = canonicalEdit.inserted
+    canonicalEvent["removedContent"] = canonicalEdit.removed
+    canonicalEvent["characterOffset"] = canonicalEdit.characterOffset
+    canonicalEvent["outcome"] = [
+        "operation": canonicalEdit.operation.rawValue,
+        "content": canonicalEdit.inserted,
+        "removedContent": canonicalEdit.removed,
+        "characterOffset": canonicalEdit.characterOffset,
+    ]
+    canonicalEvent["sourceOutcomeMatchesCanonical"] = operation == canonicalEdit.operation.rawValue
+        && inserted == canonicalEdit.inserted
+        && removed == canonicalEdit.removed
+        && offset == canonicalEdit.characterOffset
+    canonicalEvent["sourceOutcomeReconstructedUsedObservation"] = true
+    let cursorFidelity = compactJSONObject([
+        "schemaVersion": 1,
+        "status": "keyboard_shadow_state",
+        "initialCursorOffsetCharacters": before.number("selectionStartCharacters")?.intValue,
+        "initialSelectionLengthCharacters": before.number("selectionLengthCharacters")?.intValue,
+        "earliestObservedMutationOffsetCharacters": canonicalEdit.characterOffset,
+        "earliestObservedMutationObservationID": nil,
+        "earliestObservedMutationCapturedAt": event.string("beganAt"),
+        "terminalEditOffsetCharacters": canonicalEdit.characterOffset,
+    ])
+    if let sourceCursorFidelity = event["cursorFidelity"] as? [String: Any],
+       (try? canonicalJSONString(sourceCursorFidelity))
+        != (try? canonicalJSONString(cursorFidelity)) {
+        return .failure("derived_cursor_fidelity_does_not_match_raw_evidence")
+    }
+    canonicalEvent["cursorFidelity"] = cursorFidelity
+    return .success(canonicalEvent)
+}
+
+private func replayOpaqueKeyboard(
+    before: [String: Any],
+    inputEvents: [[String: Any]]
+) -> OpaqueTextState? {
+    guard !inputEvents.isEmpty,
+          let text = before.string("text"),
+          let start = before.number("selectionStartCharacters")?.intValue,
+          let length = before.number("selectionLengthCharacters")?.intValue,
+          start >= 0, length >= 0 else { return nil }
+    var state = OpaqueTextState(text: text, anchor: start, caret: start + length)
+    for event in inputEvents {
+        guard let action = event.string("action"),
+              let resolution = event.string("applyResolution") else { return nil }
+        let transition: OpaqueTextAction?
+        switch action {
+        case "insert_text", "insert_newline", "paste":
+            guard let value = event.string("unicodeText") else { return nil }
+            transition = .insert(value)
+        case "backspace": transition = .backspace
+        case "delete_forward": transition = .deleteForward
+        case "cut": transition = .insert("")
+        case "submit": transition = nil
+        default: return nil
+        }
+        if let transition {
+            guard resolution == "applied", state.apply(transition) == .applied else {
+                return nil
+            }
+        } else if resolution != "boundary_only" {
+            return nil
+        }
+    }
+    return state
 }
 
 private func cursorFidelityEvidence(

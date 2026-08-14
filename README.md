@@ -256,8 +256,8 @@ newly visible lines in display order; `recognizedLineCount`, `emittedLineCount`,
 `overlapRemovedLineCount` make the transformation inspectable. Exact duplicate
 viewports emit no event. An intervening write or different context resets the
 comparison, preserving a later reread. Capture is allowlisted by bundle to
-Obsidian (`md.obsidian`), Chrome (`com.google.Chrome`), and Codex
-(`com.openai.codex`), so the Visual Studio Code diagnostic view and all other
+Obsidian (`md.obsidian`), Chrome (`com.google.Chrome`), Codex
+(`com.openai.codex`), and Visual Studio Code (`com.microsoft.VSCode`), so all other
 applications are ignored. Deliberately expand the boundary with
 `--allow-bundle`; `--exclude-bundle` and `--exclude-app-name` can narrow it.
 

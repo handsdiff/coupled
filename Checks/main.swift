@@ -152,6 +152,38 @@ expect(
     writableCharacters(in: "\t\r\u{7f}\u{f700}") == ["\t", "\r"],
     "control and function key filtering"
 )
+
+var opaqueTyping = OpaqueTextState()
+expect(opaqueTyping.apply(.insert("helo")) == .applied, "opaque text insertion")
+expect(opaqueTyping.apply(.backspace) == .applied, "opaque text backspace")
+expect(opaqueTyping.apply(.insert("lo")) == .applied, "opaque correction insertion")
+expect(
+    opaqueTyping.text == "hello" && opaqueTyping.selectionStart == 5,
+    "opaque typing reconstructs corrected text and caret"
+)
+var opaqueSelection = OpaqueTextState(text: "hello world", anchor: 11, caret: 11)
+for _ in 0..<5 {
+    expect(
+        opaqueSelection.apply(.moveLeft(extendingSelection: true)) == .applied,
+        "opaque selection extension"
+    )
+}
+expect(opaqueSelection.apply(.insert("there")) == .applied, "opaque selection replacement")
+expect(opaqueSelection.text == "hello there", "opaque selection has exact replacement")
+var opaqueUnicode = OpaqueTextState(text: "a🐈b", anchor: 3, caret: 3)
+expect(
+    opaqueUnicode.apply(.moveLeft(extendingSelection: true)) == .applied,
+    "opaque unicode selection"
+)
+expect(
+    opaqueUnicode.semanticCursorContext(surroundingCharacterCount: 2)?.selectionStartUTF16 == 3,
+    "opaque cursor context preserves UTF-16 coordinates"
+)
+expect(
+    opaqueUnicode.apply(.unsupported("vertical_navigation"))
+        == .unsupported("vertical_navigation"),
+    "opaque unsupported actions fail closed"
+)
 expect(
     croppedViewport(
         in: CGRect(x: 100, y: -100, width: 1_000, height: 800),
@@ -728,6 +760,117 @@ expect(
     (pasteExamples[1]["context"] as! String).contains("COPIED")
         && (pasteExamples[1]["context"] as! String).contains("authorshipSegments"),
     "later history retains resolved pasted content and paste provenance"
+)
+
+let opaqueFixtureInput = fixtureRoot.appendingPathComponent("opaque-input")
+let opaqueFixtureOutput = fixtureRoot.appendingPathComponent("opaque-output")
+try! FileManager.default.createDirectory(
+    at: opaqueFixtureInput,
+    withIntermediateDirectories: true
+)
+try! jsonData([
+    "sessionID": "opaque-session",
+    "schemas": ["timingSemanticsVersion": 2],
+], pretty: true).write(to: opaqueFixtureInput.appendingPathComponent("session.json"))
+let opaqueClipboard: [String: Any] = [
+    "schemaVersion": 1, "snapshotID": "opaque-clipboard",
+    "capturedAt": "2026-01-01T00:00:01.000Z", "changeCount": 1,
+    "types": [], "textWasTruncated": false,
+]
+let opaqueConditioning: [String: Any] = [
+    "schemaVersion": 3,
+    "captureSemantics": "keyboard_shadow_before_application_mutation",
+    "inputInterceptedAt": "2026-01-01T00:00:01.000Z",
+    "capturedAt": "2026-01-01T00:00:01.000Z",
+    "destination": [
+        "appName": "Code", "bundleIdentifier": "com.microsoft.VSCode",
+        "processIdentifier": 42, "windowTitle": "Fixture",
+        "role": "AXTextField", "fieldDescription": "Terminal 1",
+    ],
+    "cursorContext": [
+        "schemaVersion": 3, "source": "keyboard_shadow_state",
+        "captureStatus": "complete", "fieldState": "editable_text",
+        "leftContext": "", "selectedText": "", "rightContext": "",
+        "selectionStartCharacters": 0, "selectionLengthCharacters": 0,
+        "fieldCharacterCount": 0,
+        "leftContextWasTruncated": false,
+        "selectedTextWasTruncated": false,
+        "rightContextWasTruncated": false,
+    ],
+    "clipboard": opaqueClipboard,
+    "sourceObservationID": "opaque-ax-before",
+]
+let opaqueCursorFidelity: [String: Any] = [
+    "schemaVersion": 1, "status": "keyboard_shadow_state",
+    "initialCursorOffsetCharacters": 0, "initialSelectionLengthCharacters": 0,
+    "earliestObservedMutationOffsetCharacters": 0,
+    "earliestObservedMutationCapturedAt": "2026-01-01T00:00:01.000Z",
+    "terminalEditOffsetCharacters": 0,
+]
+let opaqueRaw: [String: Any] = [
+    "recordType": "active_tap_write_attempt", "recordID": "opaque-attempt",
+    "resolution": "validated", "proposedEventID": "opaque-write",
+    "derivationObservationSource": "opaque_keyboard_shadow",
+    "conditioningState": opaqueConditioning,
+    "cursorFidelity": opaqueCursorFidelity,
+    "keyboardReconstruction": [
+        "schemaVersion": 1, "baselineStatus": "known",
+        "before": [
+            "text": "", "selectionStartCharacters": 0,
+            "selectionLengthCharacters": 0,
+        ],
+        "after": [
+            "text": "hello", "selectionStartCharacters": 5,
+            "selectionLengthCharacters": 0,
+        ],
+        "inputEvents": [[
+            "observedAt": "2026-01-01T00:00:01.000Z",
+            "eventTimestampNanoseconds": 1, "keyCode": 4,
+            "modifierFlags": 0, "action": "insert_text",
+            "unicodeText": "hello", "applyResolution": "applied",
+        ]],
+    ],
+    "before": [
+        "observationID": "opaque-ax-before",
+        "observedAt": "2026-01-01T00:00:01.000Z", "value": "",
+        "valueWasTruncated": false,
+    ],
+    "after": [
+        "observationID": "opaque-ax-after",
+        "observedAt": "2026-01-01T00:00:04.000Z", "value": "",
+        "valueWasTruncated": false,
+    ],
+    "authorshipResolution": "resolved",
+    "authorshipSegments": [["type": "authored_text", "content": "hello"]],
+]
+var opaqueEvent = writeEvent(
+    id: "opaque-write", sourceID: "opaque-attempt", sequence: 1,
+    began: "2026-01-01T00:00:01.000Z", available: "2026-01-01T00:00:04.000Z",
+    before: "", inserted: "hello", offset: 0
+)
+opaqueEvent["sessionID"] = "opaque-session"
+opaqueEvent["provenance"] = "opaque_keyboard_reconstruction"
+opaqueEvent["conditioningState"] = opaqueConditioning
+opaqueEvent["cursorFidelity"] = opaqueCursorFidelity
+opaqueEvent["authorshipResolution"] = "resolved"
+opaqueEvent["authorshipSegments"] = [["type": "authored_text", "content": "hello"]]
+writeFixtureJSONL([opaqueEvent], to: opaqueFixtureInput.appendingPathComponent("events.jsonl"))
+writeFixtureJSONL([opaqueRaw], to: opaqueFixtureInput.appendingPathComponent("raw.jsonl"))
+let opaqueCompilerResult = try! CausalDatasetCompiler().compile(
+    inputDirectory: opaqueFixtureInput,
+    outputDirectory: opaqueFixtureOutput
+)
+expect(
+    opaqueCompilerResult.exampleCount == 1 && opaqueCompilerResult.rejectedEventCount == 0,
+    "compiler audits and accepts a baselined opaque-keyboard write"
+)
+let opaqueExamples = readFixtureJSONL(
+    opaqueFixtureOutput.appendingPathComponent("examples.jsonl")
+)
+expect(
+    ((opaqueExamples[0]["target"] as! [String: Any])["resolvedContent"] as! String)
+        == "hello",
+    "opaque-keyboard target retains exact reconstructed content"
 )
 try! FileManager.default.removeItem(at: fixtureRoot)
 

@@ -48,7 +48,8 @@ Supported applications:
 
 - Obsidian;
 - Chrome;
-- Codex/ChatGPT.
+- Codex/ChatGPT;
+- Visual Studio Code, including its integrated terminal.
 
 Mechanism:
 
@@ -71,6 +72,7 @@ Implemented safeguards:
 - Cmd-V payload plus immediate pre/post-paste field states are retained raw.
 - Large deletions must be supported by complete observed `BEFORE` and `AFTER` states.
 - Numeric cursor fidelity remains diagnostic and does not alter the diff.
+- If an eligible editable remains semantically empty across Accessibility observations, a bounded keyboard-shadow fallback can reconstruct a write only from a known empty or previously reconstructed baseline. Unsupported navigation or unbaselined state remains unresolved; ordinary Accessibility diffs always take precedence.
 
 ### Pre-mutation conditioning
 
@@ -207,6 +209,14 @@ It exposed one typed checkpoint that was fully deleted before settlement but was
 - pure deletion events remain history but are excluded as Phase 1 content targets;
 - the causal compiler produced 13 events and seven nonempty targets with zero reconstruction rejection and passed its audit.
 
+`vscode-opaque-write-test-1` and `vscode-opaque-write-test-2` confirmed:
+
+- VS Code integrated-terminal and Codex-terminal prompts exposed usable Accessibility values in both runs, so ordinary canonical `BEFORE → AFTER` reconstruction took precedence and the keyboard-shadow fallback was not needed;
+- typo correction, three-second settlement, rapid Return, repeated writes in the same prompt, and ordinary shell commands retained the expected content and boundaries;
+- VS Code READs captured visible editor/terminal pixels under the correct application and window, while candidates superseded by active writes were retained only as raw suppressions;
+- the second run compiled into eight eligible examples with zero target exclusions, context exclusions, or reconstruction rejections and passed the causal audit;
+- the conditional opaque path remains fail-closed and is covered by deterministic state-machine and compiler-replay checks, but was not activated by these live traces.
+
 Tokenizer packing validation confirmed:
 
 - `paste-read-attribution-test-1-phase1-v11` packed five examples with four structured paste actions; each became the same five-ID reserved marker sequence and every target ended in one loss-bearing EOS.
@@ -296,7 +306,7 @@ The focused component gates are complete. Treat `phase1-causal-v11` and the curr
 
 1. Pass the ordinary-work reconstruction audit above and freeze an immutable dataset version.
 2. Verify the training harness consumes the packed `labels` unchanged and the inference parser executes only a complete decoded `<|paste|>` marker.
-3. Run the initial Phase 1 smoke test on eligible writes from the combined Obsidian, Chrome/browser, and Codex stream, reporting aggregate and per-application results before the longer prospective continual experiment.
+3. Run the initial Phase 1 smoke test on eligible writes from the combined Obsidian, Chrome/browser, Codex, and VS Code stream, reporting aggregate and per-application results before the longer prospective continual experiment.
 
 ### Before live prediction
 

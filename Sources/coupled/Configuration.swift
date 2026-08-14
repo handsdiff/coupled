@@ -22,6 +22,7 @@ struct Configuration {
     var retainScreenshots = true
     var allowedBundles: Set<String> = [
         "com.google.Chrome",
+        "com.microsoft.VSCode",
         "com.openai.codex",
         "md.obsidian",
     ]
