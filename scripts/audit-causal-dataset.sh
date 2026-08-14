@@ -92,6 +92,12 @@ jq -e -s --slurpfile manifest "$manifest" --slurpfile examples "$examples" --slu
        (.conditioningState.cursorContext.selectionStartCharacters
          == .targetMetadata.characterOffset)
      end) and
+    (if .conditioningState.schemaVersion >= 3 then
+       ($query.clipboard.changeCount == .conditioningState.clipboard.changeCount) and
+       ($query.clipboard.content == .conditioningState.clipboard.text) and
+       ($query.clipboard.contentWasTruncated
+         == .conditioningState.clipboard.textWasTruncated)
+     else true end) and
     (.modelInput == (if .context == "" then .query else .context + "\n" + .query end)) and
     (all(.contextEventIDs[];
       ($by_id[.].availableAt < $example.targetBeganAt)
@@ -137,6 +143,8 @@ jq -e -s --slurpfile manifest "$manifest" --slurpfile examples "$examples" --slu
        (.initialCursorOffset != .outcomeCharacterOffset)
      elif .reason == "missing_cursor_fidelity" then
        (.cursorFidelity.status != "aligned")
+     elif .reason == "unresolved_paste_authorship" then
+       ($by_id[.sourceEventID].serialized | fromjson).authorshipResolution != "resolved"
      else false end)
   )
 ' "$events" >/dev/null

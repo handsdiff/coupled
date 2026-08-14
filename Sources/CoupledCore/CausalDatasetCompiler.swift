@@ -605,6 +605,16 @@ private func canonicalWrite(
         rawBefore,
         placeholderValue: before.string("placeholderValue")
     )
+    if attempt.string("fallbackReason") == "terminal_matches_before",
+       attempt.string("derivationObservationSource") == "post_input_checkpoint",
+       let terminal = attempt["after"] as? [String: Any],
+       let terminalRawValue = terminal.string("value"),
+       logicalEditableValue(
+           terminalRawValue,
+           placeholderValue: terminal.string("placeholderValue")
+       ) == beforeValue {
+        return .failure("checkpoint_edit_reverted_before_settlement")
+    }
     guard let used = usedObservation(attempt) else {
         return .failure("used_observation_missing")
     }

@@ -64,6 +64,7 @@ Implemented safeguards:
 - Cursor position does not influence diff reconstruction.
 - The synthetic `BEFORE → empty` deletion fallback has been removed.
 - Invalid terminal elements become unresolved unless a valid Return or paste checkpoint exists.
+- A temporary typed checkpoint which returns to the original settled field state is no change, not a resurrected WRITE.
 - Immediate Return is handled with synchronous pre-Return checkpoints.
 - Clipboard state is captured with pre-mutation conditioning.
 - Cmd-V payload plus immediate pre/post-paste field states are retained raw.

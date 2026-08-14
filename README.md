@@ -150,7 +150,9 @@ read delay and therefore settles after the write.
   the normal delay. If terminal capture is invalid, empty, or equal to BEFORE,
   a meaningful checkpoint can supply the write; otherwise AFTER remains the
   source. Every checkpoint and its selection, timestamp, and AX errors remains
-  raw. The clipboard snapshot available at write onset is part of conditioning.
+  raw. A typed checkpoint that is fully reverted before settlement is treated
+  as no change rather than resurrected as output. The clipboard snapshot
+  available at write onset is part of conditioning.
   Cmd-V synchronously captures the held field before paste and again 50
   milliseconds afterward. A paste is grounded only when that transition
   exactly matches the conditioned clipboard version; ambiguous paste spans are

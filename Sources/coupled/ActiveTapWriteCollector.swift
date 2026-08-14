@@ -853,6 +853,16 @@ final class ActiveTapWriteCollector {
             placeholderValue: terminal.placeholderValue
         )
         if let latestCheckpoint, terminal.value == before.value {
+            // A transient submit/paste surface may reset to BEFORE, but an
+            // ordinary typed checkpoint which later returns to BEFORE is an
+            // undone write, not settled output.
+            guard latestCheckpoint.observationSource != "post_input_checkpoint" else {
+                return .unresolved(
+                    "no_change",
+                    observationSource: "terminal_after",
+                    usedObservationCapturedAt: terminal.observedAt
+                )
+            }
             return .checkpoint(latestCheckpoint, fallbackReason: "terminal_matches_before")
         }
         if let latestCheckpoint,

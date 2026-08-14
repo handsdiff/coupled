@@ -384,10 +384,18 @@ let invalidWrite = writeEvent(
     began: "2026-01-01T00:00:12.000Z", available: "2026-01-01T00:00:13.000Z",
     before: "AB", inserted: "", removed: "AB", offset: 0
 )
+var revertedWrite = writeEvent(
+    id: "write-reverted", sourceID: "attempt-reverted", sequence: 6,
+    began: "2026-01-01T00:00:14.000Z", available: "2026-01-01T00:00:17.000Z",
+    before: "A", inserted: "X", offset: 1
+)
+revertedWrite["fallbackReason"] = "terminal_matches_before"
+revertedWrite["derivationObservationSource"] = "post_input_checkpoint"
+revertedWrite["usedCheckpointID"] = "reverted-checkpoint"
 writeFixtureJSONL(
     [
         readLate, firstWrite, readEarly, excludedModelRead, secondWrite,
-        cursorMovedWrite, deletionWrite, invalidWrite,
+        cursorMovedWrite, deletionWrite, invalidWrite, revertedWrite,
     ],
     to: fixtureInput.appendingPathComponent("events.jsonl")
 )
@@ -422,18 +430,40 @@ writeFixtureJSONL([
         id: "attempt-invalid", eventID: "write-invalid", before: "AB", after: "AC",
         timestamp: "2026-01-01T00:00:09.000Z"
     ),
+    [
+        "recordType": "active_tap_write_attempt",
+        "recordID": "attempt-reverted",
+        "resolution": "validated",
+        "proposedEventID": "write-reverted",
+        "fallbackReason": "terminal_matches_before",
+        "derivationObservationSource": "post_input_checkpoint",
+        "usedCheckpointID": "reverted-checkpoint",
+        "targetIdentity": ["role": "AXTextArea"],
+        "before": observation("A", at: "2026-01-01T00:00:14.000Z"),
+        "after": observation("A", at: "2026-01-01T00:00:17.000Z"),
+        "returnCheckpoints": [],
+        "pasteCheckpoints": [],
+        "mutationCheckpoints": [[
+            "checkpointID": "reverted-checkpoint",
+            "inputObservedAt": "2026-01-01T00:00:15.000Z",
+            "eventTimestampNanoseconds": 1,
+            "captureRequestedAt": "2026-01-01T00:00:15.000Z",
+            "observation": observation("AX", at: "2026-01-01T00:00:15.000Z"),
+            "axErrors": [],
+        ]],
+    ],
 ], to: fixtureInput.appendingPathComponent("raw.jsonl"))
 
 let compilerResult = try! CausalDatasetCompiler().compile(
     inputDirectory: fixtureInput,
     outputDirectory: fixtureOutput
 )
-expect(compilerResult.sourceEventCount == 8, "compiler source count")
+expect(compilerResult.sourceEventCount == 9, "compiler source count")
 expect(compilerResult.convertedEventCount == 5, "compiler excludes invalid and stale events")
 expect(compilerResult.exampleCount == 3, "compiler creates one example per verified write")
 expect(compilerResult.targetExcludedEventCount == 1, "compiler separates valid history from targets")
 expect(compilerResult.contextExcludedEventCount == 1, "compiler removes a read superseded by later keyboard input")
-expect(compilerResult.rejectedEventCount == 2, "compiler records exclusions and rejections")
+expect(compilerResult.rejectedEventCount == 3, "compiler records exclusions and rejections")
 
 let examples = readFixtureJSONL(fixtureOutput.appendingPathComponent("examples.jsonl"))
 expect(
@@ -548,6 +578,12 @@ expect(
         $0["reason"] as? String == "explicitly_excluded_from_phase1"
     },
     "explicit Phase 1 exclusions never enter context"
+)
+expect(
+    rejections.contains {
+        $0["reason"] as? String == "checkpoint_edit_reverted_before_settlement"
+    },
+    "a typed checkpoint which returns to BEFORE is not resurrected as a write"
 )
 
 let pasteFixtureInput = fixtureRoot.appendingPathComponent("paste-input")
