@@ -296,7 +296,7 @@ The focused component gates are complete. Treat `phase1-causal-v11` and the curr
 
 1. Pass the ordinary-work reconstruction audit above and freeze an immutable dataset version.
 2. Verify the training harness consumes the packed `labels` unchanged and the inference parser executes only a complete decoded `<|paste|>` marker.
-3. Run the Obsidian-only Phase 1 smoke test before the full prospective interleaved-stream experiment.
+3. Run the initial Phase 1 smoke test on eligible writes from the combined Obsidian, Chrome/browser, and Codex stream, reporting aggregate and per-application results before the longer prospective continual experiment.
 
 ### Before live prediction
 
