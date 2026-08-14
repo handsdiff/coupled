@@ -37,7 +37,7 @@ OPTIONS
 COMPILE OPTIONS
   --input PATH                 Session directory containing session/events/raw JSON
   --output PATH                Fresh directory for compiled dataset files
-  --conversion-version NAME    Frozen conversion name (default: phase1-causal-v10)
+  --conversion-version NAME    Frozen conversion name (default: phase1-causal-v11)
   --include-timestamps-in-context
                                Include availableAt in serialized context events
 

@@ -6,7 +6,7 @@ public struct CausalDatasetCompilerConfiguration: Sendable {
     public let includeTimestampsInContext: Bool
 
     public init(
-        conversionVersion: String = "phase1-causal-v10",
+        conversionVersion: String = "phase1-causal-v11",
         includeTimestampsInContext: Bool = false
     ) {
         self.conversionVersion = conversionVersion
@@ -338,7 +338,7 @@ public struct CausalDatasetCompiler {
                 continue
             }
             examples.append([
-                "schemaVersion": 9,
+                "schemaVersion": 10,
                 "exampleID": "\(sessionID):\(target.sourceEventID)",
                 "conversionVersion": configuration.conversionVersion,
                 "sessionID": sessionID,
@@ -414,7 +414,7 @@ public struct CausalDatasetCompiler {
             "raw.jsonl": try sha256(of: rawURL),
         ]
         let datasetManifest: [String: Any] = [
-            "schemaVersion": 10,
+            "schemaVersion": 11,
             "conversionVersion": configuration.conversionVersion,
             "sessionID": sessionID,
             "source": [
@@ -453,7 +453,7 @@ public struct CausalDatasetCompiler {
                 "writeProjection": "canonical minimum contiguous diff of raw logical BEFORE and used observation",
             ],
             "serialization": [
-                "contextVersion": 2,
+                "contextVersion": 3,
                 "auditContextVersion": 1,
                 "queryVersion": 3,
                 "targetVersion": 8,
@@ -472,7 +472,7 @@ public struct CausalDatasetCompiler {
             ],
             "contextPacking": [
                 "state": "unpacked_complete_model_input",
-                "requiredNextStep": "tokenize context events independently; retain the newest complete events and query within L; explicitly tail-truncate only the oldest retained oversized event",
+                "requiredNextStep": "tokenize context events independently; retain the newest complete events and query within L; explicitly tail-truncate only the oldest retained oversized event while preserving authorship segments",
                 "initialPhase1TokenBudget": 32_768,
                 "rightEdge": "write conditioning query",
                 "reason": "event-aware tokenizer packing preserves valid model-facing records and the complete query while older history truncates first",
@@ -828,33 +828,42 @@ private func serializeContextEvent(
     includeTimestamp: Bool
 ) throws -> String {
     let kind = event.string("kind")!
+    let content = event.string("content") ?? ""
     let location = compactJSONObject([
         "application": nonEmpty(event.string("appName")),
         "window": nonEmpty(event.string("windowTitle")),
     ])
     var serialized: [String: Any] = compactJSONObject([
         "kind": kind,
-        "content": event.string("content") ?? "",
         (kind == "read" ? "source" : "destination"): location.isEmpty ? nil : location,
     ])
     if includeTimestamp { serialized["availableAt"] = availableAt }
-    if kind == "write" {
+    if kind == "read" {
+        serialized["content"] = content
+    } else {
         serialized["operation"] = event.string("operation") ?? ""
         if let removed = nonEmpty(event.string("removedContent")) {
             serialized["removedContent"] = removed
         }
         if let segments = event["authorshipSegments"] as? [[String: Any]] {
-            // Historical writes retain the resolved document text and the
-            // authorship of pasted spans. Collector checkpoint IDs stay in the
-            // audit projection; payloads remain because they were causally available.
-            serialized["authorshipSegments"] = segments.map { segment in
-                compactJSONObject([
-                    "type": segment.string("type"),
-                    "content": segment.string("content"),
-                ])
+            let completeSegments = segments.compactMap { segment -> [String: Any]? in
+                guard let type = segment.string("type"),
+                      let segmentContent = segment.string("content") else { return nil }
+                return ["type": type, "content": segmentContent]
             }
             serialized["authorshipResolution"] = event.string("authorshipResolution")
                 ?? "unresolved"
+            if !completeSegments.isEmpty,
+               completeSegments.count == segments.count,
+               completeSegments.compactMap({ $0["content"] as? String }).joined() == content {
+                // The segments are the sole model-facing text representation.
+                // The audit projection retains both the resolved text and full provenance.
+                serialized["authorshipSegments"] = completeSegments
+            } else {
+                serialized["content"] = content
+            }
+        } else {
+            serialized["content"] = content
         }
     }
     return try canonicalJSONString(serialized)

@@ -288,9 +288,9 @@ reordering or modifying the source files:
 ```sh
 ./scripts/coupled compile \
   --input ./coupled-data/normal-work-dry-run-3 \
-  --output ./coupled-data/normal-work-dry-run-3-phase1-v10
+  --output ./coupled-data/normal-work-dry-run-3-phase1-v11
 ./scripts/audit-causal-dataset.sh \
-  ./coupled-data/normal-work-dry-run-3-phase1-v10
+  ./coupled-data/normal-work-dry-run-3-phase1-v11
 ```
 
 The fresh output directory contains:
@@ -321,7 +321,7 @@ prior writes at `terminalDecisionAt`. Records explicitly marked
 `phase1Eligible: false`—including future displayed model predictions—are
 excluded before contexts and targets are built.
 
-Conversion `phase1-causal-v10` defines the supervised example as:
+Conversion `phase1-causal-v11` defines the supervised example as:
 
 ```text
 modelInput = causal read/write history + destination/cursor/clipboard query
@@ -338,8 +338,9 @@ under their earlier conservative numeric-cursor gate because they do not
 contain range-native evidence.
 
 Model-facing history uses a compact semantic schema. READ records retain kind,
-content, application, and window; WRITE records retain kind, destination,
-content, operation, nonempty removed content, and compact authorship segments.
+content, application, and window. A structured WRITE retains its resolved text
+exactly once in authorship segments, together with destination, operation, and
+nonempty removed content; legacy unsegmented WRITEs retain top-level content.
 Bundle IDs, collector provenance, numeric offsets, boundary reasons, and paste
 checkpoint IDs remain in `auditSerialized` rather than consuming model context.
 
@@ -347,8 +348,9 @@ The compiled `modelInput` remains complete and tokenizer-independent. The
 packer tokenizes each context event as one independent JSON-plus-newline block,
 then retains the newest complete blocks and the complete query within `L`
 tokens (`L = 32768` initially). If the oldest retained event alone crosses the
-boundary, only its content is tail-truncated and an explicit marker is added;
-the packer never emits partial JSON. WRITE history retains resolved pasted
+boundary, only its semantic text tail is retained with an explicit marker;
+structured WRITEs preserve the surviving authorship boundaries, and the packer
+never emits partial JSON. WRITE history retains resolved pasted
 content and its provenance, while the current target omits pasted payloads. The
 target loader tokenizes authored spans with
 automatic special tokens disabled, maps each proven paste to the reserved
@@ -367,12 +369,12 @@ uv pip install --python .build/tokenizer-venv/bin/python \
   -r scripts/tokenizer-requirements.txt
 
 .build/tokenizer-venv/bin/python scripts/pack-phase1-dataset.py \
-  --input ./coupled-data/SESSION-phase1-v10 \
-  --output ./coupled-data/SESSION-phase1-v10-qwen-pack \
+  --input ./coupled-data/SESSION-phase1-v11 \
+  --output ./coupled-data/SESSION-phase1-v11-qwen-pack \
   --revision 68c46c4b3498877f3ef123c856ecfde50c39f404
 
 python3 scripts/audit-phase1-packed.py \
-  ./coupled-data/SESSION-phase1-v10-qwen-pack
+  ./coupled-data/SESSION-phase1-v11-qwen-pack
 ```
 
 The packer refuses an existing output directory and does not modify the causal
@@ -382,6 +384,9 @@ text, every existing-token ID that spells the paste marker, and the final EOS
 receive loss. The saved `tokenizer/` directory has the checkpoint's unchanged
 vocabulary. `packing.json` pins the tokenizer revision, marker string and token
 sequence, dependency versions, file digests, truncation rule, and audit counts.
+It also records that the configured input budget covers history plus query; the
+target is appended outside that budget, may never be truncated, and determines
+the minimum total sequence capacity required from the training harness.
 No embedding resize or custom-token checkpoint is required.
 
 At inference, only a complete decoded `<|paste|>` marker is an executable paste

@@ -715,10 +715,12 @@ expect(
 expect(
     compactDestination["application"] as! String == "Fixture"
         && compactPasteWrite["operation"] as! String == "insert"
+        && compactPasteWrite["content"] == nil
         && compactPasteSegments[1]["content"] as! String == "COPIED"
         && compactPasteSegments[1]["clipboardSnapshotID"] == nil
         && compactPasteWrite["characterOffset"] == nil
         && auditPasteSegments[1]["clipboardSnapshotID"] as! String == "clipboard-1"
+        && auditPasteWrite["content"] as! String == "please COPIED tomorrow"
         && auditPasteWrite["characterOffset"] != nil,
     "compact WRITE history preserves semantics while audit history retains reconstruction evidence"
 )

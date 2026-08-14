@@ -32,8 +32,8 @@ def main() -> int:
     arguments = parser.parse_args()
     directory = arguments.dataset.expanduser().resolve()
     manifest = json.loads((directory / "packing.json").read_text(encoding="utf-8"))
-    if manifest.get("schemaVersion") != 3 or manifest.get("packerVersion") != "phase1-token-pack-v3":
-        raise ValueError("auditor requires phase1-token-pack-v3")
+    if manifest.get("schemaVersion") != 4 or manifest.get("packerVersion") != "phase1-token-pack-v4":
+        raise ValueError("auditor requires phase1-token-pack-v4")
     packed_path = directory / "packed-examples.jsonl"
     expected = manifest["artifactDigestsSHA256"]["packed-examples.jsonl"]
     if sha256(packed_path) != expected:
@@ -45,6 +45,23 @@ def main() -> int:
         raise ValueError("paste marker encoding is empty or contains EOS")
     if manifest["tokenizer"]["pasteMarkerTokenCount"] != len(paste_marker_ids):
         raise ValueError("paste marker token count disagrees")
+    truncation_self_audit = manifest.get("packing", {}).get("truncationSelfAudit", {})
+    if set(truncation_self_audit) != {"content", "authorship_segments"}:
+        raise ValueError("content and authorship truncation self-audits are required")
+    for result in truncation_self_audit.values():
+        if not (
+            0 < result.get("packedTokenCount", 0) < result.get("completeTokenCount", 0)
+            and 0 < result.get("retainedContentCharacterCount", 0) < 600
+        ):
+            raise ValueError("truncation self-audit did not retain a bounded partial tail")
+    sequence_contract = manifest.get("packing", {}).get("sequenceLengthContract", {})
+    if not (
+        sequence_contract.get("inputBudgetAppliesTo")
+        == "history_plus_conditioning_query_only"
+        and sequence_contract.get("targetAppendedOutsideInputBudget") is True
+        and sequence_contract.get("targetTruncationAllowed") is False
+    ):
+        raise ValueError("total sequence-length contract is incomplete")
     if (
         manifest["tokenizer"]["originalVocabularySize"]
         != manifest["tokenizer"]["savedVocabularySize"]
@@ -66,7 +83,7 @@ def main() -> int:
             if not line.strip():
                 continue
             record = json.loads(line)
-            if record.get("schemaVersion") != 3 or record.get("packerVersion") != manifest["packerVersion"]:
+            if record.get("schemaVersion") != 4 or record.get("packerVersion") != manifest["packerVersion"]:
                 raise ValueError(f"line {line_number}: packed record schema disagrees")
             inputs = record["inputIDs"]
             labels = record["labels"]
@@ -104,10 +121,40 @@ def main() -> int:
                     packed = json.loads(span["packedSerialized"])
                     if packed.get("contentTruncatedForPacking") is not True:
                         raise ValueError(f"line {line_number}: truncated event lacks marker metadata")
-                    if not str(packed.get("content", "")).startswith(
+                    if packed.get("contentTruncationMarker") != (
                         manifest["packing"]["contextTruncationMarker"]
                     ):
                         raise ValueError(f"line {line_number}: truncated content marker is absent")
+                    truncation = span.get("truncation", {})
+                    representation = truncation.get("representation")
+                    if representation == "content":
+                        if not isinstance(packed.get("content"), str):
+                            raise ValueError(f"line {line_number}: truncated content is absent")
+                        retained_characters = len(packed["content"])
+                    elif representation == "authorship_segments":
+                        segments = packed.get("authorshipSegments")
+                        if not isinstance(segments, list):
+                            raise ValueError(f"line {line_number}: truncated segments are absent")
+                        if "content" in packed:
+                            raise ValueError(f"line {line_number}: segmented WRITE duplicates content")
+                        if not all(
+                            isinstance(segment, dict)
+                            and set(segment) == {"type", "content"}
+                            and isinstance(segment["type"], str)
+                            and isinstance(segment["content"], str)
+                            for segment in segments
+                        ):
+                            raise ValueError(f"line {line_number}: truncated segments are invalid")
+                        retained_characters = sum(len(segment["content"]) for segment in segments)
+                    else:
+                        raise ValueError(f"line {line_number}: truncation representation is invalid")
+                    if retained_characters != truncation.get("retainedContentCharacterCount"):
+                        raise ValueError(f"line {line_number}: retained character count disagrees")
+                    if not (
+                        isinstance(truncation.get("originalContentCharacterCount"), int)
+                        and truncation["originalContentCharacterCount"] >= retained_characters
+                    ):
+                        raise ValueError(f"line {line_number}: original character count is invalid")
                     digest = hashlib.sha256(span["packedSerialized"].encode()).hexdigest()
                     if digest != span["serializedSHA256"]:
                         raise ValueError(f"line {line_number}: truncated event digest disagrees")
@@ -178,6 +225,8 @@ def main() -> int:
     for key, value in expected_counts.items():
         if manifest["counts"].get(key) != value:
             raise ValueError(f"manifest count disagrees: {key}")
+    if sequence_contract.get("requiredTrainerSequenceCapacity") != maximum_sequence_tokens:
+        raise ValueError("required trainer sequence capacity disagrees")
     for relative, digest in manifest["tokenizer"]["savedFileDigestsSHA256"].items():
         if sha256(directory / "tokenizer" / relative) != digest:
             raise ValueError(f"tokenizer digest mismatch: {relative}")

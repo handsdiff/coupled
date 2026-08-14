@@ -27,6 +27,12 @@ command -v jq >/dev/null || {
 }
 
 jq -e -s --slurpfile manifest "$manifest" --slurpfile examples "$examples" --slurpfile exclusions "$target_exclusions" --slurpfile context_exclusions "$context_exclusions" '
+  def model_content:
+    if has("content") then .content
+    elif ((.authorshipSegments | type) == "array") then
+      [.authorshipSegments[].content] | join("")
+    else null end;
+
   . as $events |
   ($events | INDEX(.sourceEventID)) as $by_id |
   ($manifest[0]) as $m |
@@ -49,7 +55,7 @@ jq -e -s --slurpfile manifest "$manifest" --slurpfile examples "$examples" --slu
     .sessionID == $m.sessionID and
     .conversionVersion == $m.conversionVersion and
     ($model.kind == $event.kind) and
-    ($model.content == $audit.content) and
+    (($model | model_content) == $audit.content) and
     (($model | has("schemaVersion")) | not) and
     (($model | has("bundleIdentifier")) | not) and
     (($model | has("provenance")) | not) and
@@ -63,6 +69,10 @@ jq -e -s --slurpfile manifest "$manifest" --slurpfile examples "$examples" --slu
        (($model.destination // {} | keys - ["application", "window"] | length) == 0) and
        (($model | has("source")) | not) and
        (($model.operation | type) == "string") and
+       (((($model | has("content")) and (($model | has("authorshipSegments")) | not))) or
+        ((($model | has("content")) | not) and
+         (($model.authorshipSegments | type) == "array") and
+         (($model.authorshipSegments | length) > 0))) and
        (all($model.authorshipSegments[]?;
           ((keys - ["content", "type"]) | length) == 0))
      end)
@@ -78,7 +88,7 @@ jq -e -s --slurpfile manifest "$manifest" --slurpfile examples "$examples" --slu
     ($by_id[$example.targetEventID].kind == "write") and
     ((.target | type) == "object") and
     (.target.resolvedContent != "") and
-    (.target.resolvedContent == (($by_id[$example.targetEventID].serialized | fromjson).content)) and
+    (.target.resolvedContent == (($by_id[$example.targetEventID].serialized | fromjson) | model_content)) and
     ((.target.segments | type) == "array") and
     ($query.kind == "write_conditioning_state") and
     (.conditioningState.captureSemantics == "synchronous_before_application_mutation") and
@@ -95,7 +105,7 @@ jq -e -s --slurpfile manifest "$manifest" --slurpfile examples "$examples" --slu
     ($m.loader.pasteMarkerTokensReceiveLoss == true) and
     ($m.loader.pastedPayloadTokensReceiveLoss == false) and
     ($m.loader.eosTokenReceivesLoss == true) and
-    ($m.serialization.contextVersion == 2) and
+    ($m.serialization.contextVersion == 3) and
     ($m.serialization.auditContextVersion == 1) and
     (if .conditioningState.schemaVersion >= 2 then
        (.conditioningState.cursorContext.source == "accessibility_string_for_range") and
@@ -151,7 +161,7 @@ jq -e -s --slurpfile manifest "$manifest" --slurpfile examples "$examples" --slu
     .conversionVersion == $m.conversionVersion and
     ($by_id[.sourceEventID].kind == "write") and
     (if .reason == "empty_content" then
-       (($by_id[.sourceEventID].serialized | fromjson).content == "")
+       ((($by_id[.sourceEventID].serialized | fromjson) | model_content) == "")
      elif .reason == "missing_initial_cursor_context" then
        (.initialCursorOffset == null)
      elif .reason == "missing_semantic_cursor_context" then

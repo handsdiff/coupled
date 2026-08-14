@@ -36,7 +36,7 @@ except ImportError as error:
     ) from error
 
 
-PACKER_VERSION = "phase1-token-pack-v3"
+PACKER_VERSION = "phase1-token-pack-v4"
 DEFAULT_TOKENIZER = "Qwen/Qwen3.5-9B-Base"
 DEFAULT_PASTE_MARKER = "<|paste|>"
 CONTEXT_TRUNCATION_MARKER = "[...older event content truncated...]"
@@ -89,10 +89,10 @@ def require_compiled_dataset(
         raise ValueError(f"{source} is not a compiled Phase 1 dataset")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     examples = load_jsonl(examples_path)
-    if manifest.get("conversionVersion") != "phase1-causal-v10":
-        raise ValueError("packer requires conversionVersion phase1-causal-v10")
-    if manifest.get("serialization", {}).get("contextVersion") != 2:
-        raise ValueError("packer requires model-facing contextVersion 2")
+    if manifest.get("conversionVersion") != "phase1-causal-v11":
+        raise ValueError("packer requires conversionVersion phase1-causal-v11")
+    if manifest.get("serialization", {}).get("contextVersion") != 3:
+        raise ValueError("packer requires model-facing contextVersion 3")
     if manifest.get("serialization", {}).get("targetFormat") != "structured_authorship_segments":
         raise ValueError("packer requires structured authorship targets")
     if manifest.get("counts", {}).get("examples") != len(examples):
@@ -138,25 +138,73 @@ def canonical_json(value: dict[str, Any]) -> str:
     )
 
 
+def authorship_segment_suffix(
+    segments: list[dict[str, Any]], retained_characters: int
+) -> list[dict[str, str]]:
+    remaining = retained_characters
+    retained_reversed: list[dict[str, str]] = []
+    for segment in reversed(segments):
+        if remaining <= 0:
+            break
+        segment_characters = list(segment["content"])
+        amount = min(remaining, len(segment_characters))
+        if amount > 0:
+            retained_reversed.append(
+                {
+                    "type": segment["type"],
+                    "content": "".join(segment_characters[-amount:]),
+                }
+            )
+            remaining -= amount
+    return list(reversed(retained_reversed))
+
+
 def truncate_oldest_event(
     serialized: str,
     maximum_tokens: int,
     tokenizer: Any,
-) -> tuple[str, list[int]] | None:
-    """Return valid JSON retaining the tail of one oversized event's content."""
+) -> tuple[str, list[int], dict[str, Any]] | None:
+    """Return valid JSON retaining one event's provenance-preserving text tail."""
     if maximum_tokens <= 0:
         return None
     value = json.loads(serialized)
     content = value.get("content")
-    if not isinstance(content, str) or not content:
+    segments = value.get("authorshipSegments")
+    if isinstance(content, str) and "authorshipSegments" not in value:
+        representation = "content"
+        resolved_content = content
+    elif (
+        "content" not in value
+        and isinstance(segments, list)
+        and segments
+        and all(
+            isinstance(segment, dict)
+            and isinstance(segment.get("type"), str)
+            and isinstance(segment.get("content"), str)
+            for segment in segments
+        )
+    ):
+        representation = "authorship_segments"
+        resolved_content = "".join(segment["content"] for segment in segments)
+    else:
         return None
-    characters = list(content)
-    value["contentTruncatedForPacking"] = True
+    if not resolved_content:
+        return None
+
+    characters = list(resolved_content)
 
     def candidate(retained_characters: int) -> tuple[str, list[int]]:
+        candidate_value = dict(value)
+        candidate_value["contentTruncatedForPacking"] = True
+        candidate_value["contentTruncationMarker"] = CONTEXT_TRUNCATION_MARKER
         suffix = "" if retained_characters == 0 else "".join(characters[-retained_characters:])
-        value["content"] = CONTEXT_TRUNCATION_MARKER + suffix
-        text = canonical_json(value)
+        if representation == "content":
+            candidate_value["content"] = suffix
+        else:
+            candidate_value["authorshipSegments"] = authorship_segment_suffix(
+                segments, retained_characters
+            )
+        text = canonical_json(candidate_value)
         return text, encode_plain_text(tokenizer, text + "\n")
 
     minimum_text, minimum_ids = candidate(0)
@@ -172,7 +220,74 @@ def truncate_oldest_event(
             low = middle + 1
         else:
             high = middle - 1
-    return best_text, best_ids
+    retained_content = json.loads(best_text)
+    if representation == "content":
+        retained_character_count = len(list(retained_content["content"]))
+    else:
+        retained_character_count = sum(
+            len(list(segment["content"]))
+            for segment in retained_content["authorshipSegments"]
+        )
+    return best_text, best_ids, {
+        "representation": representation,
+        "originalContentCharacterCount": len(characters),
+        "retainedContentCharacterCount": retained_character_count,
+    }
+
+
+def audit_truncation_implementations(tokenizer: Any) -> dict[str, Any]:
+    """Exercise both legacy content and structured-authorship truncation paths."""
+    structured_segments = [
+        {"type": "authored_text", "content": "A" * 200},
+        {"type": "paste", "content": "P" * 200},
+        {"type": "authored_text", "content": "Z" * 200},
+    ]
+    fixtures = [
+        {"kind": "read", "content": "R" * 600},
+        {
+            "kind": "write",
+            "operation": "insert",
+            "authorshipResolution": "resolved",
+            "authorshipSegments": structured_segments,
+        },
+    ]
+    results: dict[str, Any] = {}
+    for fixture in fixtures:
+        serialized = canonical_json(fixture)
+        complete_count = len(encode_plain_text(tokenizer, serialized + "\n"))
+        truncated = truncate_oldest_event(serialized, complete_count - 1, tokenizer)
+        if truncated is None:
+            raise AssertionError("truncation self-audit could not fit a content tail")
+        text, token_ids, metadata = truncated
+        packed = json.loads(text)
+        if len(token_ids) > complete_count - 1:
+            raise AssertionError("truncation self-audit exceeded its budget")
+        if packed.get("contentTruncationMarker") != CONTEXT_TRUNCATION_MARKER:
+            raise AssertionError("truncation self-audit lost its explicit marker")
+        if metadata["representation"] == "content":
+            retained = packed["content"]
+            if not fixture["content"].endswith(retained):
+                raise AssertionError("content truncation did not retain a suffix")
+        else:
+            if "content" in packed:
+                raise AssertionError("structured truncation duplicated resolved content")
+            retained_segments = packed["authorshipSegments"]
+            retained = "".join(segment["content"] for segment in retained_segments)
+            resolved = "".join(segment["content"] for segment in structured_segments)
+            if not resolved.endswith(retained):
+                raise AssertionError("structured truncation did not retain a text suffix")
+            if retained_segments != authorship_segment_suffix(
+                structured_segments, len(retained)
+            ):
+                raise AssertionError("structured truncation lost authorship boundaries")
+        if not 0 < len(retained) < 600:
+            raise AssertionError("truncation self-audit did not exercise a partial tail")
+        results[metadata["representation"]] = {
+            "completeTokenCount": complete_count,
+            "packedTokenCount": len(token_ids),
+            "retainedContentCharacterCount": len(retained),
+        }
+    return results
 
 
 def pack_model_input(
@@ -222,13 +337,14 @@ def pack_model_input(
             continue
         truncated = truncate_oldest_event(block["serialized"], remaining, tokenizer)
         if truncated is not None:
-            truncated_text, truncated_ids = truncated
+            truncated_text, truncated_ids, truncation = truncated
             retained_reversed.append(
                 {
                     "eventID": block["eventID"],
                     "serialized": truncated_text,
                     "tokenIDs": truncated_ids,
                     "contentTruncated": True,
+                    "truncation": truncation,
                 }
             )
             remaining -= len(truncated_ids)
@@ -249,6 +365,7 @@ def pack_model_input(
         }
         if block["contentTruncated"]:
             span["packedSerialized"] = block["serialized"]
+            span["truncation"] = block["truncation"]
         spans.append(span)
 
     input_ids = history_ids + query_ids
@@ -452,6 +569,7 @@ def main() -> int:
         literal_eos_ids = encode_plain_text(reloaded_plain, reloaded_plain.eos_token)
         if eos_token_id in literal_eos_ids:
             raise AssertionError("literal EOS-shaped human text became structural EOS")
+        truncation_self_audit = audit_truncation_implementations(reloaded_plain)
 
         packed_records: list[dict[str, Any]] = []
         total_paste_actions = 0
@@ -497,7 +615,7 @@ def main() -> int:
                 raise AssertionError("EOS is absent from input or loss")
 
             record = {
-                "schemaVersion": 3,
+                "schemaVersion": 4,
                 "packerVersion": PACKER_VERSION,
                 "exampleID": example["exampleID"],
                 "sessionID": example["sessionID"],
@@ -556,7 +674,7 @@ def main() -> int:
             if path.is_file()
         }
         manifest = {
-            "schemaVersion": 3,
+            "schemaVersion": 4,
             "packerVersion": PACKER_VERSION,
             "createdAt": dt.datetime.now(dt.timezone.utc).isoformat().replace(
                 "+00:00", "Z"
@@ -595,12 +713,18 @@ def main() -> int:
             },
             "packing": {
                 "inputTokenBudget": arguments.input_token_budget,
+                "sequenceLengthContract": {
+                    "inputBudgetAppliesTo": "history_plus_conditioning_query_only",
+                    "targetAppendedOutsideInputBudget": True,
+                    "targetTruncationAllowed": False,
+                    "requiredTrainerSequenceCapacity": maximum_sequence_tokens,
+                },
                 "inputTruncation": "newest_complete_event_blocks_then_explicit_oldest_event_tail",
                 "rightEdgeConditioningQueryPreserved": True,
                 "eventBlock": "one canonical context event followed by newline",
                 "eventAware": True,
                 "partialJSONAllowed": False,
-                "oversizedOldestEventContent": "explicit_marker_plus_content_tail",
+                "oversizedOldestEventContent": "explicit_marker_plus_provenance_preserving_text_tail",
                 "contextTruncationMarker": CONTEXT_TRUNCATION_MARKER,
                 "ordinaryTextSpecialTokenHandling": "split_special_tokens",
                 "automaticSpecialTokens": False,
@@ -615,6 +739,7 @@ def main() -> int:
                 },
                 "paddingSide": "right",
                 "paddingAudit": padding_audit,
+                "truncationSelfAudit": truncation_self_audit,
             },
             "counts": {
                 "examples": len(packed_records),
