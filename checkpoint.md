@@ -1,6 +1,6 @@
 # Coupled checkpoint
 
-Last committed implementation: `25309bf`, built on the grounded-paste and reverted-write fixes in `bcec3bc` and `228e763`. The focused paste/read-attribution, reverted-write, and same-editable cursor-relocation acceptance traces have passed. This is now the candidate baseline for the next ordinary-work fidelity audit; further collector changes are not treated as complete here until committed and validated.
+The candidate implementation baseline includes context packing commit `a1cdc5e`, built on the grounded-paste and reverted-write fixes in `bcec3bc` and `228e763`. The focused paste/read-attribution, reverted-write, and same-editable cursor-relocation acceptance traces have passed. This is now the candidate baseline for the next ordinary-work fidelity audit; further collector changes are not treated as complete here until committed and validated.
 
 ## Objective
 
