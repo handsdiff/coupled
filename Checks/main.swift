@@ -555,15 +555,15 @@ expect(
 )
 let loadedTarget = try! loadPhase1Target(
     segments: mixedAuthorship.segments,
-    pasteTokenID: 900,
+    pasteMarker: "<|paste|>",
     eosTokenID: 901,
-    tokenizeAuthoredText: { Array($0.utf8).map(Int.init) }
+    tokenizeOrdinaryText: { Array($0.utf8).map(Int.init) }
 )
+let expectedLoadedTarget = Array("please review <|paste|> tomorrow".utf8).map(Int.init) + [901]
 expect(
-    loadedTarget.tokenIDs.filter { $0 == 900 }.count == 1
-        && loadedTarget.tokenIDs.last == 901
+    loadedTarget.tokenIDs == expectedLoadedTarget
         && loadedTarget.lossMask.allSatisfy { $0 },
-    "loader emits one atomic paste token and exactly one loss-bearing EOS"
+    "loader encodes the paste marker with the existing tokenizer and appends one loss-bearing EOS"
 )
 expect(
     targetExclusions.contains { $0["reason"] as? String == "empty_content" },

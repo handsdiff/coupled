@@ -71,7 +71,7 @@ jq -e -s --slurpfile manifest "$manifest" --slurpfile examples "$examples" --slu
     ($m.loader.targetTermination == "append exactly one selected-tokenizer eos_token_id") and
     ($m.loader.eosTokenCount == 1) and
     ($m.loader.authoredTextTokensReceiveLoss == true) and
-    ($m.loader.pasteActionTokensReceiveLoss == true) and
+    ($m.loader.pasteMarkerTokensReceiveLoss == true) and
     ($m.loader.pastedPayloadTokensReceiveLoss == false) and
     ($m.loader.eosTokenReceivesLoss == true) and
     (if .conditioningState.schemaVersion >= 2 then

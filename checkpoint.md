@@ -38,7 +38,7 @@ The intended Phase 1 training target is narrower:
 target sequence = authored text + grounded paste actions + loader-appended EOS
 ```
 
-Operation, removal, offsets, destination, timestamps, cursor metadata, and pasted payload tokens do not receive target loss. A proven paste action receives loss as one atomic token; its resolved payload remains available in the WRITE event and in later history.
+Operation, removal, offsets, destination, timestamps, cursor metadata, and pasted payload tokens do not receive target loss. A proven paste action is serialized as the reserved `<|paste|>` marker using the model's existing tokenizer; its resolved payload remains available in the WRITE event and in later history.
 
 ## Implemented collection
 
@@ -144,14 +144,14 @@ For range-native semantic cursor contexts, complete semantic conditioning remain
 Implemented:
 
 - Stored compiler targets remain tokenizer-independent structured segments.
-- The loader contract tokenizes authored spans, maps each paste action to one atomic token, and appends exactly one EOS.
-- Authored tokens, paste-action tokens, and EOS receive loss; pasted payload tokens do not.
+- The loader contract tokenizes authored spans and the reserved `<|paste|>` marker with the unchanged model tokenizer, then appends exactly one EOS.
+- Authored tokens, every paste-marker token, and EOS receive loss; pasted payload tokens do not.
 - Dataset checks enforce the contract.
 - The tokenizer-specific packer is connected to `Qwen/Qwen3.5-9B-Base` revision `68c46c4b3498877f3ef123c856ecfde50c39f404`.
-- The saved tokenizer adds exactly one atomic `<|paste|>` token (`248077`) distinct from Qwen EOS (`248044`), and survives save/reload with stable IDs.
+- The saved tokenizer retains Qwen's original 248,077-entry vocabulary; `<|paste|>` encodes as the five existing IDs `[27, 91, 54966, 91, 29]`, and Qwen EOS remains `248044`.
 - Packed causal-LM labels mask all history/query and padding positions with `-100`; authored tokens, paste actions, and exactly one trailing EOS receive loss.
 - Input packing retains the most recent 32K model-input tokens and verifies that the right-edge destination/cursor/clipboard query survives truncation.
-- Literal marker-shaped human text is tokenized as ordinary text rather than being interpreted as paste or EOS.
+- The model vocabulary is not resized or otherwise modified. Exact decoded `<|paste|>` is interpreted as the action marker at inference; partial markers are invalid.
 
 A literal EOS string must not be inserted into source targets.
 
@@ -206,7 +206,7 @@ It exposed one typed checkpoint that was fully deleted before settlement but was
 
 Tokenizer packing validation confirmed:
 
-- `paste-read-attribution-test-1-phase1-v9b` packed five examples with four structured paste actions; each became exactly one paste token and every target ended in one loss-bearing EOS.
+- `paste-read-attribution-test-1-phase1-v9c` packed five examples with four structured paste actions; each became the same five-ID reserved marker sequence and every target ended in one loss-bearing EOS.
 - Resolved payloads for all four paste targets remained in their historical WRITE serialization while being absent from the current target spans.
 - The current compiler rebuilt Run 5 as 424 causal events, 48 targets, 147 target exclusions, 110 context exclusions, and one explicit reconstruction rejection; its causal audit passed.
 - Run 5's 48 examples packed with the actual Qwen tokenizer. The longest untruncated model input was 90,106 tokens; 57,338 oldest tokens were removed from that example, while its 118-token right-edge conditioning query remained intact.
@@ -227,7 +227,7 @@ Rules:
 
 - Clipboard state at write onset is causal conditioning; COPY is not a third event type.
 - Cmd-V captures immediate pre/post editable states and the pasteboard version used.
-- Current targets represent each proven paste as one atomic action without its payload.
+- Current targets represent each proven paste as the reserved `<|paste|>` marker without its payload.
 - Later WRITE history retains the resolved payload and marks it as paste-derived.
 - Ambiguous paste-containing bursts remain events but are target-ineligible.
 - Context-menu paste, drag-and-drop, and application-driven insertion are outside the initial proven-paste scope.
@@ -269,7 +269,7 @@ The focused component gates are complete. Treat `25309bf`, `phase1-causal-v9`, a
 ### Before initial offline training
 
 1. Pass the ordinary-work reconstruction audit above and freeze an immutable dataset version.
-2. Load the saved tokenizer with the selected model, resize its input/output embeddings from 248,077 to 248,078 entries, and verify the new paste row is trainable and saved with the checkpoint.
+2. Verify the training harness consumes the packed `labels` unchanged and the inference parser executes only a complete decoded `<|paste|>` marker.
 3. Run the Obsidian-only Phase 1 smoke test before the full prospective interleaved-stream experiment.
 
 ### Before live prediction

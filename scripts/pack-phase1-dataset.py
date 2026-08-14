@@ -3,8 +3,9 @@
 
 The causal compiler deliberately stores text and structured target segments.
 This script is the tokenizer-specific boundary: it left-truncates model input,
-turns each proven paste action into one atomic token, appends one EOS, and
-constructs causal-LM labels. It never modifies the compiled source dataset.
+turns each proven paste action into a reserved marker encoded by the unchanged
+tokenizer, appends one EOS, and constructs causal-LM labels. It never modifies
+the compiled source dataset.
 """
 
 from __future__ import annotations
@@ -35,9 +36,9 @@ except ImportError as error:
     ) from error
 
 
-PACKER_VERSION = "phase1-token-pack-v1"
+PACKER_VERSION = "phase1-token-pack-v2"
 DEFAULT_TOKENIZER = "Qwen/Qwen3.5-9B-Base"
-DEFAULT_PASTE_TOKEN = "<|paste|>"
+DEFAULT_PASTE_MARKER = "<|paste|>"
 IGNORE_LABEL = -100
 TOKENIZER_FILES = (
     "tokenizer.json",
@@ -119,8 +120,8 @@ def resolve_tokenizer_snapshot(
 
 def encode_plain_text(tokenizer: Any, text: str) -> list[int]:
     # split_special_tokens=True is set when loading this tokenizer. Therefore
-    # literal marker-shaped human text remains ordinary text; only structured
-    # segments below can introduce the paste action token or structural EOS.
+    # marker-shaped human text and the reserved paste marker both use the
+    # unchanged vocabulary. Only the loader-appended terminator becomes EOS.
     return list(tokenizer.encode(text, add_special_tokens=False))
 
 
@@ -167,7 +168,7 @@ def verify_resolved_target_event(
 def pack_target(
     segments: list[dict[str, Any]],
     plain_text_tokenizer: Any,
-    paste_token_id: int,
+    paste_marker_token_ids: list[int],
     eos_token_id: int,
 ) -> tuple[list[int], list[dict[str, Any]], int]:
     target_ids: list[int] = []
@@ -181,8 +182,6 @@ def pack_target(
             if not isinstance(content, str):
                 raise ValueError(f"target segment {segment_index} has no string content")
             ids = encode_plain_text(plain_text_tokenizer, content)
-            if paste_token_id in ids:
-                raise ValueError("authored text unexpectedly encoded as the paste action token")
             if eos_token_id in ids:
                 raise ValueError("authored text unexpectedly encoded as structural EOS")
             target_ids.extend(ids)
@@ -191,7 +190,7 @@ def pack_target(
                 raise ValueError("paste target segment must not contain pasted payload")
             if not segment.get("clipboardSnapshotID") or not segment.get("pasteCheckpointID"):
                 raise ValueError("paste target segment is not grounded")
-            target_ids.append(paste_token_id)
+            target_ids.extend(paste_marker_token_ids)
             paste_count += 1
         else:
             raise ValueError(f"unknown target segment type: {segment_type!r}")
@@ -208,8 +207,6 @@ def pack_target(
         raise AssertionError("target does not end in EOS")
     if target_ids.count(eos_token_id) != 1:
         raise ValueError("target must contain exactly one structural EOS")
-    if target_ids.count(paste_token_id) != paste_count:
-        raise ValueError("paste action count does not match target token count")
     return target_ids, spans, paste_count
 
 
@@ -245,7 +242,7 @@ def main() -> int:
     parser.add_argument("--tokenizer", default=DEFAULT_TOKENIZER)
     parser.add_argument("--revision", default="main")
     parser.add_argument("--input-token-budget", type=int, default=32768)
-    parser.add_argument("--paste-token", default=DEFAULT_PASTE_TOKEN)
+    parser.add_argument("--paste-marker", default=DEFAULT_PASTE_MARKER)
     parser.add_argument("--local-files-only", action="store_true")
     arguments = parser.parse_args()
 
@@ -261,43 +258,51 @@ def main() -> int:
         arguments.tokenizer, arguments.revision, arguments.local_files_only
     )
 
-    action_tokenizer = AutoTokenizer.from_pretrained(snapshot, use_fast=True)
-    original_vocabulary_size = len(action_tokenizer)
-    action_tokenizer.add_special_tokens(
-        {"additional_special_tokens": [arguments.paste_token]}
+    source_tokenizer = AutoTokenizer.from_pretrained(snapshot, use_fast=True)
+    plain_text_tokenizer = AutoTokenizer.from_pretrained(
+        snapshot, use_fast=True, split_special_tokens=True
     )
-    paste_token_id = action_tokenizer.convert_tokens_to_ids(arguments.paste_token)
-    eos_token_id = action_tokenizer.eos_token_id
+    original_vocabulary_size = len(source_tokenizer)
+    eos_token_id = source_tokenizer.eos_token_id
     if eos_token_id is None:
         raise ValueError("selected tokenizer has no eos_token_id")
-    if paste_token_id in (None, action_tokenizer.unk_token_id, eos_token_id):
-        raise ValueError("paste token is not a distinct registered token")
-    if action_tokenizer.encode(arguments.paste_token, add_special_tokens=False) != [paste_token_id]:
-        raise ValueError("paste marker is not one atomic token")
-    if len(action_tokenizer) != original_vocabulary_size + 1:
-        raise ValueError("paste registration did not add exactly one vocabulary item")
+    if (
+        len(plain_text_tokenizer) != original_vocabulary_size
+        or plain_text_tokenizer.eos_token_id != eos_token_id
+    ):
+        raise ValueError("plain-text tokenizer does not preserve base vocabulary and EOS")
+    paste_marker_token_ids = encode_plain_text(
+        plain_text_tokenizer, arguments.paste_marker
+    )
+    if not paste_marker_token_ids:
+        raise ValueError("paste marker encodes to no tokens")
+    if eos_token_id in paste_marker_token_ids:
+        raise ValueError("paste marker encoding contains structural EOS")
 
     temporary_parent = output.parent
     temporary_parent.mkdir(parents=True, exist_ok=True)
     temporary = Path(tempfile.mkdtemp(prefix=f".{output.name}.", dir=temporary_parent))
     try:
         tokenizer_directory = temporary / "tokenizer"
-        action_tokenizer.save_pretrained(tokenizer_directory)
+        source_tokenizer.save_pretrained(tokenizer_directory)
 
-        reloaded_action = AutoTokenizer.from_pretrained(tokenizer_directory, use_fast=True)
+        reloaded_source = AutoTokenizer.from_pretrained(tokenizer_directory, use_fast=True)
         reloaded_plain = AutoTokenizer.from_pretrained(
             tokenizer_directory, use_fast=True, split_special_tokens=True
         )
-        if reloaded_action.convert_tokens_to_ids(arguments.paste_token) != paste_token_id:
-            raise AssertionError("saved tokenizer changed the paste token ID")
-        if reloaded_action.eos_token_id != eos_token_id:
+        if (
+            len(reloaded_source) != original_vocabulary_size
+            or len(reloaded_plain) != original_vocabulary_size
+        ):
+            raise AssertionError("saved tokenizer vocabulary size changed")
+        if (
+            reloaded_source.eos_token_id != eos_token_id
+            or reloaded_plain.eos_token_id != eos_token_id
+        ):
             raise AssertionError("saved tokenizer changed the EOS token ID")
-        if reloaded_action.encode(arguments.paste_token, add_special_tokens=False) != [paste_token_id]:
-            raise AssertionError("reloaded paste token is not atomic")
-        literal_marker_ids = encode_plain_text(reloaded_plain, arguments.paste_token)
-        if literal_marker_ids == [paste_token_id] or paste_token_id in literal_marker_ids:
-            raise AssertionError("literal paste-shaped human text became a paste action")
-        literal_eos_ids = encode_plain_text(reloaded_plain, reloaded_action.eos_token)
+        if encode_plain_text(reloaded_plain, arguments.paste_marker) != paste_marker_token_ids:
+            raise AssertionError("saved tokenizer changed the paste marker encoding")
+        literal_eos_ids = encode_plain_text(reloaded_plain, reloaded_plain.eos_token)
         if eos_token_id in literal_eos_ids:
             raise AssertionError("literal EOS-shaped human text became structural EOS")
 
@@ -337,7 +342,7 @@ def main() -> int:
             if input_ids[-len(query_ids) :] != query_ids:
                 raise AssertionError("right-edge conditioning query was not preserved")
             target_ids, segment_spans, paste_count = pack_target(
-                segments, reloaded_plain, paste_token_id, eos_token_id
+                segments, reloaded_plain, paste_marker_token_ids, eos_token_id
             )
             combined_ids = input_ids + target_ids
             labels = [IGNORE_LABEL] * len(input_ids) + target_ids
@@ -354,7 +359,7 @@ def main() -> int:
                 raise AssertionError("input truncation did not retain the right edge")
 
             record = {
-                "schemaVersion": 1,
+                "schemaVersion": 2,
                 "packerVersion": PACKER_VERSION,
                 "exampleID": example["exampleID"],
                 "sessionID": example["sessionID"],
@@ -369,6 +374,7 @@ def main() -> int:
                 "rightEdgeQueryTokenSHA256": token_ids_sha256(query_ids),
                 "targetTokenCount": len(target_ids),
                 "pasteActionCount": paste_count,
+                "pasteMarkerTokenCount": len(paste_marker_token_ids),
                 "targetSegmentTokenSpans": segment_spans,
             }
             packed_records.append(record)
@@ -385,8 +391,8 @@ def main() -> int:
         padding_audit = validate_padded_batch(
             packed_records,
             eos_token_id
-            if reloaded_action.pad_token_id is None
-            else reloaded_action.pad_token_id,
+            if reloaded_source.pad_token_id is None
+            else reloaded_source.pad_token_id,
         )
         packed_path = temporary / "packed-examples.jsonl"
         write_jsonl(packed_path, packed_records)
@@ -397,7 +403,7 @@ def main() -> int:
             if path.is_file()
         }
         manifest = {
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "packerVersion": PACKER_VERSION,
             "createdAt": dt.datetime.now(dt.timezone.utc).isoformat().replace(
                 "+00:00", "Z"
@@ -416,15 +422,16 @@ def main() -> int:
                 "repository": arguments.tokenizer,
                 "requestedRevision": arguments.revision,
                 "resolvedRevision": resolved_revision,
-                "class": type(reloaded_action).__name__,
+                "class": type(reloaded_source).__name__,
                 "originalVocabularySize": original_vocabulary_size,
-                "savedVocabularySize": len(reloaded_action),
-                "pasteToken": arguments.paste_token,
-                "pasteTokenID": paste_token_id,
-                "eosToken": reloaded_action.eos_token,
+                "savedVocabularySize": len(reloaded_source),
+                "pasteMarker": arguments.paste_marker,
+                "pasteMarkerTokenIDs": paste_marker_token_ids,
+                "pasteMarkerTokenCount": len(paste_marker_token_ids),
+                "eosToken": reloaded_source.eos_token,
                 "eosTokenID": eos_token_id,
-                "padToken": reloaded_action.pad_token,
-                "padTokenID": reloaded_action.pad_token_id,
+                "padToken": reloaded_source.pad_token,
+                "padTokenID": reloaded_source.pad_token_id,
                 "savedFileDigestsSHA256": tokenizer_digests,
             },
             "runtime": {
@@ -439,12 +446,12 @@ def main() -> int:
                 "rightEdgeConditioningQueryPreserved": True,
                 "ordinaryTextSpecialTokenHandling": "split_special_tokens",
                 "automaticSpecialTokens": False,
-                "targetConstruction": "authored_text_plus_atomic_paste_actions_plus_one_eos",
+                "targetConstruction": "authored_text_plus_reserved_paste_marker_string_plus_one_eos",
                 "labelMask": {
                     "modelInput": IGNORE_LABEL,
                     "padding": IGNORE_LABEL,
                     "authoredTextReceivesLoss": True,
-                    "pasteActionReceivesLoss": True,
+                    "pasteMarkerTokensReceiveLoss": True,
                     "eosReceivesLoss": True,
                     "pastedPayloadPresentInTarget": False,
                 },
@@ -477,7 +484,7 @@ def main() -> int:
     print(f"Packed {len(examples)} examples into {output}")
     print(
         f"Tokenizer: {arguments.tokenizer}@{resolved_revision} "
-        f"EOS={eos_token_id} PASTE={paste_token_id}"
+        f"EOS={eos_token_id} PASTE_MARKER_TOKENS={paste_marker_token_ids}"
     )
     print(
         f"Paste actions: {total_paste_actions}; "

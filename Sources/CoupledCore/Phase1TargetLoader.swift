@@ -3,7 +3,8 @@ import Foundation
 public enum Phase1TargetLoaderError: Error, Equatable {
     case unknownSegmentType(String)
     case unresolvedPaste
-    case pasteTokenEqualsEOS
+    case emptyPasteMarker
+    case pasteMarkerContainsEOS
 }
 
 public struct Phase1LoadedTarget: Equatable, Sendable {
@@ -17,28 +18,32 @@ public struct Phase1LoadedTarget: Equatable, Sendable {
 }
 
 /// Tokenizer-independent packing contract for a Phase 1 target. The caller's
-/// tokenizer handles authored text only. Every proven paste becomes one atomic
-/// action token, and exactly one loss-bearing EOS token terminates the target.
+/// tokenizer handles both authored text and the reserved paste marker as
+/// ordinary text. Exactly one loss-bearing EOS token terminates the target.
 public func loadPhase1Target(
     segments: [WriteAuthorshipSegment],
-    pasteTokenID: Int,
+    pasteMarker: String,
     eosTokenID: Int,
-    tokenizeAuthoredText: (String) throws -> [Int]
+    tokenizeOrdinaryText: (String) throws -> [Int]
 ) throws -> Phase1LoadedTarget {
-    guard pasteTokenID != eosTokenID else {
-        throw Phase1TargetLoaderError.pasteTokenEqualsEOS
+    let pasteMarkerTokenIDs = try tokenizeOrdinaryText(pasteMarker)
+    guard !pasteMarkerTokenIDs.isEmpty else {
+        throw Phase1TargetLoaderError.emptyPasteMarker
+    }
+    guard !pasteMarkerTokenIDs.contains(eosTokenID) else {
+        throw Phase1TargetLoaderError.pasteMarkerContainsEOS
     }
     var tokenIDs = [Int]()
     for segment in segments {
         switch segment.type {
         case "authored_text":
-            tokenIDs += try tokenizeAuthoredText(segment.content)
+            tokenIDs += try tokenizeOrdinaryText(segment.content)
         case "paste":
             guard segment.clipboardSnapshotID != nil,
                   segment.pasteCheckpointID != nil else {
                 throw Phase1TargetLoaderError.unresolvedPaste
             }
-            tokenIDs.append(pasteTokenID)
+            tokenIDs += pasteMarkerTokenIDs
         default:
             throw Phase1TargetLoaderError.unknownSegmentType(segment.type)
         }

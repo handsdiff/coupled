@@ -344,11 +344,12 @@ target. Because the query is serialized at the right edge, older history is
 truncated before the current destination, cursor, and clipboard state. WRITE
 history retains resolved pasted content and its provenance, while the current
 target omits pasted payloads. The target loader tokenizes authored spans with
-automatic special tokens disabled, maps each proven paste to one atomic paste
-token, appends exactly one `tokenizer.eos_token_id`, and applies loss to authored
-tokens, paste actions, and EOS—not pasted payload tokens. EOS is structural;
-it is not part of captured human content. Thus tokenizer-specific packing is a
-deterministic loader step, not a sensor or causality assumption.
+automatic special tokens disabled, maps each proven paste to the reserved
+`<|paste|>` marker encoded by the unchanged tokenizer, appends exactly one
+`tokenizer.eos_token_id`, and applies loss to authored tokens, paste-marker
+tokens, and EOS—not pasted payload tokens. EOS is structural; it is not part of
+captured human content. Thus tokenizer-specific packing is a deterministic
+loader step, not a sensor or causality assumption.
 
 Pack a compiled dataset with the selected Qwen tokenizer in an isolated Python
 environment:
@@ -370,17 +371,16 @@ python3 scripts/audit-phase1-packed.py \
 The packer refuses an existing output directory and does not modify the causal
 dataset. `packed-examples.jsonl` contains the combined input/target token IDs,
 attention mask, and causal-LM labels. Model-input labels are `-100`; authored
-text, one token per grounded paste, and the final EOS receive loss. The saved
-`tokenizer/` directory includes the added atomic `<|paste|>` token, while
-`packing.json` pins the tokenizer revision, IDs, dependency versions, file
-digests, truncation rule, and audit counts. Ordinary human text is encoded with
-special-marker splitting, so a literal string such as `<|paste|>` cannot be
-mistaken for a proven paste action.
+text, every existing-token ID that spells the paste marker, and the final EOS
+receive loss. The saved `tokenizer/` directory has the checkpoint's unchanged
+vocabulary. `packing.json` pins the tokenizer revision, marker string and token
+sequence, dependency versions, file digests, truncation rule, and audit counts.
+No embedding resize or custom-token checkpoint is required.
 
-When the model training harness loads this tokenizer, it must resize the
-model's input/output embeddings to `savedVocabularySize`, train the new paste
-row, and save both the model and tokenizer. This is a model-loading step, not a
-dataset-packing step.
+At inference, only a complete decoded `<|paste|>` marker is an executable paste
+action. A partial marker is invalid output. A human-authored literal marker has
+the same token sequence; this rare collision is an explicit simplicity
+tradeoff for the initial baseline rather than hidden tokenizer behavior.
 
 ## Experimental interpretation
 

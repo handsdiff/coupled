@@ -468,11 +468,11 @@ public struct CausalDatasetCompiler {
             ],
             "loader": [
                 "targetSource": "example.target.segments",
-                "targetTokenization": "tokenize authored_text normally; map every paste segment to one atomic paste_token_id; automatic special tokens disabled",
+                "targetTokenization": "tokenize authored_text and the reserved paste marker with the selected tokenizer; automatic special tokens disabled",
                 "targetTermination": "append exactly one selected-tokenizer eos_token_id",
                 "eosTokenCount": 1,
                 "authoredTextTokensReceiveLoss": true,
-                "pasteActionTokensReceiveLoss": true,
+                "pasteMarkerTokensReceiveLoss": true,
                 "pastedPayloadTokensReceiveLoss": false,
                 "eosTokenReceivesLoss": true,
             ],
@@ -961,7 +961,7 @@ private func trainingTargetSegments(
             guard let snapshotID = segment.string("clipboardSnapshotID"),
                   let checkpointID = segment.string("pasteCheckpointID") else { return nil }
             // Deliberately omit the payload from the supervised target. The
-            // loader maps this object to one atomic paste action token.
+            // loader maps this object to the reserved paste marker string.
             target.append([
                 "type": type,
                 "clipboardSnapshotID": snapshotID,

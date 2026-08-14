@@ -37,8 +37,17 @@ def main() -> int:
     if sha256(packed_path) != expected:
         raise ValueError("packed-examples.jsonl digest does not match manifest")
 
-    paste_id = manifest["tokenizer"]["pasteTokenID"]
+    paste_marker_ids = manifest["tokenizer"]["pasteMarkerTokenIDs"]
     eos_id = manifest["tokenizer"]["eosTokenID"]
+    if not paste_marker_ids or eos_id in paste_marker_ids:
+        raise ValueError("paste marker encoding is empty or contains EOS")
+    if manifest["tokenizer"]["pasteMarkerTokenCount"] != len(paste_marker_ids):
+        raise ValueError("paste marker token count disagrees")
+    if (
+        manifest["tokenizer"]["originalVocabularySize"]
+        != manifest["tokenizer"]["savedVocabularySize"]
+    ):
+        raise ValueError("saved tokenizer vocabulary was modified")
     rows = 0
     paste_actions = 0
     with packed_path.open(encoding="utf-8") as handle:
@@ -67,14 +76,15 @@ def main() -> int:
                 raise ValueError(f"line {line_number}: right-edge query digest disagrees")
             if target[-1] != eos_id or target.count(eos_id) != 1:
                 raise ValueError(f"line {line_number}: target EOS contract failed")
-            if target.count(paste_id) != record["pasteActionCount"]:
-                raise ValueError(f"line {line_number}: paste token count disagrees")
+            observed_pastes = 0
             for span in record["targetSegmentTokenSpans"]:
                 span_ids = target[span["targetTokenStart"] : span["targetTokenEnd"]]
-                if span["type"] == "paste" and span_ids != [paste_id]:
-                    raise ValueError(f"line {line_number}: paste span is not atomic")
-                if span["type"] == "authored_text" and paste_id in span_ids:
-                    raise ValueError(f"line {line_number}: authored span contains paste ID")
+                if span["type"] == "paste":
+                    if span_ids != paste_marker_ids:
+                        raise ValueError(f"line {line_number}: paste marker encoding disagrees")
+                    observed_pastes += 1
+            if observed_pastes != record["pasteActionCount"]:
+                raise ValueError(f"line {line_number}: paste action count disagrees")
             rows += 1
             paste_actions += record["pasteActionCount"]
 
@@ -87,7 +97,8 @@ def main() -> int:
             raise ValueError(f"tokenizer digest mismatch: {relative}")
     print(
         f"Packed dataset audit passed: {rows} examples, "
-        f"{paste_actions} paste actions, EOS={eos_id}, PASTE={paste_id}"
+        f"{paste_actions} paste actions, EOS={eos_id}, "
+        f"PASTE_MARKER_TOKENS={paste_marker_ids}"
     )
     return 0
 
