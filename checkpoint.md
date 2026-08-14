@@ -1,6 +1,6 @@
 # Coupled checkpoint
 
-Last committed implementation: `228e763`, built on the grounded-paste implementation in `bcec3bc`. The focused paste/read-attribution and reverted-write acceptance traces have passed. This is now the candidate baseline for the next ordinary-work fidelity audit; further collector changes are not treated as complete here until committed and validated.
+Last committed implementation: `25309bf`, built on the grounded-paste and reverted-write fixes in `bcec3bc` and `228e763`. The focused paste/read-attribution, reverted-write, and same-editable cursor-relocation acceptance traces have passed. This is now the candidate baseline for the next ordinary-work fidelity audit; further collector changes are not treated as complete here until committed and validated.
 
 ## Objective
 
@@ -189,6 +189,16 @@ It exposed one typed checkpoint that was fully deleted before settlement but was
 - the causal compiler produces no training example for the burst;
 - the corrected schema versions and causal audit pass.
 
+`cursor-relocation-test-1` confirmed:
+
+- typing at multiple distant positions in one Obsidian AX editor produces independently conditioned WRITEs;
+- mouse relocation closes the prior write with `pointer_selection_boundary` before the click reaches the application;
+- keyboard caret navigation closes the prior write with `selection_navigation`;
+- each insertion retains the semantic left/right context from its own starting location;
+- no document-spanning replacement was produced;
+- pure deletion events remain history but are excluded as Phase 1 content targets;
+- `phase1-causal-v9` compiled 13 events into seven nonempty targets with zero reconstruction rejection and passed its causal audit.
+
 ## Target authorship
 
 ### Paste
@@ -234,14 +244,13 @@ Current and intended Phase 1 policy:
 
 ### Before the next authoritative collection
 
-The prior focused component gates are complete. A same-editable cursor-relocation boundary has now been implemented on top of `228e763` and must pass one focused acceptance trace before the baseline is used for an ordinary-work audit run.
+The focused component gates are complete. Treat `25309bf`, `phase1-causal-v9`, and the current three-second delays/crop configuration as the candidate baseline for an ordinary-work audit run.
 
-1. Confirm that typing at one location, relocating the caret within `WRITE_DELAY`, and typing elsewhere in the same editable produces two independently conditioned WRITEs.
-2. Run normal work without changing collector rules mid-session.
-3. Compile the session with `phase1-causal-v9` and preserve the source digests and audit outputs.
-4. Manually sample the temporal trace against the actual work and record Phase 1's fidelity categories: missing events, temporal-ordering errors, incorrect content inclusion, authorship errors, write-boundary disagreement, destination ambiguity, and future leakage.
-5. Quantify target eligibility and exclusion reasons, including pure deletion, unresolved paste authorship, incomplete semantic cursor state, and rejected reconstruction.
-6. Fix only recurrent material errors demonstrated by that trace. If no training-blocking class appears, freeze the collector/configuration/conversion as the first immutable dataset version.
+1. Run normal work without changing collector rules mid-session.
+2. Compile the session with `phase1-causal-v9` and preserve the source digests and audit outputs.
+3. Manually sample the temporal trace against the actual work and record Phase 1's fidelity categories: missing events, temporal-ordering errors, incorrect content inclusion, authorship errors, write-boundary disagreement, destination ambiguity, and future leakage.
+4. Quantify target eligibility and exclusion reasons, including pure deletion, unresolved paste authorship, incomplete semantic cursor state, and rejected reconstruction.
+5. Fix only recurrent material errors demonstrated by that trace. If no training-blocking class appears, freeze the collector/configuration/conversion as the first immutable dataset version.
 
 ### Before initial offline training
 
@@ -270,4 +279,4 @@ The prior focused component gates are complete. A same-editable cursor-relocatio
 
 ## Next step
 
-Validate the same-editable cursor-relocation boundary with one short trace. If it passes, run one ordinary-work candidate session with that baseline, then compile and audit it before changing capture behavior. This tests the Thesis claim at the right level: whether the interleaved stream faithfully preserves the information-to-authored-output conversion during natural work, rather than whether isolated sensors can pass synthetic cases. Focus-time conditioning remains required before live prediction, but it is not a blocker for this offline training-data audit because the current pre-mutation query is causally valid for completed examples.
+Run one ordinary-work candidate session with the current baseline, then compile and audit it before changing capture behavior. This tests the Thesis claim at the right level: whether the interleaved stream faithfully preserves the information-to-authored-output conversion during natural work, rather than whether isolated sensors can pass synthetic cases. Focus-time conditioning remains required before live prediction, but it is not a blocker for this offline training-data audit because the current pre-mutation query is causally valid for completed examples.
