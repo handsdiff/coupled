@@ -43,8 +43,29 @@ jq -e -s --slurpfile manifest "$manifest" --slurpfile examples "$examples" --slu
   ($m.counts.contextExclusions == ($context_exclusions | length)) and
   (($by_id | length) == ($events | length)) and
   (all($events[];
+    . as $event |
+    (.serialized | fromjson) as $model |
+    (.auditSerialized | fromjson) as $audit |
     .sessionID == $m.sessionID and
-    .conversionVersion == $m.conversionVersion
+    .conversionVersion == $m.conversionVersion and
+    ($model.kind == $event.kind) and
+    ($model.content == $audit.content) and
+    (($model | has("schemaVersion")) | not) and
+    (($model | has("bundleIdentifier")) | not) and
+    (($model | has("provenance")) | not) and
+    (($model | has("characterOffset")) | not) and
+    (($model | has("boundaryReason")) | not) and
+    ($audit.schemaVersion == 1) and
+    (if .kind == "read" then
+       (($model.source // {} | keys - ["application", "window"] | length) == 0) and
+       (($model | has("destination")) | not)
+     else
+       (($model.destination // {} | keys - ["application", "window"] | length) == 0) and
+       (($model | has("source")) | not) and
+       (($model.operation | type) == "string") and
+       (all($model.authorshipSegments[]?;
+          ((keys - ["content", "type"]) | length) == 0))
+     end)
   )) and
   (($write_ids | sort) == (($example_ids + $excluded_ids) | sort)) and
   ((($example_ids + $excluded_ids) | unique | length) == ($write_ids | length)) and
@@ -74,6 +95,8 @@ jq -e -s --slurpfile manifest "$manifest" --slurpfile examples "$examples" --slu
     ($m.loader.pasteMarkerTokensReceiveLoss == true) and
     ($m.loader.pastedPayloadTokensReceiveLoss == false) and
     ($m.loader.eosTokenReceivesLoss == true) and
+    ($m.serialization.contextVersion == 2) and
+    ($m.serialization.auditContextVersion == 1) and
     (if .conditioningState.schemaVersion >= 2 then
        (.conditioningState.cursorContext.source == "accessibility_string_for_range") and
        ((.conditioningState.cursorContext.leftContext | type) == "string") and

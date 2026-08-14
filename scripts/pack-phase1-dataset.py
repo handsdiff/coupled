@@ -2,10 +2,10 @@
 """Pack a compiled Phase 1 dataset with the selected model tokenizer.
 
 The causal compiler deliberately stores text and structured target segments.
-This script is the tokenizer-specific boundary: it left-truncates model input,
-turns each proven paste action into a reserved marker encoded by the unchanged
-tokenizer, appends one EOS, and constructs causal-LM labels. It never modifies
-the compiled source dataset.
+This script is the tokenizer-specific boundary: it packs a suffix of complete
+context-event blocks, turns each proven paste action into a reserved marker
+encoded by the unchanged tokenizer, appends one EOS, and constructs causal-LM
+labels. It never modifies the compiled source dataset.
 """
 
 from __future__ import annotations
@@ -36,9 +36,10 @@ except ImportError as error:
     ) from error
 
 
-PACKER_VERSION = "phase1-token-pack-v2"
+PACKER_VERSION = "phase1-token-pack-v3"
 DEFAULT_TOKENIZER = "Qwen/Qwen3.5-9B-Base"
 DEFAULT_PASTE_MARKER = "<|paste|>"
+CONTEXT_TRUNCATION_MARKER = "[...older event content truncated...]"
 IGNORE_LABEL = -100
 TOKENIZER_FILES = (
     "tokenizer.json",
@@ -88,8 +89,10 @@ def require_compiled_dataset(
         raise ValueError(f"{source} is not a compiled Phase 1 dataset")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     examples = load_jsonl(examples_path)
-    if manifest.get("conversionVersion") != "phase1-causal-v9":
-        raise ValueError("packer requires conversionVersion phase1-causal-v9")
+    if manifest.get("conversionVersion") != "phase1-causal-v10":
+        raise ValueError("packer requires conversionVersion phase1-causal-v10")
+    if manifest.get("serialization", {}).get("contextVersion") != 2:
+        raise ValueError("packer requires model-facing contextVersion 2")
     if manifest.get("serialization", {}).get("targetFormat") != "structured_authorship_segments":
         raise ValueError("packer requires structured authorship targets")
     if manifest.get("counts", {}).get("examples") != len(examples):
@@ -129,17 +132,161 @@ def token_ids_sha256(token_ids: list[int]) -> str:
     return hashlib.sha256(json_bytes(token_ids)).hexdigest()
 
 
+def canonical_json(value: dict[str, Any]) -> str:
+    return json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+
+
+def truncate_oldest_event(
+    serialized: str,
+    maximum_tokens: int,
+    tokenizer: Any,
+) -> tuple[str, list[int]] | None:
+    """Return valid JSON retaining the tail of one oversized event's content."""
+    if maximum_tokens <= 0:
+        return None
+    value = json.loads(serialized)
+    content = value.get("content")
+    if not isinstance(content, str) or not content:
+        return None
+    characters = list(content)
+    value["contentTruncatedForPacking"] = True
+
+    def candidate(retained_characters: int) -> tuple[str, list[int]]:
+        suffix = "" if retained_characters == 0 else "".join(characters[-retained_characters:])
+        value["content"] = CONTEXT_TRUNCATION_MARKER + suffix
+        text = canonical_json(value)
+        return text, encode_plain_text(tokenizer, text + "\n")
+
+    minimum_text, minimum_ids = candidate(0)
+    if len(minimum_ids) > maximum_tokens:
+        return None
+    best_text, best_ids = minimum_text, minimum_ids
+    low, high = 1, len(characters)
+    while low <= high:
+        middle = (low + high) // 2
+        text, token_ids = candidate(middle)
+        if len(token_ids) <= maximum_tokens:
+            best_text, best_ids = text, token_ids
+            low = middle + 1
+        else:
+            high = middle - 1
+    return best_text, best_ids
+
+
+def pack_model_input(
+    example: dict[str, Any],
+    events_by_id: dict[str, dict[str, Any]],
+    tokenizer: Any,
+    token_budget: int,
+) -> dict[str, Any]:
+    query = example.get("query")
+    context_event_ids = example.get("contextEventIDs")
+    if not isinstance(query, str) or not isinstance(context_event_ids, list):
+        raise ValueError(f"example {example.get('exampleID')} has invalid context lineage")
+    query_ids = encode_plain_text(tokenizer, query)
+    if not query_ids:
+        raise ValueError(f"example {example['exampleID']} has an empty conditioning query")
+    if len(query_ids) > token_budget:
+        raise ValueError(f"example {example['exampleID']} query exceeds input token budget")
+
+    blocks: list[dict[str, Any]] = []
+    for event_id in context_event_ids:
+        event = events_by_id.get(event_id)
+        if event is None:
+            raise ValueError(f"example {example['exampleID']} references missing event {event_id}")
+        serialized = event.get("serialized")
+        if not isinstance(serialized, str) or not isinstance(json.loads(serialized), dict):
+            raise ValueError(f"compiled event {event_id} has invalid model serialization")
+        blocks.append(
+            {
+                "eventID": event_id,
+                "serialized": serialized,
+                "tokenIDs": encode_plain_text(tokenizer, serialized + "\n"),
+            }
+        )
+    expected_context = "\n".join(block["serialized"] for block in blocks)
+    expected_model_input = query if not expected_context else expected_context + "\n" + query
+    if example.get("context") != expected_context or example.get("modelInput") != expected_model_input:
+        raise ValueError(f"example {example['exampleID']} context lineage is inconsistent")
+
+    complete_token_count = len(query_ids) + sum(len(block["tokenIDs"]) for block in blocks)
+    remaining = token_budget - len(query_ids)
+    retained_reversed: list[dict[str, Any]] = []
+    for block in reversed(blocks):
+        block_ids = block["tokenIDs"]
+        if len(block_ids) <= remaining:
+            retained_reversed.append({**block, "contentTruncated": False})
+            remaining -= len(block_ids)
+            continue
+        truncated = truncate_oldest_event(block["serialized"], remaining, tokenizer)
+        if truncated is not None:
+            truncated_text, truncated_ids = truncated
+            retained_reversed.append(
+                {
+                    "eventID": block["eventID"],
+                    "serialized": truncated_text,
+                    "tokenIDs": truncated_ids,
+                    "contentTruncated": True,
+                }
+            )
+            remaining -= len(truncated_ids)
+        break
+
+    retained = list(reversed(retained_reversed))
+    history_ids: list[int] = []
+    spans: list[dict[str, Any]] = []
+    for block in retained:
+        start = len(history_ids)
+        history_ids.extend(block["tokenIDs"])
+        span = {
+            "eventID": block["eventID"],
+            "tokenStart": start,
+            "tokenEnd": len(history_ids),
+            "contentTruncated": block["contentTruncated"],
+            "serializedSHA256": hashlib.sha256(block["serialized"].encode()).hexdigest(),
+        }
+        if block["contentTruncated"]:
+            span["packedSerialized"] = block["serialized"]
+        spans.append(span)
+
+    input_ids = history_ids + query_ids
+    if len(input_ids) > token_budget:
+        raise AssertionError("event-aware input exceeds token budget")
+    if input_ids[-len(query_ids) :] != query_ids:
+        raise AssertionError("right-edge conditioning query was not preserved")
+    retained_ids = [span["eventID"] for span in spans]
+    if retained_ids and context_event_ids[-len(retained_ids) :] != retained_ids:
+        raise AssertionError("retained context events are not a chronological suffix")
+    partial_count = sum(1 for span in spans if span["contentTruncated"])
+    if partial_count > 1 or (partial_count and not spans[0]["contentTruncated"]):
+        raise AssertionError("only the oldest retained event may be content-truncated")
+
+    return {
+        "inputIDs": input_ids,
+        "queryIDs": query_ids,
+        "completeTokenCount": complete_token_count,
+        "historyTokenCount": len(history_ids),
+        "unusedTokenBudget": token_budget - len(input_ids),
+        "contextEventSpans": spans,
+        "sourceContextEventCount": len(context_event_ids),
+        "droppedContextEventCount": len(context_event_ids) - len(spans),
+        "partiallyRetainedContextEventCount": partial_count,
+    }
+
+
 def verify_resolved_target_event(
     example: dict[str, Any], event: dict[str, Any]
 ) -> int:
     """Prove target paste payloads remain resolved in the historical WRITE."""
-    serialized = json.loads(event["serialized"])
+    serialized = json.loads(event["auditSerialized"])
     target = example["target"]
     if serialized.get("content") != target.get("resolvedContent"):
         raise ValueError(f"example {example['exampleID']} resolved content disagrees with WRITE")
     target_segments = target.get("segments", [])
     if not any(segment.get("type") == "paste" for segment in target_segments):
-        # Legacy sessions predate structured collector authorship. Their v9
+        # Legacy sessions predate structured collector authorship. Their
         # targets are conservatively synthesized as authored text, so content
         # equality is the complete historical-preservation check available.
         return 0
@@ -314,16 +461,13 @@ def main() -> int:
         maximum_input_tokens_before_truncation = 0
         maximum_query_tokens = 0
         maximum_sequence_tokens = 0
+        maximum_unused_input_budget = 0
+        total_dropped_context_events = 0
+        total_partially_retained_context_events = 0
         resolved_paste_payloads_preserved_in_history = 0
         for example in examples:
-            model_input = example.get("modelInput")
-            query = example.get("query")
             segments = example.get("target", {}).get("segments")
-            if (
-                not isinstance(model_input, str)
-                or not isinstance(query, str)
-                or not isinstance(segments, list)
-            ):
+            if not isinstance(segments, list):
                 raise ValueError(f"example {example.get('exampleID')} has invalid input or target")
             target_event = events_by_id.get(example["targetEventID"])
             if target_event is None:
@@ -331,16 +475,12 @@ def main() -> int:
             resolved_paste_payloads_preserved_in_history += verify_resolved_target_event(
                 example, target_event
             )
-            complete_input_ids = encode_plain_text(reloaded_plain, model_input)
-            query_ids = encode_plain_text(reloaded_plain, query)
-            if not query_ids:
-                raise ValueError(f"example {example['exampleID']} has an empty conditioning query")
-            if len(query_ids) > arguments.input_token_budget:
-                raise ValueError(f"example {example['exampleID']} query exceeds input token budget")
-            input_ids = complete_input_ids[-arguments.input_token_budget :]
-            discarded = len(complete_input_ids) - len(input_ids)
-            if input_ids[-len(query_ids) :] != query_ids:
-                raise AssertionError("right-edge conditioning query was not preserved")
+            packed_input = pack_model_input(
+                example, events_by_id, reloaded_plain, arguments.input_token_budget
+            )
+            input_ids = packed_input["inputIDs"]
+            query_ids = packed_input["queryIDs"]
+            discarded = packed_input["completeTokenCount"] - len(input_ids)
             target_ids, segment_spans, paste_count = pack_target(
                 segments, reloaded_plain, paste_marker_token_ids, eos_token_id
             )
@@ -355,11 +495,9 @@ def main() -> int:
                 raise AssertionError("target labels do not match target tokens")
             if combined_ids[-1] != eos_token_id or labels[-1] != eos_token_id:
                 raise AssertionError("EOS is absent from input or loss")
-            if input_ids != complete_input_ids[-len(input_ids) :]:
-                raise AssertionError("input truncation did not retain the right edge")
 
             record = {
-                "schemaVersion": 2,
+                "schemaVersion": 3,
                 "packerVersion": PACKER_VERSION,
                 "exampleID": example["exampleID"],
                 "sessionID": example["sessionID"],
@@ -367,11 +505,19 @@ def main() -> int:
                 "inputIDs": combined_ids,
                 "labels": labels,
                 "attentionMask": attention_mask,
-                "modelInputTokenCountBeforeTruncation": len(complete_input_ids),
+                "modelInputTokenCountBeforePacking": packed_input["completeTokenCount"],
                 "modelInputTokenCount": len(input_ids),
                 "discardedModelInputTokenCount": discarded,
+                "historyTokenCount": packed_input["historyTokenCount"],
                 "rightEdgeQueryTokenCount": len(query_ids),
                 "rightEdgeQueryTokenSHA256": token_ids_sha256(query_ids),
+                "unusedModelInputTokenBudget": packed_input["unusedTokenBudget"],
+                "sourceContextEventCount": packed_input["sourceContextEventCount"],
+                "droppedContextEventCount": packed_input["droppedContextEventCount"],
+                "partiallyRetainedContextEventCount": (
+                    packed_input["partiallyRetainedContextEventCount"]
+                ),
+                "contextEventTokenSpans": packed_input["contextEventSpans"],
                 "targetTokenCount": len(target_ids),
                 "pasteActionCount": paste_count,
                 "pasteMarkerTokenCount": len(paste_marker_token_ids),
@@ -383,10 +529,17 @@ def main() -> int:
             total_input_tokens_discarded += discarded
             total_target_tokens += len(target_ids)
             maximum_input_tokens_before_truncation = max(
-                maximum_input_tokens_before_truncation, len(complete_input_ids)
+                maximum_input_tokens_before_truncation, packed_input["completeTokenCount"]
             )
             maximum_query_tokens = max(maximum_query_tokens, len(query_ids))
             maximum_sequence_tokens = max(maximum_sequence_tokens, len(combined_ids))
+            maximum_unused_input_budget = max(
+                maximum_unused_input_budget, packed_input["unusedTokenBudget"]
+            )
+            total_dropped_context_events += packed_input["droppedContextEventCount"]
+            total_partially_retained_context_events += (
+                packed_input["partiallyRetainedContextEventCount"]
+            )
 
         padding_audit = validate_padded_batch(
             packed_records,
@@ -403,7 +556,7 @@ def main() -> int:
             if path.is_file()
         }
         manifest = {
-            "schemaVersion": 2,
+            "schemaVersion": 3,
             "packerVersion": PACKER_VERSION,
             "createdAt": dt.datetime.now(dt.timezone.utc).isoformat().replace(
                 "+00:00", "Z"
@@ -442,8 +595,13 @@ def main() -> int:
             },
             "packing": {
                 "inputTokenBudget": arguments.input_token_budget,
-                "inputTruncation": "left_truncate_retain_right_edge",
+                "inputTruncation": "newest_complete_event_blocks_then_explicit_oldest_event_tail",
                 "rightEdgeConditioningQueryPreserved": True,
+                "eventBlock": "one canonical context event followed by newline",
+                "eventAware": True,
+                "partialJSONAllowed": False,
+                "oversizedOldestEventContent": "explicit_marker_plus_content_tail",
+                "contextTruncationMarker": CONTEXT_TRUNCATION_MARKER,
                 "ordinaryTextSpecialTokenHandling": "split_special_tokens",
                 "automaticSpecialTokens": False,
                 "targetConstruction": "authored_text_plus_reserved_paste_marker_string_plus_one_eos",
@@ -466,10 +624,15 @@ def main() -> int:
                 ),
                 "modelInputTokens": total_input_tokens,
                 "discardedModelInputTokens": total_input_tokens_discarded,
+                "droppedContextEventsAcrossExamples": total_dropped_context_events,
+                "partiallyRetainedContextEventsAcrossExamples": (
+                    total_partially_retained_context_events
+                ),
                 "targetTokens": total_target_tokens,
-                "maximumModelInputTokensBeforeTruncation": maximum_input_tokens_before_truncation,
+                "maximumModelInputTokensBeforePacking": maximum_input_tokens_before_truncation,
                 "maximumRightEdgeQueryTokens": maximum_query_tokens,
                 "maximumPackedSequenceTokens": maximum_sequence_tokens,
+                "maximumUnusedModelInputTokenBudget": maximum_unused_input_budget,
             },
         }
         manifest["artifactDigestsSHA256"] = {

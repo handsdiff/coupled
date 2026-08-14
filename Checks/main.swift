@@ -478,6 +478,23 @@ expect(compilerResult.contextExcludedEventCount == 1, "compiler removes a read s
 expect(compilerResult.rejectedEventCount == 3, "compiler records exclusions and rejections")
 
 let examples = readFixtureJSONL(fixtureOutput.appendingPathComponent("examples.jsonl"))
+let compiledEvents = readFixtureJSONL(fixtureOutput.appendingPathComponent("events.jsonl"))
+let compactRead = try! JSONSerialization.jsonObject(
+    with: Data((compiledEvents[0]["serialized"] as! String).utf8)
+) as! [String: Any]
+let auditRead = try! JSONSerialization.jsonObject(
+    with: Data((compiledEvents[0]["auditSerialized"] as! String).utf8)
+) as! [String: Any]
+expect(
+    compactRead["kind"] as! String == "read"
+        && compactRead["source"] == nil
+        && compactRead["schemaVersion"] == nil
+        && compactRead["bundleIdentifier"] == nil
+        && compactRead["provenance"] == nil
+        && auditRead["bundleIdentifier"] != nil
+        && auditRead["provenance"] != nil,
+    "model history is compact while the converted audit projection retains sensor metadata"
+)
 expect(
     examples[0]["contextEventIDs"] as! [String] == ["fixture-session:read:2"],
     "future read is excluded despite earlier emission"
@@ -678,10 +695,32 @@ let pasteExamples = readFixtureJSONL(
 )
 let pasteTargetSegments = ((pasteExamples[0]["target"] as! [String: Any])["segments"]
     as! [[String: Any]])
+let pasteCompiledEvents = readFixtureJSONL(
+    pasteFixtureOutput.appendingPathComponent("events.jsonl")
+)
+let compactPasteWrite = try! JSONSerialization.jsonObject(
+    with: Data((pasteCompiledEvents[0]["serialized"] as! String).utf8)
+) as! [String: Any]
+let auditPasteWrite = try! JSONSerialization.jsonObject(
+    with: Data((pasteCompiledEvents[0]["auditSerialized"] as! String).utf8)
+) as! [String: Any]
+let compactDestination = compactPasteWrite["destination"] as! [String: Any]
+let compactPasteSegments = compactPasteWrite["authorshipSegments"] as! [[String: Any]]
+let auditPasteSegments = auditPasteWrite["authorshipSegments"] as! [[String: Any]]
 expect(
     pasteTargetSegments[1]["type"] as! String == "paste"
         && pasteTargetSegments[1]["content"] == nil,
     "current target omits pasted payload and preserves a grounded paste action"
+)
+expect(
+    compactDestination["application"] as! String == "Fixture"
+        && compactPasteWrite["operation"] as! String == "insert"
+        && compactPasteSegments[1]["content"] as! String == "COPIED"
+        && compactPasteSegments[1]["clipboardSnapshotID"] == nil
+        && compactPasteWrite["characterOffset"] == nil
+        && auditPasteSegments[1]["clipboardSnapshotID"] as! String == "clipboard-1"
+        && auditPasteWrite["characterOffset"] != nil,
+    "compact WRITE history preserves semantics while audit history retains reconstruction evidence"
 )
 expect(
     (pasteExamples[1]["context"] as! String).contains("COPIED")

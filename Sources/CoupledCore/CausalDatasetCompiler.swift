@@ -6,7 +6,7 @@ public struct CausalDatasetCompilerConfiguration: Sendable {
     public let includeTimestampsInContext: Bool
 
     public init(
-        conversionVersion: String = "phase1-causal-v9",
+        conversionVersion: String = "phase1-causal-v10",
         includeTimestampsInContext: Bool = false
     ) {
         self.conversionVersion = conversionVersion
@@ -189,6 +189,11 @@ public struct CausalDatasetCompiler {
                         event,
                         availableAt: capturedAt,
                         includeTimestamp: configuration.includeTimestampsInContext
+                    ),
+                    auditSerialized: try serializeAuditContextEvent(
+                        event,
+                        availableAt: capturedAt,
+                        includeTimestamp: configuration.includeTimestampsInContext
                     )
                 ))
                 continue
@@ -220,6 +225,11 @@ public struct CausalDatasetCompiler {
                     availableAt: availableAt,
                     beganAt: beganAt,
                     serialized: try serializeContextEvent(
+                        canonicalEvent,
+                        availableAt: availableAt,
+                        includeTimestamp: configuration.includeTimestampsInContext
+                    ),
+                    auditSerialized: try serializeAuditContextEvent(
                         canonicalEvent,
                         availableAt: availableAt,
                         includeTimestamp: configuration.includeTimestampsInContext
@@ -328,7 +338,7 @@ public struct CausalDatasetCompiler {
                 continue
             }
             examples.append([
-                "schemaVersion": 8,
+                "schemaVersion": 9,
                 "exampleID": "\(sessionID):\(target.sourceEventID)",
                 "conversionVersion": configuration.conversionVersion,
                 "sessionID": sessionID,
@@ -404,7 +414,7 @@ public struct CausalDatasetCompiler {
             "raw.jsonl": try sha256(of: rawURL),
         ]
         let datasetManifest: [String: Any] = [
-            "schemaVersion": 9,
+            "schemaVersion": 10,
             "conversionVersion": configuration.conversionVersion,
             "sessionID": sessionID,
             "source": [
@@ -443,7 +453,8 @@ public struct CausalDatasetCompiler {
                 "writeProjection": "canonical minimum contiguous diff of raw logical BEFORE and used observation",
             ],
             "serialization": [
-                "contextVersion": 1,
+                "contextVersion": 2,
+                "auditContextVersion": 1,
                 "queryVersion": 3,
                 "targetVersion": 8,
                 "targetFormat": "structured_authorship_segments",
@@ -461,10 +472,10 @@ public struct CausalDatasetCompiler {
             ],
             "contextPacking": [
                 "state": "unpacked_complete_model_input",
-                "requiredNextStep": "tokenize modelInput with the selected model tokenizer and retain its most recent L tokens",
+                "requiredNextStep": "tokenize context events independently; retain the newest complete events and query within L; explicitly tail-truncate only the oldest retained oversized event",
                 "initialPhase1TokenBudget": 32_768,
                 "rightEdge": "write conditioning query",
-                "reason": "token suffixes are model-tokenizer dependent; query remains while older history truncates first",
+                "reason": "event-aware tokenizer packing preserves valid model-facing records and the complete query while older history truncates first",
             ],
             "loader": [
                 "targetSource": "example.target.segments",
@@ -511,6 +522,7 @@ private struct ConvertedEvent {
     let availableAt: String
     let beganAt: String?
     let serialized: String
+    let auditSerialized: String
 }
 
 private func staleReadCandidate(
@@ -816,6 +828,44 @@ private func serializeContextEvent(
     includeTimestamp: Bool
 ) throws -> String {
     let kind = event.string("kind")!
+    let location = compactJSONObject([
+        "application": nonEmpty(event.string("appName")),
+        "window": nonEmpty(event.string("windowTitle")),
+    ])
+    var serialized: [String: Any] = compactJSONObject([
+        "kind": kind,
+        "content": event.string("content") ?? "",
+        (kind == "read" ? "source" : "destination"): location.isEmpty ? nil : location,
+    ])
+    if includeTimestamp { serialized["availableAt"] = availableAt }
+    if kind == "write" {
+        serialized["operation"] = event.string("operation") ?? ""
+        if let removed = nonEmpty(event.string("removedContent")) {
+            serialized["removedContent"] = removed
+        }
+        if let segments = event["authorshipSegments"] as? [[String: Any]] {
+            // Historical writes retain the resolved document text and the
+            // authorship of pasted spans. Collector checkpoint IDs stay in the
+            // audit projection; payloads remain because they were causally available.
+            serialized["authorshipSegments"] = segments.map { segment in
+                compactJSONObject([
+                    "type": segment.string("type"),
+                    "content": segment.string("content"),
+                ])
+            }
+            serialized["authorshipResolution"] = event.string("authorshipResolution")
+                ?? "unresolved"
+        }
+    }
+    return try canonicalJSONString(serialized)
+}
+
+private func serializeAuditContextEvent(
+    _ event: [String: Any],
+    availableAt: String,
+    includeTimestamp: Bool
+) throws -> String {
+    let kind = event.string("kind")!
     var serialized: [String: Any] = [
         "schemaVersion": 1,
         "kind": kind,
@@ -832,15 +882,17 @@ private func serializeContextEvent(
         serialized["characterOffset"] = event.number("characterOffset")?.intValue ?? 0
         serialized["boundaryReason"] = event.string("boundaryReason") ?? ""
         if let segments = event["authorshipSegments"] as? [[String: Any]] {
-            // Historical writes retain the resolved document text and the
-            // provenance of pasted spans. Unlike the current target, paste
-            // payloads remain visible here because they were causally available.
             serialized["authorshipSegments"] = segments
             serialized["authorshipResolution"] = event.string("authorshipResolution")
                 ?? "unresolved"
         }
     }
     return try canonicalJSONString(serialized)
+}
+
+private func nonEmpty(_ value: String?) -> String? {
+    guard let value, !value.isEmpty else { return nil }
+    return value
 }
 
 private func writeConditioningState(
@@ -1213,6 +1265,7 @@ private func convertedRecord(
         "kind": event.kind,
         "availableAt": event.availableAt,
         "serialized": event.serialized,
+        "auditSerialized": event.auditSerialized,
         "sourceRecordIDs": event.object.stringArray("sourceRecordIDs"),
     ]
     if let beganAt = event.beganAt { record["beganAt"] = beganAt }

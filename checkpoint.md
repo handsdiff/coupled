@@ -112,7 +112,7 @@ Implemented safeguards:
 
 ## Implemented causal compilation
 
-Current compiler: `phase1-causal-v9`
+Current compiler: `phase1-causal-v10`
 
 Timing:
 
@@ -131,6 +131,7 @@ The compiler:
 - repairs known legacy synthetic deletions;
 - excludes stale reads from older sessions;
 - serializes causal READ/WRITE history;
+- uses compact model-facing history while retaining the richer canonical projection as `auditSerialized`;
 - appends pre-mutation destination/cursor/clipboard conditioning as the query;
 - emits structured authored-text and grounded paste-action targets;
 - excludes pure deletions;
@@ -150,7 +151,7 @@ Implemented:
 - The tokenizer-specific packer is connected to `Qwen/Qwen3.5-9B-Base` revision `68c46c4b3498877f3ef123c856ecfde50c39f404`.
 - The saved tokenizer retains Qwen's original 248,077-entry vocabulary; `<|paste|>` encodes as the five existing IDs `[27, 91, 54966, 91, 29]`, and Qwen EOS remains `248044`.
 - Packed causal-LM labels mask all history/query and padding positions with `-100`; authored tokens, paste actions, and exactly one trailing EOS receive loss.
-- Input packing retains the most recent 32K model-input tokens and verifies that the right-edge destination/cursor/clipboard query survives truncation.
+- Input packing retains the newest complete causal event blocks within 32K, explicitly tail-truncates only an oversized oldest event's content, never emits partial JSON, and verifies that the right-edge destination/cursor/clipboard query survives intact.
 - The model vocabulary is not resized or otherwise modified. Exact decoded `<|paste|>` is interpreted as the action marker at inference; partial markers are invalid.
 
 A literal EOS string must not be inserted into source targets.
@@ -183,7 +184,7 @@ The helper-window issue was fixed in `9f0457b` and subsequently passed the activ
 - all six emitted READs matched their capture-time application, window, and visible content;
 - no Accessibility errors or event-tap timeouts;
 - unresolved paste transitions were target-ineligible rather than silently treated as authored targets;
-- successful `phase1-causal-v9` compilation and causal audit.
+- successful `phase1-causal-v10` compilation and causal audit.
 
 It exposed one typed checkpoint that was fully deleted before settlement but was resurrected as a WRITE. Commit `228e763` removed that fallback and added a compiler-side rejection for older traces.
 
@@ -202,15 +203,15 @@ It exposed one typed checkpoint that was fully deleted before settlement but was
 - each insertion retains the semantic left/right context from its own starting location;
 - no document-spanning replacement was produced;
 - pure deletion events remain history but are excluded as Phase 1 content targets;
-- `phase1-causal-v9` compiled 13 events into seven nonempty targets with zero reconstruction rejection and passed its causal audit.
+- `phase1-causal-v10` compiled 13 events into seven nonempty targets with zero reconstruction rejection and passed its causal audit.
 
 Tokenizer packing validation confirmed:
 
-- `paste-read-attribution-test-1-phase1-v9c` packed five examples with four structured paste actions; each became the same five-ID reserved marker sequence and every target ended in one loss-bearing EOS.
+- `paste-read-attribution-test-1-phase1-v10` packed five examples with four structured paste actions; each became the same five-ID reserved marker sequence and every target ended in one loss-bearing EOS.
 - Resolved payloads for all four paste targets remained in their historical WRITE serialization while being absent from the current target spans.
 - The current compiler rebuilt Run 5 as 424 causal events, 48 targets, 147 target exclusions, 110 context exclusions, and one explicit reconstruction rejection; its causal audit passed.
-- Run 5's 48 examples packed with the actual Qwen tokenizer. The longest untruncated model input was 90,106 tokens; 57,338 oldest tokens were removed from that example, while its 118-token right-edge conditioning query remained intact.
-- Across Run 5, 834,958 old input tokens were truncated. Every model-input label was masked, padding behavior passed, and every target ended in Qwen EOS.
+- Run 5's 48 examples packed with the actual Qwen tokenizer and compact context serializer. The longest complete model input was 78,231 tokens. Event-aware packing discarded 608,395 old input tokens and 3,335 old event instances across examples; 17 boundary events were retained as valid JSON with explicit content-tail truncation.
+- No malformed partial JSON entered model input. Every right-edge conditioning query remained intact, every model-input label was masked, padding behavior passed, and every target ended in Qwen EOS.
 - Run 5 predates structured paste authorship and therefore is only a long-context/token-shape test, not evidence for paste-target fidelity.
 
 ## Target authorship
@@ -254,14 +255,35 @@ Current and intended Phase 1 policy:
 - Proven Cmd-V paste is a grounded action in the target.
 - A general motor-action policy is outside the current content-prediction objective.
 
+## Phase 1 ablation readiness
+
+The authoritative compiled examples remain tokenizer-independent. They retain the complete causally eligible event-ID sequence, compact serialized text, rich audit projection, conditioning query, structured authorship target, and resolved write content. Token packing is a separate reproducible artifact.
+
+Ready from the current data and packer:
+
+- **Time data:** compile the same frozen source with or without `--include-timestamps-in-context`; timestamps remain outside target loss.
+- **Qwen context scaling:** repack the same compiled examples at 8K, 16K, 32K, and 64K with `--input-token-budget`; event-aware truncation keeps the query and valid event records intact.
+- **Behavioral-cloning target:** current labels implement authored text, grounded paste markers, and EOS only.
+
+The substrate is ready, but an experiment harness is still required:
+
+- **Learning objective:** `resolvedContent`, structured paste actions, and target lineage support either token NLL or a resolved-content semantic reward, but GRPO/RLOO and reward execution are not implemented.
+- **Checkpoint recency:** event chronology supports identical daily scoring, but immutable daily model lineage, replay, and `d`, `d-1`, `d-3`, `d-7` scoring are not implemented.
+- **Sliding window versus retrieval:** every causally available event remains addressable by ID, but BM25 query preprocessing, retrieval selection, and a frozen retrieval-plan artifact are not implemented.
+- **Direct versus private reasoning:** the same input and final target can be reused, but scratchpad generation, final-answer isolation, latency accounting, and scoring are not implemented.
+- **Continual Qwen versus closed ICL:** source examples are reusable, but training, provider adapters, and matched scoring are not implemented.
+- **Open- and closed-model scaling:** model-specific tokenization is supported in principle, but the present packer selects the retained event suffix under each tokenizer. Before cross-model comparison, freeze a tokenizer-independent context plan containing the exact event IDs and serialized text so every model receives the same information.
+
+No ablation requires changing the collector schema. The principal missing layer is a prospective experiment harness that freezes day boundaries, context/retrieval plans, model lineage, decoding, target resolution, scores, latency, and cost. Phase 2 will require a new conversion admitting displayed model proposals into the appropriate history; Phase 3 will additionally need stronger resource/world-state identity, which is not a Phase 1 collection blocker.
+
 ## Remaining requirements
 
 ### Before the next authoritative collection
 
-The focused component gates are complete. Treat `25309bf`, `phase1-causal-v9`, and the current three-second delays/crop configuration as the candidate baseline for an ordinary-work audit run.
+The focused component gates are complete. Treat `phase1-causal-v10` and the current three-second delays/crop configuration as the candidate baseline for an ordinary-work audit run.
 
 1. Run normal work without changing collector rules mid-session.
-2. Compile the session with `phase1-causal-v9` and preserve the source digests and audit outputs.
+2. Compile the session with `phase1-causal-v10` and preserve the source digests and audit outputs.
 3. Manually sample the temporal trace against the actual work and record Phase 1's fidelity categories: missing events, temporal-ordering errors, incorrect content inclusion, authorship errors, write-boundary disagreement, destination ambiguity, and future leakage.
 4. Quantify target eligibility and exclusion reasons, including pure deletion, unresolved paste authorship, incomplete semantic cursor state, and rejected reconstruction.
 5. Fix only recurrent material errors demonstrated by that trace. If no training-blocking class appears, freeze the collector/configuration/conversion as the first immutable dataset version.
