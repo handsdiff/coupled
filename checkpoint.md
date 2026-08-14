@@ -1,6 +1,6 @@
 # Coupled checkpoint
 
-Base commit for this checkpoint: `9f0457b`
+Last committed implementation: `228e763`, built on the grounded-paste implementation in `bcec3bc`. The focused paste/read-attribution and reverted-write acceptance traces have passed. This is now the candidate baseline for the next ordinary-work fidelity audit; further collector changes are not treated as complete here until committed and validated.
 
 ## Objective
 
@@ -8,8 +8,8 @@ Construct a high-fidelity causal stream approximating:
 
 ```text
 information the user was exposed to
-+ current destination and semantic cursor state
-→ next user-generated written content
++ current destination, semantic cursor state, and clipboard state
+→ next authored text and grounded write actions
 ```
 
 Raw collection must preserve enough evidence to revise event construction later. Derived events and training examples are versioned interpretations, not authoritative raw truth.
@@ -35,10 +35,10 @@ A WRITE event retains the complete observed net edit:
 The intended Phase 1 training target is narrower:
 
 ```text
-target = user-generated content or grounded action markers + EOS
+target sequence = authored text + grounded paste actions + loader-appended EOS
 ```
 
-Operation, removal, offsets, destination, timestamps, and cursor metadata do not receive target loss.
+Operation, removal, offsets, destination, timestamps, cursor metadata, and pasted payload tokens do not receive target loss. A proven paste action receives loss as one atomic token; its resolved payload remains available in the WRITE event and in later history.
 
 ## Implemented collection
 
@@ -53,7 +53,7 @@ Supported applications:
 Mechanism:
 
 1. Intercept the first mutating input.
-2. Capture the focused editable's complete `BEFORE` state before returning the input to the application.
+2. Capture the focused editable's `BEFORE` state, complete within the configured value bound, before returning the input to the application; explicitly reject truncated evidence where reconstruction requires the missing text.
 3. Reset `WRITE_DELAY` after each subsequent input.
 4. Capture the held editable's terminal state.
 5. Derive the canonical minimum contiguous `BEFORE → AFTER` edit.
@@ -62,6 +62,7 @@ Mechanism:
 Implemented safeguards:
 
 - Cursor position does not influence diff reconstruction.
+- Mouse-down selection changes and keyboard caret/selection navigation settle the current WRITE before the relocation reaches the application; the next mutation starts with fresh destination and cursor conditioning.
 - The synthetic `BEFORE → empty` deletion fallback has been removed.
 - Invalid terminal elements become unresolved unless a valid Return or paste checkpoint exists.
 - A temporary typed checkpoint which returns to the original settled field state is no change, not a resurrected WRITE.
@@ -71,7 +72,7 @@ Implemented safeguards:
 - Large deletions must be supported by complete observed `BEFORE` and `AFTER` states.
 - Numeric cursor fidelity remains diagnostic and does not alter the diff.
 
-### Semantic cursor conditioning
+### Pre-mutation conditioning
 
 Each WRITE attempts to retain:
 
@@ -79,7 +80,8 @@ Each WRITE attempts to retain:
 - window and Accessibility role;
 - field label or description when available;
 - left context, selected text, and right context;
-- field state and prompt state.
+- field state and prompt state;
+- current clipboard text, types, hash, truncation state, and pasteboard version.
 
 Range-native Accessibility text is preferred. Pixel coordinates and numeric AX offsets are diagnostic rather than the semantic definition of cursor position.
 
@@ -135,7 +137,7 @@ The compiler:
 - records target and context exclusions explicitly;
 - audits lineage back to source records.
 
-For range-native semantic cursor contexts, current compiler behavior accepts complete semantic conditioning even when unreliable numeric AX offsets disagree. Phase 1 text that still requires numeric offset agreement should be updated to match this decision.
+For range-native semantic cursor contexts, complete semantic conditioning remains eligible even when unreliable numeric AX offsets disagree. Numeric offsets are diagnostic and do not alter reconstruction or impose a separate target gate. Phase 1 now states the same rule.
 
 ## EOS status
 
@@ -164,7 +166,28 @@ It also exposed:
 - Obsidian-generated list and zero-width formatting entering net write content;
 - application activation selecting tiny helper windows.
 
-The helper-window issue was fixed in `9f0457b` but has not yet been validated in a new live trace.
+The helper-window issue was fixed in `9f0457b` and subsequently passed the activation portion of `paste-read-attribution-test-1`.
+
+`paste-read-attribution-test-1` confirmed:
+
+- exact Obsidian authored/paste/authored segmentation;
+- exact Chrome paste-only segmentation;
+- exact Codex authored/paste recovery after rapid Return and terminal invalidation;
+- clipboard state present in pre-mutation conditioning;
+- pasted payload omitted from the current structured target but retained with provenance in later WRITE history;
+- all six emitted READs matched their capture-time application, window, and visible content;
+- no Accessibility errors or event-tap timeouts;
+- unresolved paste transitions were target-ineligible rather than silently treated as authored targets;
+- successful `phase1-causal-v9` compilation and causal audit.
+
+It exposed one typed checkpoint that was fully deleted before settlement but was resurrected as a WRITE. Commit `228e763` removed that fallback and added a compiler-side rejection for older traces.
+
+`reverted-write-test-1` then confirmed:
+
+- identical settled `BEFORE` and `AFTER` produce raw `resolution: no_change`;
+- no derived WRITE or proposed event ID is emitted;
+- the causal compiler produces no training example for the burst;
+- the corrected schema versions and causal audit pass.
 
 ## Target authorship
 
@@ -211,17 +234,21 @@ Current and intended Phase 1 policy:
 
 ### Before the next authoritative collection
 
-1. Validate the auxiliary-window activation fix.
-2. Inspect another short trace for READ attribution and active-write exclusion.
-3. Validate typed, paste-only, and mixed Cmd-V writes against the new authorship fields.
-4. Freeze the next compiler version only after that trace passes.
+The prior focused component gates are complete. A same-editable cursor-relocation boundary has now been implemented on top of `228e763` and must pass one focused acceptance trace before the baseline is used for an ordinary-work audit run.
+
+1. Confirm that typing at one location, relocating the caret within `WRITE_DELAY`, and typing elsewhere in the same editable produces two independently conditioned WRITEs.
+2. Run normal work without changing collector rules mid-session.
+3. Compile the session with `phase1-causal-v9` and preserve the source digests and audit outputs.
+4. Manually sample the temporal trace against the actual work and record Phase 1's fidelity categories: missing events, temporal-ordering errors, incorrect content inclusion, authorship errors, write-boundary disagreement, destination ambiguity, and future leakage.
+5. Quantify target eligibility and exclusion reasons, including pure deletion, unresolved paste authorship, incomplete semantic cursor state, and rejected reconstruction.
+6. Fix only recurrent material errors demonstrated by that trace. If no training-blocking class appears, freeze the collector/configuration/conversion as the first immutable dataset version.
 
 ### Before initial offline training
 
-1. Connect the tested target-loader contract to the chosen model tokenizer.
-2. Reconcile Phase 1's cursor-eligibility language with compiler behavior.
-3. Audit sampled examples for authorship, boundaries, future leakage, and destination correctness.
-4. Freeze the conversion version and immutable dataset.
+1. Pass the ordinary-work reconstruction audit above and freeze an immutable dataset version.
+2. Connect the tested target-loader contract to the chosen model tokenizer, register one atomic paste token distinct from EOS, and ensure its embedding/output parameters are trainable and saved.
+3. Verify packed examples preserve the right-edge destination/cursor/clipboard query, map each proven paste to one token, append exactly one EOS, and mask loss from all model-input and pasted-payload tokens.
+4. Run the Obsidian-only Phase 1 smoke test before the full prospective interleaved-stream experiment.
 
 ### Before live prediction
 
@@ -243,12 +270,4 @@ Current and intended Phase 1 policy:
 
 ## Next step
 
-Run a short activation test against `9f0457b`:
-
-1. Cmd-Tab into Obsidian with the pointer stationary.
-2. Wait longer than `READ_DELAY`.
-3. Cmd-Tab into Chrome with the pointer stationary.
-4. Wait again.
-5. Confirm both READs use full content-window bounds and matching OCR.
-
-Do not stack additional collector changes until this trace is inspected.
+Validate the same-editable cursor-relocation boundary with one short trace. If it passes, run one ordinary-work candidate session with that baseline, then compile and audit it before changing capture behavior. This tests the Thesis claim at the right level: whether the interleaved stream faithfully preserves the information-to-authored-output conversion during natural work, rather than whether isolated sensors can pass synthetic cases. Focus-time conditioning remains required before live prediction, but it is not a blocker for this offline training-data audit because the current pre-mutation query is causally valid for completed examples.

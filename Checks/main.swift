@@ -9,6 +9,18 @@ func expect(_ condition: @autoclosure () -> Bool, _ message: String) {
 }
 
 expect(
+    isWriteSelectionBoundaryKey(keyCode: 123, commandPressed: false)
+        && isWriteSelectionBoundaryKey(keyCode: 48, commandPressed: false)
+        && isWriteSelectionBoundaryKey(keyCode: 0, commandPressed: true),
+    "caret, focus-traversal, and select-all keys close an active write"
+)
+expect(
+    !isWriteSelectionBoundaryKey(keyCode: 0, commandPressed: false)
+        && !isWriteSelectionBoundaryKey(keyCode: 9, commandPressed: true),
+    "ordinary typing and paste remain inside the current write burst"
+)
+
+expect(
     minimalTextEdit(from: "hello world", to: "hello brave world")
         == TextEdit(operation: .insert, characterOffset: 6, removed: "", inserted: "brave "),
     "middle insertion"

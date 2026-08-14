@@ -80,7 +80,15 @@ final class ActiveTapWriteCollector {
     }
 
     private func installActiveEventTap() -> Bool {
-        let mask = CGEventMask(1) << CGEventMask(CGEventType.keyDown.rawValue)
+        let observedTypes: [CGEventType] = [
+            .keyDown,
+            .leftMouseDown,
+            .rightMouseDown,
+            .otherMouseDown,
+        ]
+        let mask = observedTypes.reduce(CGEventMask(0)) { partial, type in
+            partial | (CGEventMask(1) << CGEventMask(type.rawValue))
+        }
         let callback: CGEventTapCallBack = { _, type, event, userInfo in
             guard let userInfo else { return Unmanaged.passUnretained(event) }
             let collector = Unmanaged<ActiveTapWriteCollector>
@@ -92,7 +100,11 @@ final class ActiveTapWriteCollector {
                 return Unmanaged.passUnretained(event)
             }
 
-            collector.handleKeyDown(event)
+            if type == .keyDown {
+                collector.handleKeyDown(event)
+            } else {
+                collector.handlePointerBoundary(type)
+            }
             return Unmanaged.passUnretained(event)
         }
 
@@ -179,6 +191,14 @@ final class ActiveTapWriteCollector {
 
             if remainsOnTarget {
                 completeOutstandingPasteCheckpointsSynchronously()
+                if classification.isSelectionBoundary {
+                    completeCapture(
+                        boundaryReason: "selection_navigation",
+                        deferPersistence: true,
+                        callbackStartedNanoseconds: callbackStarted
+                    )
+                    return
+                }
                 let returnCheckpoint = classification.isUnmodifiedReturn
                     ? captureReturnCheckpoint(
                         for: pending,
@@ -275,6 +295,19 @@ final class ActiveTapWriteCollector {
         } else {
             scheduleMutationCheckpoint(event: event, inputObservedAt: inputObservedAt)
         }
+    }
+
+    private func handlePointerBoundary(_ type: CGEventType) {
+        let callbackStarted = DispatchTime.now().uptimeNanoseconds
+        guard pending != nil else { return }
+        completeOutstandingPasteCheckpointsSynchronously()
+        completeCapture(
+            boundaryReason: type == .leftMouseDown
+                ? "pointer_selection_boundary"
+                : "pointer_context_boundary",
+            deferPersistence: true,
+            callbackStartedNanoseconds: callbackStarted
+        )
     }
 
     private func startPending(
@@ -1693,23 +1726,37 @@ private struct KeyClassification {
     let hint: String
     let isUnmodifiedReturn: Bool
     let isPaste: Bool
+    let isSelectionBoundary: Bool
 
     init(
         canStartWrite: Bool,
         hint: String,
         isUnmodifiedReturn: Bool = false,
-        isPaste: Bool = false
+        isPaste: Bool = false,
+        isSelectionBoundary: Bool = false
     ) {
         self.canStartWrite = canStartWrite
         self.hint = hint
         self.isUnmodifiedReturn = isUnmodifiedReturn
         self.isPaste = isPaste
+        self.isSelectionBoundary = isSelectionBoundary
     }
 }
 
 private func classifyKey(_ event: CGEvent) -> KeyClassification {
     let code = event.getIntegerValueField(.keyboardEventKeycode)
-    if event.flags.contains(.maskCommand) {
+    let commandPressed = event.flags.contains(.maskCommand)
+    if isWriteSelectionBoundaryKey(
+        keyCode: code,
+        commandPressed: commandPressed
+    ) {
+        return KeyClassification(
+            canStartWrite: false,
+            hint: commandPressed && code == 0 ? "select_all" : "selection_navigation",
+            isSelectionBoundary: true
+        )
+    }
+    if commandPressed {
         switch code {
         case 9: return KeyClassification(canStartWrite: true, hint: "paste", isPaste: true)
         case 7: return KeyClassification(canStartWrite: true, hint: "cut")
