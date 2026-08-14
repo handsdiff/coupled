@@ -28,3 +28,8 @@ swiftc \
   -o "$check_binary"
 
 "$check_binary"
+
+PYTHONPYCACHEPREFIX="$project_dir/.build/python-cache" \
+python3 -m py_compile \
+  "$project_dir/scripts/pack-phase1-dataset.py" \
+  "$project_dir/scripts/audit-phase1-packed.py"

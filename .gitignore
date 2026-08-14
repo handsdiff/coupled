@@ -1,6 +1,7 @@
 .build/
 .swiftpm/
 coupled-data/
+__pycache__/
 dist/
 *.jsonl
 .DS_Store

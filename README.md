@@ -350,6 +350,38 @@ tokens, paste actions, and EOS—not pasted payload tokens. EOS is structural;
 it is not part of captured human content. Thus tokenizer-specific packing is a
 deterministic loader step, not a sensor or causality assumption.
 
+Pack a compiled dataset with the selected Qwen tokenizer in an isolated Python
+environment:
+
+```sh
+uv venv .build/tokenizer-venv
+uv pip install --python .build/tokenizer-venv/bin/python \
+  -r scripts/tokenizer-requirements.txt
+
+.build/tokenizer-venv/bin/python scripts/pack-phase1-dataset.py \
+  --input ./coupled-data/SESSION-phase1-v9 \
+  --output ./coupled-data/SESSION-phase1-v9-qwen-pack \
+  --revision 68c46c4b3498877f3ef123c856ecfde50c39f404
+
+python3 scripts/audit-phase1-packed.py \
+  ./coupled-data/SESSION-phase1-v9-qwen-pack
+```
+
+The packer refuses an existing output directory and does not modify the causal
+dataset. `packed-examples.jsonl` contains the combined input/target token IDs,
+attention mask, and causal-LM labels. Model-input labels are `-100`; authored
+text, one token per grounded paste, and the final EOS receive loss. The saved
+`tokenizer/` directory includes the added atomic `<|paste|>` token, while
+`packing.json` pins the tokenizer revision, IDs, dependency versions, file
+digests, truncation rule, and audit counts. Ordinary human text is encoded with
+special-marker splitting, so a literal string such as `<|paste|>` cannot be
+mistaken for a proven paste action.
+
+When the model training harness loads this tokenizer, it must resize the
+model's input/output embeddings to `savedVocabularySize`, train the new paste
+row, and save both the model and tokenizer. This is a model-loading step, not a
+dataset-packing step.
+
 ## Experimental interpretation
 
 The older `collect` command attempts to observe what text was plausibly visible

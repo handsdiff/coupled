@@ -147,6 +147,11 @@ Implemented:
 - The loader contract tokenizes authored spans, maps each paste action to one atomic token, and appends exactly one EOS.
 - Authored tokens, paste-action tokens, and EOS receive loss; pasted payload tokens do not.
 - Dataset checks enforce the contract.
+- The tokenizer-specific packer is connected to `Qwen/Qwen3.5-9B-Base` revision `68c46c4b3498877f3ef123c856ecfde50c39f404`.
+- The saved tokenizer adds exactly one atomic `<|paste|>` token (`248077`) distinct from Qwen EOS (`248044`), and survives save/reload with stable IDs.
+- Packed causal-LM labels mask all history/query and padding positions with `-100`; authored tokens, paste actions, and exactly one trailing EOS receive loss.
+- Input packing retains the most recent 32K model-input tokens and verifies that the right-edge destination/cursor/clipboard query survives truncation.
+- Literal marker-shaped human text is tokenized as ordinary text rather than being interpreted as paste or EOS.
 
 A literal EOS string must not be inserted into source targets.
 
@@ -198,6 +203,15 @@ It exposed one typed checkpoint that was fully deleted before settlement but was
 - no document-spanning replacement was produced;
 - pure deletion events remain history but are excluded as Phase 1 content targets;
 - `phase1-causal-v9` compiled 13 events into seven nonempty targets with zero reconstruction rejection and passed its causal audit.
+
+Tokenizer packing validation confirmed:
+
+- `paste-read-attribution-test-1-phase1-v9b` packed five examples with four structured paste actions; each became exactly one paste token and every target ended in one loss-bearing EOS.
+- Resolved payloads for all four paste targets remained in their historical WRITE serialization while being absent from the current target spans.
+- The current compiler rebuilt Run 5 as 424 causal events, 48 targets, 147 target exclusions, 110 context exclusions, and one explicit reconstruction rejection; its causal audit passed.
+- Run 5's 48 examples packed with the actual Qwen tokenizer. The longest untruncated model input was 90,106 tokens; 57,338 oldest tokens were removed from that example, while its 118-token right-edge conditioning query remained intact.
+- Across Run 5, 834,958 old input tokens were truncated. Every model-input label was masked, padding behavior passed, and every target ended in Qwen EOS.
+- Run 5 predates structured paste authorship and therefore is only a long-context/token-shape test, not evidence for paste-target fidelity.
 
 ## Target authorship
 
@@ -255,9 +269,8 @@ The focused component gates are complete. Treat `25309bf`, `phase1-causal-v9`, a
 ### Before initial offline training
 
 1. Pass the ordinary-work reconstruction audit above and freeze an immutable dataset version.
-2. Connect the tested target-loader contract to the chosen model tokenizer, register one atomic paste token distinct from EOS, and ensure its embedding/output parameters are trainable and saved.
-3. Verify packed examples preserve the right-edge destination/cursor/clipboard query, map each proven paste to one token, append exactly one EOS, and mask loss from all model-input and pasted-payload tokens.
-4. Run the Obsidian-only Phase 1 smoke test before the full prospective interleaved-stream experiment.
+2. Load the saved tokenizer with the selected model, resize its input/output embeddings from 248,077 to 248,078 entries, and verify the new paste row is trainable and saved with the checkpoint.
+3. Run the Obsidian-only Phase 1 smoke test before the full prospective interleaved-stream experiment.
 
 ### Before live prediction
 
