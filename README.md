@@ -179,8 +179,10 @@ read delay and therefore settles after the write.
   trigger surface, the stale candidate remains raw and a fresh delay starts for
   the newly observed surface instead of immediately emitting it. Pointer
   activity is globally collapsed to one pending attention candidate, app
-  activation starts a new interval, and a short post-click observation lets
-  navigation finish before its interval begins. A surface change while the
+  activation starts a new interval using the plausible content window beneath
+  the pointer or the app's largest plausible window (not narrow renderer and
+  toolbar helpers), and a short post-click observation lets navigation finish
+  before its interval begins. A surface change while the
   asynchronous screenshot is completing suppresses the derived read and starts
   another interval. These rules prevent old per-window timers from capturing a
   newly visible surface before it has satisfied `READ_DELAY`.

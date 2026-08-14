@@ -619,9 +619,14 @@ final class ReadCandidateCollector {
     }
 
     private func observeActivatedApplication(_ application: NSRunningApplication) {
-        guard !configuration.isPaused(),
-              let window = topmostWindow(ownedBy: application.processIdentifier) else { return }
-        let point = CGPoint(x: window.bounds.midX, y: window.bounds.midY)
+        guard !configuration.isPaused() else { return }
+        let pointerPoint = CGEvent(source: nil)?.location
+        guard let window = primaryContentWindow(
+            ownedBy: application.processIdentifier,
+            near: pointerPoint
+        ) else { return }
+        let point = pointerPoint.flatMap { window.bounds.contains($0) ? $0 : nil }
+            ?? CGPoint(x: window.bounds.midX, y: window.bounds.midY)
         guard let surface = eligibleSurface(window: window, at: point) else { return }
         beginSurfaceTransitionInterval(
             surface,
@@ -1160,9 +1165,34 @@ private func topmostWindow(at point: CGPoint) -> PointerWindowContext? {
 }
 
 private func topmostWindow(ownedBy processIdentifier: Int32) -> PointerWindowContext? {
+    onScreenWindows(ownedBy: processIdentifier).first
+}
+
+/// App activation can publish narrow scrollbars, tab strips, and renderer
+/// helpers ahead of the document window. Prefer a plausible window beneath the
+/// pointer, then the largest plausible window owned by the activated app.
+private func primaryContentWindow(
+    ownedBy processIdentifier: Int32,
+    near point: CGPoint?
+) -> PointerWindowContext? {
+    let candidates = onScreenWindows(ownedBy: processIdentifier).filter {
+        $0.bounds.width >= 100 && $0.bounds.height >= 300
+    }
+    if let point, let pointed = candidates.first(where: { $0.bounds.contains(point) }) {
+        return pointed
+    }
+    return candidates.max {
+        ($0.bounds.width * $0.bounds.height) < ($1.bounds.width * $1.bounds.height)
+    }
+}
+
+private func onScreenWindows(ownedBy processIdentifier: Int32)
+    -> [PointerWindowContext]
+{
     let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
     guard let rawList = CGWindowListCopyWindowInfo(options, kCGNullWindowID),
-          let windows = rawList as? [[String: Any]] else { return nil }
+          let windows = rawList as? [[String: Any]] else { return [] }
+    var result = [PointerWindowContext]()
     for window in windows {
         let layer = (window[kCGWindowLayer as String] as? NSNumber)?.intValue
         let ownerPID = (window[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value
@@ -1177,15 +1207,15 @@ private func topmostWindow(ownedBy processIdentifier: Int32) -> PointerWindowCon
             continue
         }
         let rawTitle = window[kCGWindowName as String] as? String
-        return PointerWindowContext(
+        result.append(PointerWindowContext(
             windowID: windowID,
             ownerProcessIdentifier: processIdentifier,
             ownerName: window[kCGWindowOwnerName as String] as? String,
             title: rawTitle?.isEmpty == false ? rawTitle : nil,
             bounds: bounds
-        )
+        ))
     }
-    return nil
+    return result
 }
 
 private func readTrigger(_ type: CGEventType) -> String? {
