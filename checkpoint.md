@@ -72,7 +72,7 @@ Implemented safeguards:
 - Cmd-V payload plus immediate pre/post-paste field states are retained raw.
 - Large deletions must be supported by complete observed `BEFORE` and `AFTER` states.
 - Numeric cursor fidelity remains diagnostic and does not alter the diff.
-- If an eligible editable remains semantically empty across Accessibility observations, a bounded keyboard-shadow fallback can reconstruct a write only from a known empty or previously reconstructed baseline. Unsupported navigation or unbaselined state remains unresolved; ordinary Accessibility diffs always take precedence.
+- If an eligible editable remains semantically empty across Accessibility observations, the attempt remains raw with no derived WRITE (`no_change` or an unresolved capture resolution). The collector does not guess training content from keystrokes.
 
 ### Pre-mutation conditioning
 
@@ -222,11 +222,11 @@ It exposed one typed checkpoint that was fully deleted before settlement but was
 
 `vscode-opaque-write-test-1` and `vscode-opaque-write-test-2` confirmed:
 
-- VS Code integrated-terminal and Codex-terminal prompts exposed usable Accessibility values in both runs, so ordinary canonical `BEFORE → AFTER` reconstruction took precedence and the keyboard-shadow fallback was not needed;
+- VS Code integrated-terminal and Codex-terminal prompts exposed usable Accessibility values in both runs and used ordinary canonical `BEFORE → AFTER` reconstruction;
 - typo correction, three-second settlement, rapid Return, repeated writes in the same prompt, and ordinary shell commands retained the expected content and boundaries;
 - VS Code READs captured visible editor/terminal pixels under the correct application and window, while candidates superseded by active writes were retained only as raw suppressions;
 - the second run compiled into eight eligible examples with zero target exclusions, context exclusions, or reconstruction rejections and passed the causal audit;
-- the conditional opaque path remains fail-closed and is covered by deterministic state-machine and compiler-replay checks, but was not activated by these live traces.
+- the unexercised keyboard-shadow fallback was subsequently removed rather than retained as parallel unvalidated collector machinery.
 
 Tokenizer packing validation confirmed:
 
