@@ -149,8 +149,8 @@ private struct SchemaManifest: Encodable {
     let rawScreenOCR = 6
     let derivedScreenRead = 7
     let rawReadCandidateSuppression = 2
-    let rawActiveTapWrite = 13
-    let derivedActiveTapWrite = 10
+    let rawActiveTapWrite = 14
+    let derivedActiveTapWrite = 11
     let rawPasteAuditScreenshot = 1
     let writeSensorHealth = 1
     let rawActivity = 2

@@ -6,7 +6,7 @@ public struct CausalDatasetCompilerConfiguration: Sendable {
     public let includeTimestampsInContext: Bool
 
     public init(
-        conversionVersion: String = "phase1-causal-v12",
+        conversionVersion: String = "phase1-causal-v13",
         includeTimestampsInContext: Bool = false
     ) {
         self.conversionVersion = conversionVersion
@@ -283,7 +283,7 @@ public struct CausalDatasetCompiler {
             )
             let modelInput = context.isEmpty ? query : context + "\n" + query
             let outcome = writeOutcome(target.object)
-            let content = outcome.string("content") ?? ""
+            let content = resolvedWriteContent(target.object)
             let targetSegments = trainingTargetSegments(
                 event: target.object,
                 resolvedContent: content
@@ -449,8 +449,8 @@ public struct CausalDatasetCompiler {
                     "legacy earliest mutation and terminal edit must agree with the initial cursor",
                 ],
                 "explicitExclusion": "phase1Eligible == false",
-                "writeVerification": "source outcome must reconstruct the used observation; a keyboard-grounded AX-opaque paste additionally requires exact clipboard/checkpoint/segment agreement",
-                "writeProjection": "canonical minimum contiguous diff of raw logical BEFORE and used observation, with proven AX-opaque paste payloads restored from the causally conditioned clipboard",
+                "writeVerification": "single-epoch source outcomes reconstruct the used observation; a segmented paste completion additionally requires exact local epoch, clipboard, checkpoint, and segment agreement",
+                "writeProjection": "the observed net edit remains the canonical initial-to-used-observation diff; only a proven Cmd-V AX epoch transition may carry a separately resolved segmented completion",
             ],
             "serialization": [
                 "contextVersion": 3,
@@ -655,13 +655,7 @@ private func canonicalWrite(
     let knownSyntheticDeletion = event.string("fallbackReason")
         == "removal_only_terminal_unpopulated"
     let observedCanonicalEdit = minimalTextEdit(from: beforeValue, to: afterValue)
-    let groundedKeyboardPaste = validatesGroundedKeyboardPaste(
-        event: event,
-        attempt: attempt,
-        beforeValue: beforeValue,
-        observedCanonicalEdit: observedCanonicalEdit
-    )
-    guard sourceReconstructsObservation || knownSyntheticDeletion || groundedKeyboardPaste else {
+    guard sourceReconstructsObservation || knownSyntheticDeletion else {
         return .failure(
             reconstructed == nil
                 ? "derived_edit_does_not_apply_to_before"
@@ -669,14 +663,7 @@ private func canonicalWrite(
         )
     }
 
-    let canonicalEdit = groundedKeyboardPaste
-        ? TextEdit(
-            operation: EditOperation(rawValue: operation)!,
-            characterOffset: offset,
-            removed: removed,
-            inserted: inserted
-        )
-        : observedCanonicalEdit
+    let canonicalEdit = observedCanonicalEdit
     guard !canonicalEdit.isEmpty else { return .failure("canonical_raw_edit_is_empty") }
     var canonicalEvent = event
     canonicalEvent["operation"] = canonicalEdit.operation.rawValue
@@ -694,6 +681,29 @@ private func canonicalWrite(
         && removed == canonicalEdit.removed
         && offset == canonicalEdit.characterOffset
     canonicalEvent["sourceOutcomeReconstructedUsedObservation"] = sourceReconstructsObservation
+    if event["observedNetEdit"] != nil || attempt["observedNetEdit"] != nil {
+        guard observedNetEditMatches(
+            event: event,
+            attempt: attempt,
+            canonicalEdit: canonicalEdit
+        ) else {
+            return .failure("observed_net_edit_does_not_match_raw_diff")
+        }
+    }
+    if event.string("stateContinuity") == "segmented_at_grounded_paste" {
+        guard validatesSegmentedGroundedPaste(
+            event: event,
+            attempt: attempt,
+            beforeValue: beforeValue,
+            usedObservation: used,
+            observedCanonicalEdit: canonicalEdit
+        ) else {
+            return .failure("segmented_grounded_paste_evidence_invalid")
+        }
+    } else if let resolved = event.string("resolvedCompletion"),
+              resolved != canonicalEdit.inserted {
+        return .failure("single_epoch_completion_differs_from_observed_edit")
+    }
     let cursorFidelity = cursorFidelityEvidence(
         attempt: attempt,
         terminalEditOffset: canonicalEdit.characterOffset
@@ -707,22 +717,26 @@ private func canonicalWrite(
     return .success(canonicalEvent)
 }
 
-private func validatesGroundedKeyboardPaste(
+private func validatesSegmentedGroundedPaste(
     event: [String: Any],
     attempt: [String: Any],
     beforeValue: String,
+    usedObservation: [String: Any],
     observedCanonicalEdit: TextEdit
 ) -> Bool {
-    let evidence = "keyboard_clipboard_without_ax_transition"
+    let evidence = "grounded_paste_ax_epoch_transition"
     guard event.string("authorshipEvidence") == evidence,
           attempt.string("authorshipEvidence") == evidence,
+          attempt.string("stateContinuity") == "segmented_at_grounded_paste",
           event.string("authorshipResolution") == "resolved",
           attempt.string("authorshipResolution") == "resolved",
-          let operation = event.string("operation"),
-          operation == observedCanonicalEdit.operation.rawValue,
-          event.number("characterOffset")?.intValue == observedCanonicalEdit.characterOffset,
-          event.string("removedContent") == observedCanonicalEdit.removed,
-          let eventContent = event.string("content"),
+          let eventCompletion = event.string("resolvedCompletion"),
+          attempt.string("resolvedCompletion") == eventCompletion,
+          observedNetEditMatches(
+            event: event,
+            attempt: attempt,
+            canonicalEdit: observedCanonicalEdit
+          ),
           let segments = event["authorshipSegments"] as? [[String: Any]],
           let rawSegments = attempt["authorshipSegments"] as? [[String: Any]],
           let encodedSegments = try? JSONSerialization.data(
@@ -754,8 +768,12 @@ private func validatesGroundedKeyboardPaste(
           prePaste.boolean("valueWasTruncated") != true,
           postPaste.boolean("valueWasTruncated") != true,
           prePaste.number("selectedRangeLength")?.intValue == 0,
+          postPaste.number("selectedRangeLocation")?.intValue == 0,
+          postPaste.number("selectedRangeLength")?.intValue == 0,
           let rawPrePasteValue = prePaste.string("value"),
-          let rawPostPasteValue = postPaste.string("value") else { return false }
+          let rawPostPasteValue = postPaste.string("value"),
+          let rawUsedValue = usedObservation.string("value"),
+          usedObservation.boolean("valueWasTruncated") != true else { return false }
 
     let prePasteValue = logicalEditableValue(
         rawPrePasteValue,
@@ -765,43 +783,54 @@ private func validatesGroundedKeyboardPaste(
         rawPostPasteValue,
         placeholderValue: postPaste.string("placeholderValue")
     )
-    guard postPasteValue == prePasteValue || postPasteValue == beforeValue,
-          let cursor = semanticCursorContext(
-            in: prePasteValue,
-            selectionStartUTF16: prePaste.number("selectedRangeLocation")?.intValue,
-            selectionLengthUTF16: prePaste.number("selectedRangeLength")?.intValue,
-            surroundingCharacterCount: 1
+    let usedValue = logicalEditableValue(
+        rawUsedValue,
+        placeholderValue: usedObservation.string("placeholderValue")
+    )
+    guard postPasteValue.isEmpty,
+          applying(observedCanonicalEdit, to: beforeValue) == usedValue,
+          let checkpointID = checkpoint.string("checkpointID"),
+          let completion = segmentedGroundedPasteCompletion(
+            initialValue: beforeValue,
+            prePasteValue: prePasteValue,
+            postPasteValue: postPasteValue,
+            terminalValue: usedValue,
+            clipboardText: clipboardText,
+            clipboardSnapshotID: snapshotID,
+            pasteCheckpointID: checkpointID
           ) else { return false }
-
-    var reconstructed = ""
-    var authoredOnly = ""
-    var pastePrefixLength: Int?
-    var pasteCount = 0
-    for segment in segments {
-        guard let type = segment.string("type"),
-              let content = segment.string("content") else { return false }
-        reconstructed += content
-        if type == "authored_text" {
-            authoredOnly += content
-        } else if type == "paste" {
-            pasteCount += 1
-            pastePrefixLength = authoredOnly.count
-            guard content == clipboardText,
-                  segment.string("clipboardSnapshotID") == snapshotID,
-                  segment.string("pasteCheckpointID") == checkpoint.string("checkpointID") else {
-                return false
-            }
-        } else {
-            return false
-        }
+    let expected = completion.segments.map { segment in
+        compactJSONObject([
+            "type": segment.type,
+            "content": segment.content,
+            "clipboardSnapshotID": segment.clipboardSnapshotID,
+            "pasteCheckpointID": segment.pasteCheckpointID,
+        ])
     }
-    guard pasteCount == 1,
-          reconstructed == eventContent,
-          authoredOnly == observedCanonicalEdit.inserted,
-          let pastePrefixLength,
-          observedCanonicalEdit.characterOffset + pastePrefixLength
-            == cursor.selectionStartCharacters else { return false }
+    guard let encodedExpected = try? JSONSerialization.data(
+        withJSONObject: expected,
+        options: [.sortedKeys, .withoutEscapingSlashes]
+    ), encodedExpected == encodedSegments,
+    completion.resolvedContent == eventCompletion else {
+        return false
+    }
     return true
+}
+
+private func observedNetEditMatches(
+    event: [String: Any],
+    attempt: [String: Any],
+    canonicalEdit: TextEdit
+) -> Bool {
+    guard let eventEdit = event["observedNetEdit"] as? [String: Any],
+          eventEdit.string("operation") == canonicalEdit.operation.rawValue,
+          eventEdit.number("characterOffset")?.intValue == canonicalEdit.characterOffset,
+          eventEdit.string("removedContent") == canonicalEdit.removed,
+          eventEdit.string("content") == canonicalEdit.inserted,
+          let rawEdit = attempt["observedNetEdit"] as? [String: Any],
+          let encodedEvent = try? canonicalJSONString(eventEdit),
+          let encodedRaw = try? canonicalJSONString(rawEdit) else { return false }
+    return encodedRaw == encodedEvent
 }
 
 private func cursorFidelityEvidence(
@@ -939,7 +968,9 @@ private func serializeContextEvent(
     includeTimestamp: Bool
 ) throws -> String {
     let kind = event.string("kind")!
-    let content = event.string("content") ?? ""
+    let content = kind == "write"
+        ? resolvedWriteContent(event)
+        : event.string("content") ?? ""
     let location = compactJSONObject([
         "application": nonEmpty(event.string("appName")),
         "window": nonEmpty(event.string("windowTitle")),
@@ -1004,6 +1035,12 @@ private func serializeAuditContextEvent(
         serialized["removedContent"] = event.string("removedContent") ?? ""
         serialized["characterOffset"] = event.number("characterOffset")?.intValue ?? 0
         serialized["boundaryReason"] = event.string("boundaryReason") ?? ""
+        serialized["resolvedCompletion"] = resolvedWriteContent(event)
+        serialized["stateContinuity"] = event.string("stateContinuity")
+            ?? "single_ax_epoch"
+        if let observedNetEdit = event["observedNetEdit"] as? [String: Any] {
+            serialized["observedNetEdit"] = observedNetEdit
+        }
         if let segments = event["authorshipSegments"] as? [[String: Any]] {
             serialized["authorshipSegments"] = segments
             serialized["authorshipResolution"] = event.string("authorshipResolution")
@@ -1274,6 +1311,13 @@ private func writeOutcome(_ event: [String: Any]) -> [String: Any] {
     event["outcome"] as? [String: Any] ?? event
 }
 
+private func resolvedWriteContent(_ event: [String: Any]) -> String {
+    event.string("resolvedCompletion")
+        ?? (event["outcome"] as? [String: Any])?.string("content")
+        ?? event.string("content")
+        ?? ""
+}
+
 private func writeOutcomeMetadata(
     event: [String: Any],
     outcome: [String: Any]
@@ -1282,6 +1326,9 @@ private func writeOutcomeMetadata(
         "operation": outcome.string("operation") ?? "",
         "characterOffset": outcome.number("characterOffset")?.intValue,
         "removedContent": outcome.string("removedContent") ?? "",
+        "resolvedCompletion": resolvedWriteContent(event),
+        "stateContinuity": event.string("stateContinuity") ?? "single_ax_epoch",
+        "observedNetEdit": event["observedNetEdit"],
         "provenance": event.string("provenance"),
         "boundaryReason": event.string("boundaryReason"),
         "derivationObservationSource": event.string("derivationObservationSource"),

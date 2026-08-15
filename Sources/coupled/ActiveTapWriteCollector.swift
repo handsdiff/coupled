@@ -483,18 +483,22 @@ final class ActiveTapWriteCollector {
             )
         }
 
-        let authorship = decision.edit.map {
+        let authorship = decision.edit.flatMap {
             deriveAuthorship(
                 overallEdit: $0,
-                pending: pending
+                pending: pending,
+                usedObservation: usedObservation(
+                    for: decision,
+                    pending: pending,
+                    terminal: after.observation
+                )
             )
         }
-        let emittedEdit = authorship?.emittedEdit ?? decision.edit
-        let proposedEventID = emittedEdit == nil ? nil : UUID().uuidString
+        let proposedEventID = decision.edit == nil ? nil : UUID().uuidString
         let conditioningState = writeConditioningState(for: pending)
         let cursorFidelity = cursorFidelityEvidence(
             for: pending,
-            terminalEditOffset: emittedEdit?.characterOffset
+            terminalEditOffset: decision.edit?.characterOffset
         )
         let rawRecord = RawActiveTapWriteAttempt(
             recordID: pending.attemptID,
@@ -527,6 +531,9 @@ final class ActiveTapWriteCollector {
             authorshipResolution: authorship?.result.resolution,
             authorshipEvidence: authorship?.evidence,
             authorshipSegments: authorship?.result.segments ?? [],
+            resolvedCompletion: authorship?.resolvedCompletion,
+            stateContinuity: authorship?.stateContinuity,
+            observedNetEdit: decision.edit.map(ActiveTapWriteOutcome.init),
             beforeAXErrors: pending.beforeAXErrors,
             afterAXErrors: after.errors,
             beforeCaptureDurationMilliseconds: pending.beforeCaptureDurationMilliseconds,
@@ -544,7 +551,7 @@ final class ActiveTapWriteCollector {
             return
         }
 
-        guard let edit = emittedEdit,
+        guard let edit = decision.edit,
               let proposedEventID,
               let target = pending.target,
               let conditioningState else {
@@ -570,12 +577,10 @@ final class ActiveTapWriteCollector {
             authorshipResolution: authorship?.result.resolution ?? "unresolved",
             authorshipEvidence: authorship?.evidence,
             authorshipSegments: authorship?.result.segments ?? [],
-            outcome: ActiveTapWriteOutcome(
-                operation: edit.operation.rawValue,
-                content: edit.inserted,
-                removedContent: edit.removed,
-                characterOffset: edit.characterOffset
-            ),
+            resolvedCompletion: authorship?.resolvedCompletion ?? edit.inserted,
+            stateContinuity: authorship?.stateContinuity ?? "single_ax_epoch",
+            observedNetEdit: ActiveTapWriteOutcome(edit),
+            outcome: ActiveTapWriteOutcome(edit),
             operation: edit.operation.rawValue,
             content: edit.inserted,
             removedContent: edit.removed,
@@ -629,7 +634,8 @@ final class ActiveTapWriteCollector {
 
     private func deriveAuthorship(
         overallEdit: TextEdit,
-        pending: PendingActiveTapWrite
+        pending: PendingActiveTapWrite,
+        usedObservation: ActiveTapEditableObservation?
     ) -> ActiveTapAuthorshipDerivation {
         var pasteMutations = [ProvenPasteMutation]()
         for checkpoint in pending.pasteCheckpoints {
@@ -642,7 +648,8 @@ final class ActiveTapWriteCollector {
                         segments: [],
                         resolution: "clipboard_changed_after_conditioning"
                     ),
-                    emittedEdit: overallEdit,
+                    resolvedCompletion: overallEdit.inserted,
+                    stateContinuity: "single_ax_epoch",
                     evidence: nil
                 )
             }
@@ -658,7 +665,8 @@ final class ActiveTapWriteCollector {
                         segments: [],
                         resolution: "paste_checkpoint_incomplete"
                     ),
-                    emittedEdit: overallEdit,
+                    resolvedCompletion: overallEdit.inserted,
+                    stateContinuity: "single_ax_epoch",
                     evidence: nil
                 )
             }
@@ -673,19 +681,21 @@ final class ActiveTapWriteCollector {
                 )
             )
             guard !pasteEdit.isEmpty, pasteEdit.inserted == clipboardText else {
-                if let fallback = keyboardClipboardPasteFallback(
+                if let segmented = groundedPasteEpochCompletion(
                     overallEdit: overallEdit,
                     pending: pending,
-                    checkpoint: checkpoint
+                    checkpoint: checkpoint,
+                    usedObservation: usedObservation
                 ) {
-                    return fallback
+                    return segmented
                 }
                 return ActiveTapAuthorshipDerivation(
                     result: WriteAuthorshipResult(
                         segments: [],
                         resolution: "paste_transition_does_not_match_clipboard"
                     ),
-                    emittedEdit: overallEdit,
+                    resolvedCompletion: overallEdit.inserted,
+                    stateContinuity: "single_ax_epoch",
                     evidence: nil
                 )
             }
@@ -696,23 +706,27 @@ final class ActiveTapWriteCollector {
                 inserted: pasteEdit.inserted
             ))
         }
-        return ActiveTapAuthorshipDerivation(
-            result: writeAuthorship(
+        let result = writeAuthorship(
                 overallEdit: overallEdit,
                 pasteMutations: pasteMutations
-            ),
-            emittedEdit: overallEdit,
+            )
+        return ActiveTapAuthorshipDerivation(
+            result: result,
+            resolvedCompletion: result.resolution == "resolved"
+                ? result.segments.map(\.content).joined()
+                : overallEdit.inserted,
+            stateContinuity: "single_ax_epoch",
             evidence: nil
         )
     }
 
-    private func keyboardClipboardPasteFallback(
+    private func groundedPasteEpochCompletion(
         overallEdit: TextEdit,
         pending: PendingActiveTapWrite,
-        checkpoint: ActiveTapPasteCheckpoint
+        checkpoint: ActiveTapPasteCheckpoint,
+        usedObservation: ActiveTapEditableObservation?
     ) -> ActiveTapAuthorshipDerivation? {
         guard pending.pasteCheckpoints.count == 1,
-              overallEdit.removed.isEmpty,
               let initial = pending.before,
               !initial.valueWasTruncated,
               checkpoint.prePasteAXErrors.isEmpty,
@@ -722,18 +736,13 @@ final class ActiveTapWriteCollector {
               !clipboardText.isEmpty,
               let prePaste = checkpoint.prePasteObservation,
               let postPaste = checkpoint.observation,
+              let usedObservation,
               !prePaste.valueWasTruncated,
               !postPaste.valueWasTruncated,
+              !usedObservation.valueWasTruncated,
               prePaste.selectedRangeLength == 0,
-              let cursor = semanticCursorContext(
-                in: logicalEditableValue(
-                    prePaste.value,
-                    placeholderValue: prePaste.placeholderValue
-                ),
-                selectionStartUTF16: prePaste.selectedRangeLocation,
-                selectionLengthUTF16: prePaste.selectedRangeLength,
-                surroundingCharacterCount: 1
-              ) else { return nil }
+              postPaste.selectedRangeLocation == 0,
+              postPaste.selectedRangeLength == 0 else { return nil }
 
         let initialValue = logicalEditableValue(
             initial.value,
@@ -747,41 +756,30 @@ final class ActiveTapWriteCollector {
             postPaste.value,
             placeholderValue: postPaste.placeholderValue
         )
-        guard postPasteValue == prePasteValue || postPasteValue == initialValue,
-              let observedAfter = applying(overallEdit, to: initialValue),
-              !observedAfter.contains(clipboardText) else { return nil }
-
-        let preCharacters = Array(prePasteValue)
-        let pasteOffset = cursor.selectionStartCharacters
-        guard pasteOffset >= 0, pasteOffset <= preCharacters.count else { return nil }
-        let left = String(preCharacters[..<pasteOffset])
-        let right = String(preCharacters[pasteOffset...])
-        guard observedAfter.hasPrefix(left), observedAfter.hasSuffix(right) else { return nil }
-
-        let observedCharacters = Array(observedAfter)
-        guard pasteOffset <= observedCharacters.count else { return nil }
-        let resolvedAfter = String(observedCharacters[..<pasteOffset])
-            + clipboardText
-            + String(observedCharacters[pasteOffset...])
-        let resolvedEdit = minimalTextEdit(from: initialValue, to: resolvedAfter)
-        guard !resolvedEdit.isEmpty,
-              resolvedEdit.characterOffset == overallEdit.characterOffset,
-              resolvedEdit.removed == overallEdit.removed else { return nil }
-        let result = writeAuthorship(
-            overallEdit: resolvedEdit,
-            pasteMutations: [ProvenPasteMutation(
-                checkpointID: checkpoint.checkpointID,
-                clipboardSnapshotID: checkpoint.clipboardSnapshotID,
-                characterOffset: pasteOffset,
-                inserted: clipboardText
-            )]
+        let usedValue = logicalEditableValue(
+            usedObservation.value,
+            placeholderValue: usedObservation.placeholderValue
         )
-        guard result.resolution == "resolved",
-              result.segments.contains(where: { $0.type == "paste" }) else { return nil }
+        guard postPasteValue.isEmpty,
+              let observedAfter = applying(overallEdit, to: initialValue),
+              observedAfter == usedValue,
+              let completion = segmentedGroundedPasteCompletion(
+                initialValue: initialValue,
+                prePasteValue: prePasteValue,
+                postPasteValue: postPasteValue,
+                terminalValue: usedValue,
+                clipboardText: clipboardText,
+                clipboardSnapshotID: checkpoint.clipboardSnapshotID,
+                pasteCheckpointID: checkpoint.checkpointID
+              ) else { return nil }
         return ActiveTapAuthorshipDerivation(
-            result: result,
-            emittedEdit: resolvedEdit,
-            evidence: "keyboard_clipboard_without_ax_transition"
+            result: WriteAuthorshipResult(
+                segments: completion.segments,
+                resolution: "resolved"
+            ),
+            resolvedCompletion: completion.resolvedContent,
+            stateContinuity: "segmented_at_grounded_paste",
+            evidence: "grounded_paste_ax_epoch_transition"
         )
     }
 
@@ -1063,6 +1061,32 @@ final class ActiveTapWriteCollector {
             observation: observation,
             edit: edit
         )
+    }
+
+    private func usedObservation(
+        for decision: WriteDerivationDecision,
+        pending: PendingActiveTapWrite,
+        terminal: ActiveTapEditableObservation?
+    ) -> ActiveTapEditableObservation? {
+        guard let source = decision.observationSource else { return nil }
+        switch source {
+        case "terminal_after":
+            return terminal
+        case "pre_return_checkpoint":
+            return pending.returnCheckpoints.first {
+                $0.checkpointID == decision.usedCheckpointID
+            }?.observation
+        case "post_paste_checkpoint":
+            return pending.pasteCheckpoints.first {
+                $0.checkpointID == decision.usedCheckpointID
+            }?.observation
+        case "post_input_checkpoint":
+            return pending.mutationCheckpoints.first {
+                $0.checkpointID == decision.usedCheckpointID
+            }?.observation
+        default:
+            return nil
+        }
     }
 
     private func discardPendingForPause() {
@@ -1710,6 +1734,27 @@ private struct ActiveTapWriteOutcome: Encodable {
     let content: String
     let removedContent: String
     let characterOffset: Int
+
+    init(
+        operation: String,
+        content: String,
+        removedContent: String,
+        characterOffset: Int
+    ) {
+        self.operation = operation
+        self.content = content
+        self.removedContent = removedContent
+        self.characterOffset = characterOffset
+    }
+
+    init(_ edit: TextEdit) {
+        self.init(
+            operation: edit.operation.rawValue,
+            content: edit.inserted,
+            removedContent: edit.removed,
+            characterOffset: edit.characterOffset
+        )
+    }
 }
 
 private struct ActiveTapCursorFidelityEvidence: Encodable {
@@ -1832,7 +1877,8 @@ private struct RawPasteAuditScreenshot: Encodable {
 
 private struct ActiveTapAuthorshipDerivation {
     let result: WriteAuthorshipResult
-    let emittedEdit: TextEdit
+    let resolvedCompletion: String
+    let stateContinuity: String
     let evidence: String?
 }
 
@@ -1900,7 +1946,7 @@ private struct WriteDerivationDecision {
 }
 
 private struct RawActiveTapWriteAttempt: Encodable {
-    let schemaVersion = 13
+    let schemaVersion = 14
     let recordType = "active_tap_write_attempt"
     let recordID: String
     let bundleIdentifier: String
@@ -1932,6 +1978,9 @@ private struct RawActiveTapWriteAttempt: Encodable {
     let authorshipResolution: String?
     let authorshipEvidence: String?
     let authorshipSegments: [WriteAuthorshipSegment]
+    let resolvedCompletion: String?
+    let stateContinuity: String?
+    let observedNetEdit: ActiveTapWriteOutcome?
     let beforeAXErrors: [String]
     let afterAXErrors: [String]
     let beforeCaptureDurationMilliseconds: Double
@@ -1952,7 +2001,7 @@ private struct RawWriteSensorHealth: Encodable {
 }
 
 private struct ActiveTapWriteRecord: Encodable {
-    let schemaVersion = 10
+    let schemaVersion = 11
     let kind = "write"
     let provenance = "active_tap_accessibility_diff"
     let sequence: UInt64
@@ -1972,6 +2021,9 @@ private struct ActiveTapWriteRecord: Encodable {
     let authorshipResolution: String
     let authorshipEvidence: String?
     let authorshipSegments: [WriteAuthorshipSegment]
+    let resolvedCompletion: String
+    let stateContinuity: String
+    let observedNetEdit: ActiveTapWriteOutcome
     let outcome: ActiveTapWriteOutcome
     let operation: String
     let content: String

@@ -167,11 +167,12 @@ read delay and therefore settles after the write.
   Cmd-V synchronously captures the held field before paste and again 50
   milliseconds afterward, and retains a raw audit screenshot without creating
   a READ. Normally the editable transition must exactly match the conditioned
-  clipboard version. If an AX-opaque surface visibly represents the paste but
-  omits its payload from `AXValue`, a narrow fallback restores one nonempty,
-  untruncated clipboard payload only when the intercepted Cmd-V, unchanged
-  pasteboard version, caret position, AX-observed authored text, and structured
-  segments all agree. Other ambiguous paste spans remain target-ineligible.
+  clipboard version. If a proven Cmd-V causes the same retained editable to
+  begin a new empty AX observation epoch, Coupled composes the locally settled
+  prefix, grounded paste, and locally settled suffix as one WRITE completion.
+  `observedNetEdit` remains the literal initial/final AX diff while
+  `resolvedCompletion` and `authorshipSegments` represent the action being
+  learned. Unexplained AX resets and other ambiguous spans remain ineligible.
   A removal-only burst (Backspace/Delete or Cmd-X) cannot treat newly exposed
   prompt text as user-authored insertion. Every validated write also carries a
   `conditioningState` captured synchronously before the application receives
@@ -336,7 +337,7 @@ prior writes at `terminalDecisionAt`. Records explicitly marked
 `phase1Eligible: false`—including future displayed model predictions—are
 excluded before contexts and targets are built.
 
-Conversion `phase1-causal-v12` defines the supervised example as:
+Conversion `phase1-causal-v13` defines the supervised example as:
 
 ```text
 modelInput = causal read/write history + destination/cursor/clipboard query

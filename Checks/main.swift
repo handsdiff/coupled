@@ -152,6 +152,34 @@ expect(
     writableCharacters(in: "\t\r\u{7f}\u{f700}") == ["\t", "\r"],
     "control and function key filtering"
 )
+let segmentedPaste = segmentedGroundedPasteCompletion(
+    initialValue: "",
+    prePasteValue: "before ",
+    postPasteValue: "",
+    terminalValue: " after",
+    clipboardText: "distinctive phrase",
+    clipboardSnapshotID: "clipboard",
+    pasteCheckpointID: "checkpoint"
+)
+expect(
+    segmentedPaste?.resolvedContent == "before distinctive phrase after"
+        && segmentedPaste?.segments.map(\.type)
+            == ["authored_text", "paste", "authored_text"],
+    "grounded paste composes locally observed AX epochs"
+)
+expect(
+    segmentedGroundedPasteCompletion(
+        initialValue: "", prePasteValue: "before ", postPasteValue: "unexpected",
+        terminalValue: " after", clipboardText: "distinctive phrase",
+        clipboardSnapshotID: "clipboard", pasteCheckpointID: "checkpoint"
+    ) == nil
+        && segmentedGroundedPasteCompletion(
+            initialValue: "", prePasteValue: "before ", postPasteValue: "",
+            terminalValue: "distinctive phrase after", clipboardText: "distinctive phrase",
+            clipboardSnapshotID: "clipboard", pasteCheckpointID: "checkpoint"
+        ) == nil,
+    "unexplained or delayed observable paste transitions are never stitched"
+)
 
 let formattedLiveWrite = LiveEventLogFormatter.format([
     "kind": "write",
@@ -169,9 +197,30 @@ let formattedLiveWrite = LiveEventLogFormatter.format([
 ])
 expect(
     formattedLiveWrite.contains("WRITE  app=Obsidian")
-        && formattedLiveWrite.contains("inserted=\"hello\"")
+        && formattedLiveWrite.contains("completion=\"hello\"")
+        && formattedLiveWrite.contains("authorship=unreported")
         && formattedLiveWrite.contains("configured-delay=3s"),
     "native live window formats the compact write log"
+)
+let formattedSegmentedWrite = LiveEventLogFormatter.format([
+    "kind": "write",
+    "observedAt": "2026-01-01T00:00:04.000Z",
+    "appName": "Code",
+    "operation": "insert",
+    "provenance": "active_tap_accessibility_diff",
+    "content": " after",
+    "resolvedCompletion": "before distinctive phrase after",
+    "removedContent": "",
+    "characterOffset": 0,
+    "authorshipResolution": "resolved",
+    "stateContinuity": "segmented_at_grounded_paste",
+])
+expect(
+    formattedSegmentedWrite.contains("completion=\"before distinctive phrase after\"")
+        && formattedSegmentedWrite.contains("observed-inserted=\" after\"")
+        && formattedSegmentedWrite.contains("authorship=resolved")
+        && formattedSegmentedWrite.contains("continuity=segmented_at_grounded_paste"),
+    "live view distinguishes resolved completion from observed AX net edit"
 )
 let formattedLiveRead = LiveEventLogFormatter.format([
     "kind": "read",
@@ -782,7 +831,7 @@ try! jsonData([
 ], pretty: true).write(to: opaquePasteInput.appendingPathComponent("session.json"))
 var opaqueRaw = rawAttempt(
     id: "opaque-paste-attempt", eventID: "opaque-paste-write",
-    before: "", after: " and paste write",
+    before: "", after: " after",
     timestamp: "2026-01-01T00:00:02.000Z",
     rangeCursor: ["left": "", "selected": "", "right": ""]
 )
@@ -813,18 +862,24 @@ let opaqueConditioning: [String: Any] = [
     "sourceObservationID": opaqueBefore["observationID"] as! String,
 ]
 let opaqueSegments: [[String: Any]] = [
-    ["type": "authored_text", "content": " "],
+    ["type": "authored_text", "content": "before "],
     [
         "type": "paste", "content": "COPIED",
         "clipboardSnapshotID": "opaque-clipboard",
         "pasteCheckpointID": "opaque-paste-checkpoint",
     ],
-    ["type": "authored_text", "content": "and paste write"],
+    ["type": "authored_text", "content": " after"],
 ]
 opaqueRaw["conditioningState"] = opaqueConditioning
 opaqueRaw["authorshipResolution"] = "resolved"
-opaqueRaw["authorshipEvidence"] = "keyboard_clipboard_without_ax_transition"
+opaqueRaw["authorshipEvidence"] = "grounded_paste_ax_epoch_transition"
 opaqueRaw["authorshipSegments"] = opaqueSegments
+opaqueRaw["resolvedCompletion"] = "before COPIED after"
+opaqueRaw["stateContinuity"] = "segmented_at_grounded_paste"
+opaqueRaw["observedNetEdit"] = [
+    "operation": "insert", "content": " after",
+    "removedContent": "", "characterOffset": 0,
+]
 opaqueRaw["pasteCheckpoints"] = [[
     "checkpointID": "opaque-paste-checkpoint",
     "clipboardSnapshotID": "opaque-clipboard",
@@ -834,7 +889,7 @@ opaqueRaw["pasteCheckpoints"] = [[
     "prePasteAXErrors": [],
     "axErrors": [],
     "prePasteObservation": observation(
-        " ", at: "2026-01-01T00:00:01.200Z", selectionLocation: 1
+        "before ", at: "2026-01-01T00:00:01.200Z", selectionLocation: 7
     ),
     "observation": observation(
         "", at: "2026-01-01T00:00:01.300Z", selectionLocation: 0
@@ -843,13 +898,16 @@ opaqueRaw["pasteCheckpoints"] = [[
 var opaqueEvent = writeEvent(
     id: "opaque-paste-write", sourceID: "opaque-paste-attempt", sequence: 1,
     began: "2026-01-01T00:00:01.000Z", available: "2026-01-01T00:00:02.000Z",
-    before: "", inserted: " COPIEDand paste write", offset: 0
+    before: "", inserted: " after", offset: 0
 )
 opaqueEvent["sessionID"] = "opaque-paste-session"
 opaqueEvent["conditioningState"] = opaqueConditioning
 opaqueEvent["authorshipResolution"] = "resolved"
-opaqueEvent["authorshipEvidence"] = "keyboard_clipboard_without_ax_transition"
+opaqueEvent["authorshipEvidence"] = "grounded_paste_ax_epoch_transition"
 opaqueEvent["authorshipSegments"] = opaqueSegments
+opaqueEvent["resolvedCompletion"] = "before COPIED after"
+opaqueEvent["stateContinuity"] = "segmented_at_grounded_paste"
+opaqueEvent["observedNetEdit"] = opaqueRaw["observedNetEdit"]
 writeFixtureJSONL([opaqueEvent], to: opaquePasteInput.appendingPathComponent("events.jsonl"))
 writeFixtureJSONL([opaqueRaw], to: opaquePasteInput.appendingPathComponent("raw.jsonl"))
 _ = try! CausalDatasetCompiler().compile(
@@ -862,11 +920,11 @@ let opaquePasteExamples = readFixtureJSONL(
 let opaqueTarget = opaquePasteExamples[0]["target"] as! [String: Any]
 let opaqueTargetSegments = opaqueTarget["segments"] as! [[String: Any]]
 expect(
-    opaqueTarget["resolvedContent"] as! String == " COPIEDand paste write"
+    opaqueTarget["resolvedContent"] as! String == "before COPIED after"
         && opaqueTargetSegments.map { $0["type"] as! String }
             == ["authored_text", "paste", "authored_text"]
         && opaqueTargetSegments[1]["content"] == nil,
-    "AX-opaque Cmd-V restores clipboard content to history while supervising one paste action"
+    "grounded AX epoch transition preserves authored prefix, paste action, and suffix"
 )
 
 try! FileManager.default.removeItem(at: fixtureRoot)

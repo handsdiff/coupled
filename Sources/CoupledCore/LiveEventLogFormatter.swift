@@ -27,13 +27,21 @@ public enum LiveEventLogFormatter {
                 + "  display=\(displayID(event))"
         }
         if kind == "write", event["operation"] != nil {
+            let observed = string(event["content"]) ?? ""
+            let completion = string(event["resolvedCompletion"]) ?? observed
+            let observedDetail = completion == observed
+                ? ""
+                : "  observed-inserted=\(quoted(observed))"
             return "\(timestamp(event))  WRITE  app=\(appName(event))"
                 + "  window=\(windowName(event))"
                 + "  operation=\(string(event["operation"]) ?? "-")"
                 + "  provenance=\(provenance ?? "-")"
-                + "  inserted=\(quoted(string(event["content"]) ?? ""))"
+                + "  completion=\(quoted(completion))"
+                + observedDetail
                 + "  removed=\(quoted(string(event["removedContent"]) ?? ""))"
                 + "  offset=\(integer(event["characterOffset"]) ?? 0)"
+                + "  authorship=\(string(event["authorshipResolution"]) ?? "unreported")"
+                + "  continuity=\(string(event["stateContinuity"]) ?? "single_ax_epoch")"
                 + "  configured-delay=\(numberText(event["configuredWriteDelaySeconds"] ?? event["writeDelaySeconds"]))s"
                 + " boundary=\(string(event["boundaryReason"]) ?? "write_delay_elapsed")"
                 + " source=\(string(event["derivationObservationSource"]) ?? "terminal_after")"

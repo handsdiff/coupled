@@ -65,6 +65,50 @@ public struct WriteAuthorshipResult: Equatable, Sendable {
     }
 }
 
+public struct SegmentedWriteCompletion: Equatable, Sendable {
+    public let segments: [WriteAuthorshipSegment]
+    public let resolvedContent: String
+
+    public init(segments: [WriteAuthorshipSegment], resolvedContent: String) {
+        self.segments = segments
+        self.resolvedContent = resolvedContent
+    }
+}
+
+/// Composes one explicitly grounded paste boundary whose Accessibility value
+/// starts a new empty observation epoch. Each authored side is reduced to its
+/// local final diff, so temporary corrections never become target content.
+public func segmentedGroundedPasteCompletion(
+    initialValue: String,
+    prePasteValue: String,
+    postPasteValue: String,
+    terminalValue: String,
+    clipboardText: String,
+    clipboardSnapshotID: String,
+    pasteCheckpointID: String
+) -> SegmentedWriteCompletion? {
+    guard postPasteValue.isEmpty,
+          !clipboardText.isEmpty,
+          !terminalValue.contains(clipboardText) else { return nil }
+    let prefixEdit = minimalTextEdit(from: initialValue, to: prePasteValue)
+    let suffixEdit = minimalTextEdit(from: postPasteValue, to: terminalValue)
+    guard applying(prefixEdit, to: initialValue) == prePasteValue,
+          applying(suffixEdit, to: postPasteValue) == terminalValue else { return nil }
+
+    var segments = [WriteAuthorshipSegment]()
+    if !prefixEdit.inserted.isEmpty { segments.append(.authored(prefixEdit.inserted)) }
+    segments.append(.paste(
+        clipboardText,
+        clipboardSnapshotID: clipboardSnapshotID,
+        pasteCheckpointID: pasteCheckpointID
+    ))
+    if !suffixEdit.inserted.isEmpty { segments.append(.authored(suffixEdit.inserted)) }
+    return SegmentedWriteCompletion(
+        segments: segments,
+        resolvedContent: segments.map(\.content).joined()
+    )
+}
+
 /// Projects proven paste transitions into the final net insertion. A paste is
 /// accepted only when its exact inserted span still occurs at its observed
 /// document-relative offset. Later edits which obscure that provenance remain
