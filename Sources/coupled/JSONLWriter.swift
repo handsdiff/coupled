@@ -91,6 +91,11 @@ final class JSONLWriter {
 
 func writeLineToStandardOutput(_ data: Data) {
     try? FileHandle.standardOutput.write(contentsOf: data)
+    NotificationCenter.default.post(
+        name: .coupledDidEmitDerivedEvent,
+        object: nil,
+        userInfo: ["data": data]
+    )
 }
 
 func writeDiagnostic(_ message: String) {

@@ -1,3 +1,4 @@
+import AppKit
 import ApplicationServices
 import Foundation
 
@@ -137,9 +138,10 @@ do {
                 reads?.supersedePendingReads(with: input)
             }
         )
+        LiveEventLogWindowController.shared.show()
         try writes.start()
         try reads.start()
-        RunLoop.current.run()
+        NSApplication.shared.run()
     case "collect":
         guard AXIsProcessTrusted() else { throw MainError.missingAccessibility }
         try writeSessionManifest(configuration)

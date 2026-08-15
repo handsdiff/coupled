@@ -26,7 +26,7 @@ struct Configuration {
         "com.openai.codex",
         "md.obsidian",
     ]
-    var excludedBundles = Set<String>()
+    var excludedBundles: Set<String> = ["com.niyant.coupled"]
     var excludedAppNames = Set<String>()
     var pauseFile: String?
 

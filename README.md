@@ -128,7 +128,14 @@ editable fields in the allowlisted applications.
 ```
 
 Derived events are appended in emission order to `events.jsonl` and mirrored to
-the same live log. Source observations are appended separately to `raw.jsonl`:
+the same live log. `Coupled.app` also opens a read-only native window containing
+the identical compact stream; capture is still started and stopped from the
+terminal. The window has no collector controls, is not floating, and is placed
+on a second display when one is available. Coupled's own bundle is permanently
+excluded from READ and WRITE collection. Keep the viewer outside captured work
+window bounds—preferably on the second display—because an overlapping window can
+still alter the pixels in a rectangular screen capture even when its application
+is not tracked. Source observations are appended separately to `raw.jsonl`:
 
 A mutating key is also an event boundary for a pending read on the same Core
 Graphics window. The key invalidates pointer activity whose read delay has not
@@ -138,7 +145,7 @@ it before the corresponding write. The invalidated candidate remains in
 derived read. Pointer or scroll activity after the final key starts a fresh
 read delay and therefore settles after the write.
 
-- `WRITE` is attempted in Obsidian, Chrome, and Codex by default. An active
+- `WRITE` is attempted in Obsidian, Chrome, Codex, and VS Code by default. An active
   event tap attempts to capture a focused text area, text field, or combo box
   before returning the first mutating key. The same retained Accessibility
   element is queried after the write delay, and a minimal insertion, deletion,

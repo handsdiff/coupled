@@ -184,6 +184,48 @@ expect(
         == .unsupported("vertical_navigation"),
     "opaque unsupported actions fail closed"
 )
+let formattedLiveWrite = LiveEventLogFormatter.format([
+    "kind": "write",
+    "observedAt": "2026-01-01T00:00:04.000Z",
+    "appName": "Obsidian",
+    "windowTitle": "Entry - Notes",
+    "operation": "insert",
+    "provenance": "active_tap_accessibility_diff",
+    "content": "hello",
+    "removedContent": "",
+    "characterOffset": 4,
+    "configuredWriteDelaySeconds": 3,
+    "boundaryReason": "write_delay_elapsed",
+    "derivationObservationSource": "terminal_after",
+])
+expect(
+    formattedLiveWrite.contains("WRITE  app=Obsidian")
+        && formattedLiveWrite.contains("inserted=\"hello\"")
+        && formattedLiveWrite.contains("configured-delay=3s"),
+    "native live window formats the compact write log"
+)
+let formattedLiveRead = LiveEventLogFormatter.format([
+    "kind": "read",
+    "provenance": "screen_ocr",
+    "observedAt": "2026-01-01T00:00:04.000Z",
+    "appName": "Code",
+    "windowTitle": "checkpoint.md",
+    "content": (1...10).map { "line \($0)" }.joined(separator: "\n"),
+    "emittedLineCount": 10,
+    "recognizedLineCount": 12,
+    "overlapRemovedLineCount": 2,
+    "viewportSideCropFraction": 0.1,
+    "viewportTopCropFraction": 0.1,
+    "viewportBottomCropFraction": 0.35,
+    "displayID": 7,
+])
+expect(
+    formattedLiveRead.contains("READ  app=Code")
+        && formattedLiveRead.contains("    8 | line 8")
+        && formattedLiveRead.contains("… 2 more recognized lines")
+        && !formattedLiveRead.contains("line 9"),
+    "native live window matches the eight-line read preview"
+)
 expect(
     croppedViewport(
         in: CGRect(x: 100, y: -100, width: 1_000, height: 800),
