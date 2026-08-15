@@ -127,7 +127,12 @@ rectangular screenshot.
 
 ## Implemented causal compilation
 
-Current compiler: `phase1-causal-v11`
+Current compiler: `phase1-causal-v12`
+
+The v12 opaque-paste path has passed deterministic collector/compiler checks and
+backward-compatibility compilation of `ordinary-work-audit-2`. That prior run
+remains conservatively excluded because it predates the new explicit evidence;
+the first live AX-opaque paste validation is still pending.
 
 Timing:
 
@@ -255,6 +260,8 @@ Rules:
 
 - Clipboard state at write onset is causal conditioning; COPY is not a third event type.
 - Cmd-V captures immediate pre/post editable states and the pasteboard version used.
+- A raw post-paste window screenshot is retained for audit without becoming a READ.
+- When AX omits a visibly rendered paste, one nonempty Cmd-V payload can be restored only from the unchanged conditioning clipboard, with exact caret, authored-text, checkpoint, and segment agreement. The weaker evidence is explicit as `keyboard_clipboard_without_ax_transition`.
 - Current targets represent each proven paste as the reserved `<|paste|>` marker without its payload.
 - Later WRITE history retains the resolved payload and marks it as paste-derived.
 - Ambiguous paste-containing bursts remain events but are target-ineligible.
@@ -307,10 +314,10 @@ No ablation requires changing the collector schema. The principal missing layer 
 
 ### Before the next authoritative collection
 
-The focused component gates are complete. Treat `phase1-causal-v11` and the current three-second delays/crop configuration as the candidate baseline for an ordinary-work audit run.
+The focused component gates are complete. Treat `phase1-causal-v12` and the current three-second delays/crop configuration as the candidate baseline for an ordinary-work audit run.
 
 1. Run normal work without changing collector rules mid-session.
-2. Compile the session with `phase1-causal-v11` and preserve the source digests and audit outputs.
+2. Compile the session with `phase1-causal-v12` and preserve the source digests and audit outputs.
 3. Manually sample the temporal trace against the actual work and record Phase 1's fidelity categories: missing events, temporal-ordering errors, incorrect content inclusion, authorship errors, write-boundary disagreement, destination ambiguity, and future leakage.
 4. Quantify target eligibility and exclusion reasons, including pure deletion, unresolved paste authorship, incomplete semantic cursor state, and rejected reconstruction.
 5. Fix only recurrent material errors demonstrated by that trace. If no training-blocking class appears, freeze the collector/configuration/conversion as the first immutable dataset version.

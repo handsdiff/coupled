@@ -89,8 +89,8 @@ def require_compiled_dataset(
         raise ValueError(f"{source} is not a compiled Phase 1 dataset")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     examples = load_jsonl(examples_path)
-    if manifest.get("conversionVersion") != "phase1-causal-v11":
-        raise ValueError("packer requires conversionVersion phase1-causal-v11")
+    if manifest.get("conversionVersion") not in {"phase1-causal-v11", "phase1-causal-v12"}:
+        raise ValueError("packer requires conversionVersion phase1-causal-v11 or phase1-causal-v12")
     if manifest.get("serialization", {}).get("contextVersion") != 3:
         raise ValueError("packer requires model-facing contextVersion 3")
     if manifest.get("serialization", {}).get("targetFormat") != "structured_authorship_segments":

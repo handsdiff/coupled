@@ -3,6 +3,7 @@ import ApplicationServices
 import CoupledCore
 import CryptoKit
 import Foundation
+import ScreenCaptureKit
 
 /// Captures a focused editable immediately before its first mutation, retains
 /// that exact AX element, then derives one settled before/after text diff.
@@ -482,17 +483,18 @@ final class ActiveTapWriteCollector {
             )
         }
 
-        let proposedEventID = decision.edit == nil ? nil : UUID().uuidString
         let authorship = decision.edit.map {
             deriveAuthorship(
                 overallEdit: $0,
                 pending: pending
             )
         }
+        let emittedEdit = authorship?.emittedEdit ?? decision.edit
+        let proposedEventID = emittedEdit == nil ? nil : UUID().uuidString
         let conditioningState = writeConditioningState(for: pending)
         let cursorFidelity = cursorFidelityEvidence(
             for: pending,
-            terminalEditOffset: decision.edit?.characterOffset
+            terminalEditOffset: emittedEdit?.characterOffset
         )
         let rawRecord = RawActiveTapWriteAttempt(
             recordID: pending.attemptID,
@@ -522,8 +524,9 @@ final class ActiveTapWriteCollector {
             returnCheckpoints: pending.returnCheckpoints,
             pasteCheckpoints: pending.pasteCheckpoints,
             mutationCheckpoints: pending.mutationCheckpoints,
-            authorshipResolution: authorship?.resolution,
-            authorshipSegments: authorship?.segments ?? [],
+            authorshipResolution: authorship?.result.resolution,
+            authorshipEvidence: authorship?.evidence,
+            authorshipSegments: authorship?.result.segments ?? [],
             beforeAXErrors: pending.beforeAXErrors,
             afterAXErrors: after.errors,
             beforeCaptureDurationMilliseconds: pending.beforeCaptureDurationMilliseconds,
@@ -541,7 +544,7 @@ final class ActiveTapWriteCollector {
             return
         }
 
-        guard let edit = decision.edit,
+        guard let edit = emittedEdit,
               let proposedEventID,
               let target = pending.target,
               let conditioningState else {
@@ -564,8 +567,9 @@ final class ActiveTapWriteCollector {
             configuredWriteDelaySeconds: configuration.writeDelay,
             conditioningState: conditioningState,
             cursorFidelity: cursorFidelity,
-            authorshipResolution: authorship?.resolution ?? "unresolved",
-            authorshipSegments: authorship?.segments ?? [],
+            authorshipResolution: authorship?.result.resolution ?? "unresolved",
+            authorshipEvidence: authorship?.evidence,
+            authorshipSegments: authorship?.result.segments ?? [],
             outcome: ActiveTapWriteOutcome(
                 operation: edit.operation.rawValue,
                 content: edit.inserted,
@@ -626,16 +630,20 @@ final class ActiveTapWriteCollector {
     private func deriveAuthorship(
         overallEdit: TextEdit,
         pending: PendingActiveTapWrite
-    ) -> WriteAuthorshipResult {
+    ) -> ActiveTapAuthorshipDerivation {
         var pasteMutations = [ProvenPasteMutation]()
         for checkpoint in pending.pasteCheckpoints {
             guard checkpoint.clipboardSnapshotID
                     == pending.conditioningClipboard.snapshotID,
                   checkpoint.clipboardChangeCount
                     == pending.conditioningClipboard.changeCount else {
-                return WriteAuthorshipResult(
-                    segments: [],
-                    resolution: "clipboard_changed_after_conditioning"
+                return ActiveTapAuthorshipDerivation(
+                    result: WriteAuthorshipResult(
+                        segments: [],
+                        resolution: "clipboard_changed_after_conditioning"
+                    ),
+                    emittedEdit: overallEdit,
+                    evidence: nil
                 )
             }
             guard checkpoint.prePasteAXErrors.isEmpty,
@@ -645,9 +653,13 @@ final class ActiveTapWriteCollector {
                   !before.valueWasTruncated,
                   !after.valueWasTruncated,
                   let clipboardText = checkpoint.clipboardText else {
-                return WriteAuthorshipResult(
-                    segments: [],
-                    resolution: "paste_checkpoint_incomplete"
+                return ActiveTapAuthorshipDerivation(
+                    result: WriteAuthorshipResult(
+                        segments: [],
+                        resolution: "paste_checkpoint_incomplete"
+                    ),
+                    emittedEdit: overallEdit,
+                    evidence: nil
                 )
             }
             let pasteEdit = minimalTextEdit(
@@ -661,9 +673,20 @@ final class ActiveTapWriteCollector {
                 )
             )
             guard !pasteEdit.isEmpty, pasteEdit.inserted == clipboardText else {
-                return WriteAuthorshipResult(
-                    segments: [],
-                    resolution: "paste_transition_does_not_match_clipboard"
+                if let fallback = keyboardClipboardPasteFallback(
+                    overallEdit: overallEdit,
+                    pending: pending,
+                    checkpoint: checkpoint
+                ) {
+                    return fallback
+                }
+                return ActiveTapAuthorshipDerivation(
+                    result: WriteAuthorshipResult(
+                        segments: [],
+                        resolution: "paste_transition_does_not_match_clipboard"
+                    ),
+                    emittedEdit: overallEdit,
+                    evidence: nil
                 )
             }
             pasteMutations.append(ProvenPasteMutation(
@@ -673,7 +696,93 @@ final class ActiveTapWriteCollector {
                 inserted: pasteEdit.inserted
             ))
         }
-        return writeAuthorship(overallEdit: overallEdit, pasteMutations: pasteMutations)
+        return ActiveTapAuthorshipDerivation(
+            result: writeAuthorship(
+                overallEdit: overallEdit,
+                pasteMutations: pasteMutations
+            ),
+            emittedEdit: overallEdit,
+            evidence: nil
+        )
+    }
+
+    private func keyboardClipboardPasteFallback(
+        overallEdit: TextEdit,
+        pending: PendingActiveTapWrite,
+        checkpoint: ActiveTapPasteCheckpoint
+    ) -> ActiveTapAuthorshipDerivation? {
+        guard pending.pasteCheckpoints.count == 1,
+              overallEdit.removed.isEmpty,
+              let initial = pending.before,
+              !initial.valueWasTruncated,
+              checkpoint.prePasteAXErrors.isEmpty,
+              checkpoint.axErrors.isEmpty,
+              !checkpoint.clipboardTextWasTruncated,
+              let clipboardText = checkpoint.clipboardText,
+              !clipboardText.isEmpty,
+              let prePaste = checkpoint.prePasteObservation,
+              let postPaste = checkpoint.observation,
+              !prePaste.valueWasTruncated,
+              !postPaste.valueWasTruncated,
+              prePaste.selectedRangeLength == 0,
+              let cursor = semanticCursorContext(
+                in: logicalEditableValue(
+                    prePaste.value,
+                    placeholderValue: prePaste.placeholderValue
+                ),
+                selectionStartUTF16: prePaste.selectedRangeLocation,
+                selectionLengthUTF16: prePaste.selectedRangeLength,
+                surroundingCharacterCount: 1
+              ) else { return nil }
+
+        let initialValue = logicalEditableValue(
+            initial.value,
+            placeholderValue: initial.placeholderValue
+        )
+        let prePasteValue = logicalEditableValue(
+            prePaste.value,
+            placeholderValue: prePaste.placeholderValue
+        )
+        let postPasteValue = logicalEditableValue(
+            postPaste.value,
+            placeholderValue: postPaste.placeholderValue
+        )
+        guard postPasteValue == prePasteValue || postPasteValue == initialValue,
+              let observedAfter = applying(overallEdit, to: initialValue),
+              !observedAfter.contains(clipboardText) else { return nil }
+
+        let preCharacters = Array(prePasteValue)
+        let pasteOffset = cursor.selectionStartCharacters
+        guard pasteOffset >= 0, pasteOffset <= preCharacters.count else { return nil }
+        let left = String(preCharacters[..<pasteOffset])
+        let right = String(preCharacters[pasteOffset...])
+        guard observedAfter.hasPrefix(left), observedAfter.hasSuffix(right) else { return nil }
+
+        let observedCharacters = Array(observedAfter)
+        guard pasteOffset <= observedCharacters.count else { return nil }
+        let resolvedAfter = String(observedCharacters[..<pasteOffset])
+            + clipboardText
+            + String(observedCharacters[pasteOffset...])
+        let resolvedEdit = minimalTextEdit(from: initialValue, to: resolvedAfter)
+        guard !resolvedEdit.isEmpty,
+              resolvedEdit.characterOffset == overallEdit.characterOffset,
+              resolvedEdit.removed == overallEdit.removed else { return nil }
+        let result = writeAuthorship(
+            overallEdit: resolvedEdit,
+            pasteMutations: [ProvenPasteMutation(
+                checkpointID: checkpoint.checkpointID,
+                clipboardSnapshotID: checkpoint.clipboardSnapshotID,
+                characterOffset: pasteOffset,
+                inserted: clipboardText
+            )]
+        )
+        guard result.resolution == "resolved",
+              result.segments.contains(where: { $0.type == "paste" }) else { return nil }
+        return ActiveTapAuthorshipDerivation(
+            result: result,
+            emittedEdit: resolvedEdit,
+            evidence: "keyboard_clipboard_without_ax_transition"
+        )
     }
 
     private func rangeSemanticCursorContext(
@@ -1044,6 +1153,124 @@ final class ActiveTapWriteCollector {
                 capture: capture
             )
         }
+        if configuration.retainScreenshots, let target {
+            Timer.scheduledTimer(
+                withTimeInterval: configuration.postPasteCheckpointDelay,
+                repeats: false
+            ) { [weak self] _ in
+                self?.capturePasteAuditScreenshot(
+                    attemptID: attemptID,
+                    checkpointID: checkpointID,
+                    target: target
+                )
+            }
+        }
+    }
+
+    private func capturePasteAuditScreenshot(
+        attemptID: String,
+        checkpointID: String,
+        target: HeldEditableTarget
+    ) {
+        let recordID = UUID().uuidString
+        let requestedAt = nowTimestamp()
+        guard #available(macOS 15.2, *),
+              let windowElement = target.windowElement,
+              let bounds = axFrame(of: windowElement),
+              bounds.width > 0,
+              bounds.height > 0 else {
+            emitPasteAuditScreenshot(
+                RawPasteAuditScreenshot(
+                    recordID: recordID,
+                    observedAt: nowTimestamp(),
+                    attemptID: attemptID,
+                    pasteCheckpointID: checkpointID,
+                    captureRequestedAt: requestedAt,
+                    capturedAt: nil,
+                    appName: target.app.name,
+                    bundleIdentifier: target.app.bundleIdentifier,
+                    processIdentifier: target.app.processIdentifier,
+                    windowTitle: target.window.title,
+                    windowBounds: nil,
+                    screenshotRelativePath: nil,
+                    screenshotSHA256: nil,
+                    screenshotPixelWidth: nil,
+                    screenshotPixelHeight: nil,
+                    error: "window_bounds_unavailable"
+                )
+            )
+            return
+        }
+        SCScreenshotManager.captureImage(in: bounds) { [weak self] image, error in
+            guard let self else { return }
+            let capturedAt = nowTimestamp()
+            let retained = image.flatMap {
+                try? self.persistPasteAuditScreenshot($0, recordID: recordID)
+            }
+            let record = RawPasteAuditScreenshot(
+                recordID: recordID,
+                observedAt: nowTimestamp(),
+                attemptID: attemptID,
+                pasteCheckpointID: checkpointID,
+                captureRequestedAt: requestedAt,
+                capturedAt: image == nil ? nil : capturedAt,
+                appName: target.app.name,
+                bundleIdentifier: target.app.bundleIdentifier,
+                processIdentifier: target.app.processIdentifier,
+                windowTitle: target.window.title,
+                windowBounds: rectValue(bounds),
+                screenshotRelativePath: retained?.relativePath,
+                screenshotSHA256: retained?.sha256,
+                screenshotPixelWidth: retained?.pixelWidth,
+                screenshotPixelHeight: retained?.pixelHeight,
+                error: retained == nil
+                    ? error?.localizedDescription ?? "screenshot_persistence_failed"
+                    : nil
+            )
+            DispatchQueue.main.async {
+                self.emitPasteAuditScreenshot(record)
+            }
+        }
+    }
+
+    private func persistPasteAuditScreenshot(
+        _ image: CGImage,
+        recordID: String
+    ) throws -> ActiveTapRetainedScreenshot {
+        let directory = URL(fileURLWithPath: configuration.screenshotsDirectory)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: NSNumber(value: 0o700)]
+        )
+        let relativePath = "screenshots/\(recordID)-paste.png"
+        let url = URL(fileURLWithPath: configuration.outputDirectory)
+            .appendingPathComponent(relativePath)
+        let representation = NSBitmapImageRep(cgImage: image)
+        guard let data = representation.representation(using: .png, properties: [:]),
+              FileManager.default.createFile(
+                atPath: url.path,
+                contents: data,
+                attributes: [.posixPermissions: NSNumber(value: 0o600)]
+              ) else {
+            throw ActiveTapWriteCollectorError.screenshotPersistenceFailed
+        }
+        return ActiveTapRetainedScreenshot(
+            relativePath: relativePath,
+            sha256: SHA256.hash(data: data)
+                .map { String(format: "%02x", $0) }
+                .joined(),
+            pixelWidth: image.width,
+            pixelHeight: image.height
+        )
+    }
+
+    private func emitPasteAuditScreenshot(_ record: RawPasteAuditScreenshot) {
+        do {
+            _ = try rawWriter.write(record)
+        } catch {
+            writeDiagnostic("could not persist paste audit screenshot: \(error)")
+        }
     }
 
     private func clipboardSnapshot() -> ActiveTapClipboardSnapshot {
@@ -1258,6 +1485,7 @@ final class ActiveTapWriteCollector {
         let target = HeldEditableTarget(
             element: focusedElement,
             applicationElement: applicationElement,
+            windowElement: windowElement,
             identity: identity,
             app: app,
             window: window
@@ -1390,6 +1618,7 @@ private struct CapturedReturnCheckpoint {
 private struct HeldEditableTarget {
     let element: AXUIElement
     let applicationElement: AXUIElement
+    let windowElement: AXUIElement?
     let identity: ActiveTapTargetIdentity
     let app: AppContext
     let window: WindowContext
@@ -1573,6 +1802,40 @@ private struct ActiveTapPasteCheckpoint: Encodable {
     var axErrors: [String]
 }
 
+private struct ActiveTapRetainedScreenshot {
+    let relativePath: String
+    let sha256: String
+    let pixelWidth: Int
+    let pixelHeight: Int
+}
+
+private struct RawPasteAuditScreenshot: Encodable {
+    let schemaVersion = 1
+    let recordType = "paste_audit_screenshot"
+    let recordID: String
+    let observedAt: String
+    let attemptID: String
+    let pasteCheckpointID: String
+    let captureRequestedAt: String
+    let capturedAt: String?
+    let appName: String
+    let bundleIdentifier: String?
+    let processIdentifier: Int32
+    let windowTitle: String?
+    let windowBounds: RectValue?
+    let screenshotRelativePath: String?
+    let screenshotSHA256: String?
+    let screenshotPixelWidth: Int?
+    let screenshotPixelHeight: Int?
+    let error: String?
+}
+
+private struct ActiveTapAuthorshipDerivation {
+    let result: WriteAuthorshipResult
+    let emittedEdit: TextEdit
+    let evidence: String?
+}
+
 private struct ActiveTapMutationCheckpoint: Encodable {
     let checkpointID: String
     let inputObservedAt: String
@@ -1637,7 +1900,7 @@ private struct WriteDerivationDecision {
 }
 
 private struct RawActiveTapWriteAttempt: Encodable {
-    let schemaVersion = 12
+    let schemaVersion = 13
     let recordType = "active_tap_write_attempt"
     let recordID: String
     let bundleIdentifier: String
@@ -1667,6 +1930,7 @@ private struct RawActiveTapWriteAttempt: Encodable {
     let pasteCheckpoints: [ActiveTapPasteCheckpoint]
     let mutationCheckpoints: [ActiveTapMutationCheckpoint]
     let authorshipResolution: String?
+    let authorshipEvidence: String?
     let authorshipSegments: [WriteAuthorshipSegment]
     let beforeAXErrors: [String]
     let afterAXErrors: [String]
@@ -1688,7 +1952,7 @@ private struct RawWriteSensorHealth: Encodable {
 }
 
 private struct ActiveTapWriteRecord: Encodable {
-    let schemaVersion = 9
+    let schemaVersion = 10
     let kind = "write"
     let provenance = "active_tap_accessibility_diff"
     let sequence: UInt64
@@ -1706,6 +1970,7 @@ private struct ActiveTapWriteRecord: Encodable {
     let conditioningState: ActiveTapWriteConditioningState
     let cursorFidelity: ActiveTapCursorFidelityEvidence
     let authorshipResolution: String
+    let authorshipEvidence: String?
     let authorshipSegments: [WriteAuthorshipSegment]
     let outcome: ActiveTapWriteOutcome
     let operation: String
@@ -2090,10 +2355,42 @@ private func milliseconds(sinceNanoseconds started: UInt64) -> Double {
     return Double(finished - started) / 1_000_000
 }
 
+private func axFrame(of element: AXUIElement) -> CGRect? {
+    var positionReference: CFTypeRef?
+    var sizeReference: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(
+        element,
+        kAXPositionAttribute as CFString,
+        &positionReference
+    ) == .success,
+    AXUIElementCopyAttributeValue(
+        element,
+        kAXSizeAttribute as CFString,
+        &sizeReference
+    ) == .success,
+    let positionReference,
+    let sizeReference,
+    CFGetTypeID(positionReference) == AXValueGetTypeID(),
+    CFGetTypeID(sizeReference) == AXValueGetTypeID() else { return nil }
+    let positionValue = unsafeBitCast(positionReference, to: AXValue.self)
+    let sizeValue = unsafeBitCast(sizeReference, to: AXValue.self)
+    var point = CGPoint.zero
+    var size = CGSize.zero
+    guard AXValueGetValue(positionValue, .cgPoint, &point),
+          AXValueGetValue(sizeValue, .cgSize, &size) else { return nil }
+    return CGRect(origin: point, size: size)
+}
+
 enum ActiveTapWriteCollectorError: Error, CustomStringConvertible {
     case eventTapUnavailable
+    case screenshotPersistenceFailed
 
     var description: String {
-        "could not create active write event tap; grant Accessibility and Input Monitoring, then try again"
+        switch self {
+        case .eventTapUnavailable:
+            return "could not create active write event tap; grant Accessibility and Input Monitoring, then try again"
+        case .screenshotPersistenceFailed:
+            return "could not retain paste audit screenshot"
+        }
     }
 }

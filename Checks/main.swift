@@ -773,6 +773,102 @@ expect(
     "later history retains resolved pasted content and paste provenance"
 )
 
+let opaquePasteInput = fixtureRoot.appendingPathComponent("opaque-paste-input")
+let opaquePasteOutput = fixtureRoot.appendingPathComponent("opaque-paste-output")
+try! FileManager.default.createDirectory(at: opaquePasteInput, withIntermediateDirectories: true)
+try! jsonData([
+    "sessionID": "opaque-paste-session",
+    "schemas": ["timingSemanticsVersion": 2],
+], pretty: true).write(to: opaquePasteInput.appendingPathComponent("session.json"))
+var opaqueRaw = rawAttempt(
+    id: "opaque-paste-attempt", eventID: "opaque-paste-write",
+    before: "", after: " and paste write",
+    timestamp: "2026-01-01T00:00:02.000Z",
+    rangeCursor: ["left": "", "selected": "", "right": ""]
+)
+let opaqueBefore = opaqueRaw["before"] as! [String: Any]
+let opaqueClipboard: [String: Any] = [
+    "schemaVersion": 1, "snapshotID": "opaque-clipboard",
+    "capturedAt": "2026-01-01T00:00:01.000Z", "changeCount": 9,
+    "types": ["public.utf8-plain-text"], "text": "COPIED",
+    "textSHA256": "fixture", "textWasTruncated": false,
+]
+let opaqueConditioning: [String: Any] = [
+    "schemaVersion": 3,
+    "captureSemantics": "synchronous_before_application_mutation",
+    "inputInterceptedAt": "2026-01-01T00:00:01.000Z",
+    "capturedAt": "2026-01-01T00:00:01.000Z",
+    "destination": [
+        "appName": "Fixture", "bundleIdentifier": "fixture.app",
+        "processIdentifier": 42, "windowTitle": "Fixture",
+        "role": "AXTextArea", "subrole": "AXStandardTextArea",
+        "fieldIdentifier": "fixture-editor", "fieldLabel": "Fixture body",
+    ],
+    "cursorContext": [
+        "schemaVersion": 2, "source": "accessibility_string_for_range",
+        "captureStatus": "complete", "fieldState": "editable_text",
+        "leftContext": "", "selectedText": "", "rightContext": "",
+    ],
+    "clipboard": opaqueClipboard,
+    "sourceObservationID": opaqueBefore["observationID"] as! String,
+]
+let opaqueSegments: [[String: Any]] = [
+    ["type": "authored_text", "content": " "],
+    [
+        "type": "paste", "content": "COPIED",
+        "clipboardSnapshotID": "opaque-clipboard",
+        "pasteCheckpointID": "opaque-paste-checkpoint",
+    ],
+    ["type": "authored_text", "content": "and paste write"],
+]
+opaqueRaw["conditioningState"] = opaqueConditioning
+opaqueRaw["authorshipResolution"] = "resolved"
+opaqueRaw["authorshipEvidence"] = "keyboard_clipboard_without_ax_transition"
+opaqueRaw["authorshipSegments"] = opaqueSegments
+opaqueRaw["pasteCheckpoints"] = [[
+    "checkpointID": "opaque-paste-checkpoint",
+    "clipboardSnapshotID": "opaque-clipboard",
+    "clipboardChangeCount": 9,
+    "clipboardText": "COPIED",
+    "clipboardTextWasTruncated": false,
+    "prePasteAXErrors": [],
+    "axErrors": [],
+    "prePasteObservation": observation(
+        " ", at: "2026-01-01T00:00:01.200Z", selectionLocation: 1
+    ),
+    "observation": observation(
+        "", at: "2026-01-01T00:00:01.300Z", selectionLocation: 0
+    ),
+]]
+var opaqueEvent = writeEvent(
+    id: "opaque-paste-write", sourceID: "opaque-paste-attempt", sequence: 1,
+    began: "2026-01-01T00:00:01.000Z", available: "2026-01-01T00:00:02.000Z",
+    before: "", inserted: " COPIEDand paste write", offset: 0
+)
+opaqueEvent["sessionID"] = "opaque-paste-session"
+opaqueEvent["conditioningState"] = opaqueConditioning
+opaqueEvent["authorshipResolution"] = "resolved"
+opaqueEvent["authorshipEvidence"] = "keyboard_clipboard_without_ax_transition"
+opaqueEvent["authorshipSegments"] = opaqueSegments
+writeFixtureJSONL([opaqueEvent], to: opaquePasteInput.appendingPathComponent("events.jsonl"))
+writeFixtureJSONL([opaqueRaw], to: opaquePasteInput.appendingPathComponent("raw.jsonl"))
+_ = try! CausalDatasetCompiler().compile(
+    inputDirectory: opaquePasteInput,
+    outputDirectory: opaquePasteOutput
+)
+let opaquePasteExamples = readFixtureJSONL(
+    opaquePasteOutput.appendingPathComponent("examples.jsonl")
+)
+let opaqueTarget = opaquePasteExamples[0]["target"] as! [String: Any]
+let opaqueTargetSegments = opaqueTarget["segments"] as! [[String: Any]]
+expect(
+    opaqueTarget["resolvedContent"] as! String == " COPIEDand paste write"
+        && opaqueTargetSegments.map { $0["type"] as! String }
+            == ["authored_text", "paste", "authored_text"]
+        && opaqueTargetSegments[1]["content"] == nil,
+    "AX-opaque Cmd-V restores clipboard content to history while supervising one paste action"
+)
+
 try! FileManager.default.removeItem(at: fixtureRoot)
 
 print("CoupledCore checks passed")

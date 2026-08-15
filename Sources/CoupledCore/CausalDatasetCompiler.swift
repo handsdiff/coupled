@@ -6,7 +6,7 @@ public struct CausalDatasetCompilerConfiguration: Sendable {
     public let includeTimestampsInContext: Bool
 
     public init(
-        conversionVersion: String = "phase1-causal-v11",
+        conversionVersion: String = "phase1-causal-v12",
         includeTimestampsInContext: Bool = false
     ) {
         self.conversionVersion = conversionVersion
@@ -449,8 +449,8 @@ public struct CausalDatasetCompiler {
                     "legacy earliest mutation and terminal edit must agree with the initial cursor",
                 ],
                 "explicitExclusion": "phase1Eligible == false",
-                "writeVerification": "source outcome must reconstruct the used observation, except the identified legacy synthetic-deletion fallback",
-                "writeProjection": "canonical minimum contiguous diff of raw logical BEFORE and used observation",
+                "writeVerification": "source outcome must reconstruct the used observation; a keyboard-grounded AX-opaque paste additionally requires exact clipboard/checkpoint/segment agreement",
+                "writeProjection": "canonical minimum contiguous diff of raw logical BEFORE and used observation, with proven AX-opaque paste payloads restored from the causally conditioned clipboard",
             ],
             "serialization": [
                 "contextVersion": 3,
@@ -654,7 +654,14 @@ private func canonicalWrite(
     let sourceReconstructsObservation = reconstructed == afterValue
     let knownSyntheticDeletion = event.string("fallbackReason")
         == "removal_only_terminal_unpopulated"
-    guard sourceReconstructsObservation || knownSyntheticDeletion else {
+    let observedCanonicalEdit = minimalTextEdit(from: beforeValue, to: afterValue)
+    let groundedKeyboardPaste = validatesGroundedKeyboardPaste(
+        event: event,
+        attempt: attempt,
+        beforeValue: beforeValue,
+        observedCanonicalEdit: observedCanonicalEdit
+    )
+    guard sourceReconstructsObservation || knownSyntheticDeletion || groundedKeyboardPaste else {
         return .failure(
             reconstructed == nil
                 ? "derived_edit_does_not_apply_to_before"
@@ -662,7 +669,14 @@ private func canonicalWrite(
         )
     }
 
-    let canonicalEdit = minimalTextEdit(from: beforeValue, to: afterValue)
+    let canonicalEdit = groundedKeyboardPaste
+        ? TextEdit(
+            operation: EditOperation(rawValue: operation)!,
+            characterOffset: offset,
+            removed: removed,
+            inserted: inserted
+        )
+        : observedCanonicalEdit
     guard !canonicalEdit.isEmpty else { return .failure("canonical_raw_edit_is_empty") }
     var canonicalEvent = event
     canonicalEvent["operation"] = canonicalEdit.operation.rawValue
@@ -691,6 +705,103 @@ private func canonicalWrite(
     }
     canonicalEvent["cursorFidelity"] = cursorFidelity
     return .success(canonicalEvent)
+}
+
+private func validatesGroundedKeyboardPaste(
+    event: [String: Any],
+    attempt: [String: Any],
+    beforeValue: String,
+    observedCanonicalEdit: TextEdit
+) -> Bool {
+    let evidence = "keyboard_clipboard_without_ax_transition"
+    guard event.string("authorshipEvidence") == evidence,
+          attempt.string("authorshipEvidence") == evidence,
+          event.string("authorshipResolution") == "resolved",
+          attempt.string("authorshipResolution") == "resolved",
+          let operation = event.string("operation"),
+          operation == observedCanonicalEdit.operation.rawValue,
+          event.number("characterOffset")?.intValue == observedCanonicalEdit.characterOffset,
+          event.string("removedContent") == observedCanonicalEdit.removed,
+          let eventContent = event.string("content"),
+          let segments = event["authorshipSegments"] as? [[String: Any]],
+          let rawSegments = attempt["authorshipSegments"] as? [[String: Any]],
+          let encodedSegments = try? JSONSerialization.data(
+            withJSONObject: segments,
+            options: [.sortedKeys, .withoutEscapingSlashes]
+          ),
+          let encodedRawSegments = try? JSONSerialization.data(
+            withJSONObject: rawSegments,
+            options: [.sortedKeys, .withoutEscapingSlashes]
+          ),
+          encodedSegments == encodedRawSegments,
+          let conditioning = attempt["conditioningState"] as? [String: Any],
+          let clipboard = conditioning["clipboard"] as? [String: Any],
+          clipboard.boolean("textWasTruncated") != true,
+          let snapshotID = clipboard.string("snapshotID"),
+          let changeCount = clipboard.number("changeCount")?.intValue,
+          let checkpoints = attempt["pasteCheckpoints"] as? [[String: Any]],
+          checkpoints.count == 1,
+          let checkpoint = checkpoints.first,
+          checkpoint.string("clipboardSnapshotID") == snapshotID,
+          checkpoint.number("clipboardChangeCount")?.intValue == changeCount,
+          checkpoint.boolean("clipboardTextWasTruncated") != true,
+          let clipboardText = checkpoint.string("clipboardText"),
+          !clipboardText.isEmpty,
+          checkpoint.stringArray("prePasteAXErrors").isEmpty,
+          checkpoint.stringArray("axErrors").isEmpty,
+          let prePaste = checkpoint["prePasteObservation"] as? [String: Any],
+          let postPaste = checkpoint["observation"] as? [String: Any],
+          prePaste.boolean("valueWasTruncated") != true,
+          postPaste.boolean("valueWasTruncated") != true,
+          prePaste.number("selectedRangeLength")?.intValue == 0,
+          let rawPrePasteValue = prePaste.string("value"),
+          let rawPostPasteValue = postPaste.string("value") else { return false }
+
+    let prePasteValue = logicalEditableValue(
+        rawPrePasteValue,
+        placeholderValue: prePaste.string("placeholderValue")
+    )
+    let postPasteValue = logicalEditableValue(
+        rawPostPasteValue,
+        placeholderValue: postPaste.string("placeholderValue")
+    )
+    guard postPasteValue == prePasteValue || postPasteValue == beforeValue,
+          let cursor = semanticCursorContext(
+            in: prePasteValue,
+            selectionStartUTF16: prePaste.number("selectedRangeLocation")?.intValue,
+            selectionLengthUTF16: prePaste.number("selectedRangeLength")?.intValue,
+            surroundingCharacterCount: 1
+          ) else { return false }
+
+    var reconstructed = ""
+    var authoredOnly = ""
+    var pastePrefixLength: Int?
+    var pasteCount = 0
+    for segment in segments {
+        guard let type = segment.string("type"),
+              let content = segment.string("content") else { return false }
+        reconstructed += content
+        if type == "authored_text" {
+            authoredOnly += content
+        } else if type == "paste" {
+            pasteCount += 1
+            pastePrefixLength = authoredOnly.count
+            guard content == clipboardText,
+                  segment.string("clipboardSnapshotID") == snapshotID,
+                  segment.string("pasteCheckpointID") == checkpoint.string("checkpointID") else {
+                return false
+            }
+        } else {
+            return false
+        }
+    }
+    guard pasteCount == 1,
+          reconstructed == eventContent,
+          authoredOnly == observedCanonicalEdit.inserted,
+          let pastePrefixLength,
+          observedCanonicalEdit.characterOffset + pastePrefixLength
+            == cursor.selectionStartCharacters else { return false }
+    return true
 }
 
 private func cursorFidelityEvidence(
@@ -853,6 +964,9 @@ private func serializeContextEvent(
             }
             serialized["authorshipResolution"] = event.string("authorshipResolution")
                 ?? "unresolved"
+            if let evidence = event.string("authorshipEvidence") {
+                serialized["authorshipEvidence"] = evidence
+            }
             if !completeSegments.isEmpty,
                completeSegments.count == segments.count,
                completeSegments.compactMap({ $0["content"] as? String }).joined() == content {
