@@ -4,6 +4,7 @@ set -euo pipefail
 project_dir="${0:A:h:h}"
 app_dir="$project_dir/dist/Coupled.app"
 executable="$app_dir/Contents/MacOS/coupled"
+logs_app_dir="$project_dir/dist/Coupled Logs.app"
 launch_log_dir="$project_dir/.coupled-launch"
 
 if [[ ! -x "$executable" ]]; then
@@ -20,6 +21,7 @@ normalize_paths() {
   arguments=("$@")
   normalized=()
   has_output=false
+  output_directory=""
   index=1
   while (( index <= ${#arguments[@]} )); do
     argument="${arguments[index]}"
@@ -36,6 +38,7 @@ normalize_paths() {
       fi
       normalized+=("$value")
       [[ "$argument" != "--output" ]] || has_output=true
+      [[ "$argument" != "--output" ]] || output_directory="$value"
     fi
     (( index += 1 ))
   done
@@ -53,11 +56,20 @@ case "$command_name" in
     print "  ./scripts/coupled collect [collector options]"
     print "  ./scripts/coupled snapshot [collector options]"
     print "  ./scripts/coupled logs [--full-text|--raw]"
+    print "  ./scripts/coupled viewer"
     print "  ./scripts/coupled status"
     print "  ./scripts/coupled stop"
     print ""
     print "Coupled must be launched through this wrapper so macOS associates the"
     print "process with the Coupled.app privacy permissions."
+    ;;
+
+  viewer)
+    if [[ ! -x "$logs_app_dir/Contents/MacOS/coupled-logs" ]]; then
+      print -u2 "Coupled Logs.app is missing. Run ./scripts/package-app.sh first."
+      exit 1
+    fi
+    open "$logs_app_dir"
     ;;
 
   status)
@@ -192,8 +204,19 @@ case "$command_name" in
     normalize_paths "$@"
 
     if [[ "$has_output" == false ]]; then
-      normalized+=("--output" "$project_dir/coupled-data/$stamp")
+      output_directory="$project_dir/coupled-data/$stamp"
+      normalized+=("--output" "$output_directory")
     fi
+
+    state_file="$launch_log_dir/latest-run"
+    state_temporary="$launch_log_dir/.latest-run.$$"
+    {
+      print -r -- "command=$command_name"
+      print -r -- "stdoutLog=$stdout_log"
+      print -r -- "stderrLog=$stderr_log"
+      print -r -- "sessionPath=$output_directory/session.json"
+    } > "$state_temporary"
+    mv "$state_temporary" "$state_file"
 
     open -n -g \
       -o "$stdout_log" \

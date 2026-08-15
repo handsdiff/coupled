@@ -1,8 +1,7 @@
 import Foundation
 
-/// Formats one derived event exactly as the compact `scripts/coupled logs`
-/// view does. The native diagnostic window and terminal follower therefore
-/// describe the same event stream without changing the stored JSONL.
+/// Formats one derived event for the compact terminal follower and standalone
+/// native viewer without changing the stored JSONL.
 public enum LiveEventLogFormatter {
     public static func format(_ data: Data) -> String? {
         guard let object = try? JSONSerialization.jsonObject(with: data),

@@ -138,7 +138,6 @@ do {
                 reads?.supersedePendingReads(with: input)
             }
         )
-        LiveEventLogWindowController.shared.show()
         try writes.start()
         try reads.start()
         NSApplication.shared.run()

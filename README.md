@@ -128,14 +128,18 @@ editable fields in the allowlisted applications.
 ```
 
 Derived events are appended in emission order to `events.jsonl` and mirrored to
-the same live log. `Coupled.app` also opens a read-only native window containing
-the identical compact stream; capture is still started and stopped from the
-terminal. The window has no collector controls, is not floating, and is placed
-on a second display when one is available. Coupled's own bundle is permanently
-excluded from READ and WRITE collection. Keep the viewer outside captured work
-window bounds—preferably on the second display—because an overlapping window can
-still alter the pixels in a rectangular screen capture even when its application
-is not tracked. Source observations are appended separately to `raw.jsonl`:
+the same live log. `Coupled.app` is headless; capture is started and stopped from
+the terminal. `dist/Coupled Logs.app` is a separate, independently launchable
+viewer with no collector controls. It shows the active run's immutable resolved
+settings and the identical compact event stream. Open it from Finder, Spotlight,
+the Dock, or with `./scripts/coupled viewer`; it may remain closed or open
+independently of collection.
+
+Both Coupled bundle identifiers are permanently excluded from READ and WRITE
+collection. Keep the viewer outside captured work-window bounds because an
+overlapping window can still alter the pixels in a rectangular screen capture
+even when its application is not tracked. Source observations are appended
+separately to `raw.jsonl`:
 
 A mutating key is also an event boundary for a pending read on the same Core
 Graphics window. The key invalidates pointer activity whose read delay has not
@@ -480,6 +484,16 @@ Follow interpreted events in another terminal with:
 ```sh
 ./scripts/coupled logs
 ```
+
+Or open the independent native viewer at any time:
+
+```sh
+./scripts/coupled viewer
+```
+
+When collection is live, the viewer follows that run and displays its resolved
+`session.json` configuration. Otherwise it displays the most recent launch log
+and reports that no collection is active.
 
 Add or remove the pause file without stopping the process:
 

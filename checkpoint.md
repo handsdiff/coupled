@@ -112,14 +112,16 @@ Implemented safeguards:
 - Full-window screenshots are retained for later reprocessing.
 - Adjacent viewport OCR overlap is removed without deleting later rereads.
 
-### Native live event view
+### Standalone live event view
 
-The `events` command opens a read-only `Coupled Live Events` window containing
-the same compact derived-event stream as `./scripts/coupled logs`. It has no
-capture controls, retains only a bounded recent text buffer, is non-floating,
-and prefers a second display. `com.niyant.coupled` is permanently excluded from
+`Coupled.app` is a headless collector controlled from the terminal. `Coupled
+Logs.app` is a separate, independently launchable process that follows the same
+compact derived-event stream as `./scripts/coupled logs`. During a live run it
+also displays that run's immutable resolved `session.json` settings. It has no
+capture controls and retains only a bounded recent text buffer. Both
+`com.niyant.coupled` and `com.niyant.coupled.logs` are permanently excluded from
 READ and WRITE collection. The authoritative `events.jsonl`, `raw.jsonl`, and
-stdout mirror remain unchanged. The window must not overlap a captured work
+stdout mirror remain unchanged. The viewer must not overlap a captured work
 surface because semantic exclusion cannot remove pixels already covering a
 rectangular screenshot.
 
