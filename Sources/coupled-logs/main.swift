@@ -88,7 +88,7 @@ private final class LogViewerApplicationDelegate: NSObject, NSApplicationDelegat
         let scrollView = NSScrollView(frame: NSRect(origin: .zero, size: size))
         scrollView.autoresizingMask = [.width, .height]
         scrollView.hasVerticalScroller = true
-        scrollView.hasHorizontalScroller = true
+        scrollView.hasHorizontalScroller = false
         scrollView.borderType = .noBorder
 
         let textView = NSTextView(frame: scrollView.bounds)
@@ -96,14 +96,16 @@ private final class LogViewerApplicationDelegate: NSObject, NSApplicationDelegat
         textView.isEditable = false
         textView.isSelectable = true
         textView.isRichText = false
+        textView.isHorizontallyResizable = false
+        textView.isVerticallyResizable = true
         textView.importsGraphics = false
         textView.usesFindPanel = true
         textView.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
         textView.textColor = .labelColor
         textView.backgroundColor = .textBackgroundColor
-        textView.textContainer?.widthTracksTextView = false
+        textView.textContainer?.widthTracksTextView = true
         textView.textContainer?.containerSize = NSSize(
-            width: CGFloat.greatestFiniteMagnitude,
+            width: scrollView.contentSize.width,
             height: CGFloat.greatestFiniteMagnitude
         )
         scrollView.documentView = textView
