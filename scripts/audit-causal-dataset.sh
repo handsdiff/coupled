@@ -55,7 +55,8 @@ jq -e -s --slurpfile manifest "$manifest" --slurpfile examples "$examples" --slu
     .sessionID == $m.sessionID and
     .conversionVersion == $m.conversionVersion and
     ($model.kind == $event.kind) and
-    (($model | model_content) == $audit.content) and
+    (($model | model_content)
+      == (if .kind == "write" then $audit.resolvedCompletion else $audit.content end)) and
     (($model | has("schemaVersion")) | not) and
     (($model | has("bundleIdentifier")) | not) and
     (($model | has("provenance")) | not) and
@@ -69,6 +70,7 @@ jq -e -s --slurpfile manifest "$manifest" --slurpfile examples "$examples" --slu
        (($model.destination // {} | keys - ["application", "window"] | length) == 0) and
        (($model | has("source")) | not) and
        (($model.operation | type) == "string") and
+       (($audit.observedNetEdit // {content: $audit.content}).content == $audit.content) and
        (((($model | has("content")) and (($model | has("authorshipSegments")) | not))) or
         ((($model | has("content")) | not) and
          (($model.authorshipSegments | type) == "array") and

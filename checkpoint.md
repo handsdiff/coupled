@@ -129,11 +129,13 @@ rectangular screenshot.
 
 Current compiler: `phase1-causal-v13`
 
-The v13 paste-epoch path has passed deterministic reducer/compiler checks and
-regression compilation. Run 5's 48 target examples and all model-facing
-semantics are identical between v12 and v13; `ordinary-work-audit-2` still
-produces 17 examples with no rejection. The first live validation of the new
-derived schema is still pending.
+The v13 paste-epoch path has passed deterministic reducer/compiler checks,
+regression compilation, and `paste-epoch-test-1`. Run 5's 48 target examples
+and all model-facing semantics are identical between v12 and v13;
+`ordinary-work-audit-2` still produces 17 examples with no rejection. The live
+test produced two exact `before ` + paste + ` after` completions—including a
+rapid-Return boundary—and compiled all eight session WRITEs with zero target
+exclusions or reconstruction rejection.
 
 Timing:
 
@@ -317,8 +319,7 @@ No ablation requires changing the collector schema. The principal missing layer 
 
 ### Before the next authoritative collection
 
-The focused component gates are complete except for the pending live v13
-paste-epoch validation. After that passes, treat `phase1-causal-v13` and the
+The focused component gates are complete. Treat `phase1-causal-v13` and the
 current three-second delays/crop configuration as the candidate baseline for an
 ordinary-work audit run.
 
