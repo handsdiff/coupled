@@ -4,7 +4,7 @@ import Foundation
 public struct Phase1SemanticReducerConfiguration: Sendable {
     public let reducerVersion: String
 
-    public init(reducerVersion: String = "phase1-semantic-v2") {
+    public init(reducerVersion: String = "phase1-semantic-v3") {
         self.reducerVersion = reducerVersion
     }
 }
@@ -137,8 +137,12 @@ public struct Phase1SemanticReducer {
             }
         }
 
-        let overlapResult = applySemanticReadOverlap(
+        let staleReadResult = removeStaleDelayedReads(
             candidates: candidates, sessionID: sessionID
+        )
+        dispositions.append(contentsOf: staleReadResult.dispositions)
+        let overlapResult = applySemanticReadOverlap(
+            candidates: staleReadResult.events, sessionID: sessionID
         )
         dispositions.append(contentsOf: overlapResult.dispositions)
         var events = overlapResult.events.sorted { $0.rawLine < $1.rawLine }.map(\.event)
@@ -181,6 +185,7 @@ public struct Phase1SemanticReducer {
                 "unresolved": unresolved.count,
             ],
             "eventIdentity": "sha256(sessionID + ordered raw lineage + output ordinal); reducer version excluded",
+            "staleDelayedReadRule": "exclude only when trigger lastActivityAt precedes WRITE beganAt and delayed capturedAt falls within that WRITE interval for the same process",
             "readOverlapOrdering": "READ capturedAt with finalized WRITE beganAt boundaries; raw append order ignored",
             "previewAuthority": false,
         ]
@@ -212,6 +217,312 @@ private struct ReducerFailure: Error {
     let rule: String
     let reason: String
     let details: [String: Any]
+}
+
+private struct CheckpointGroundedEdit {
+    let edit: TextEdit
+    let observationCount: Int
+}
+
+private struct TaggedReducerCharacter {
+    let character: Character
+    let originalIndex: Int?
+}
+
+/// Uses ordered post-input field states only to choose among edits which are
+/// already equivalent minimal reconstructions of the same BEFORE and AFTER.
+/// It cannot introduce transient typo text or create a different document
+/// transition.
+private func checkpointGroundedEquivalentEdit(
+    raw: [String: Any],
+    beforeValue: String,
+    afterValue: String,
+    usedObservation: [String: Any],
+    canonicalEdit: TextEdit
+) -> CheckpointGroundedEdit? {
+    guard !(raw["mutationCheckpoints"] as? [[String: Any]] ?? []).isEmpty,
+          (raw["pasteCheckpoints"] as? [[String: Any]] ?? []).isEmpty else {
+        return nil
+    }
+    let finalCandidates = equivalentMinimalEdits(
+        from: beforeValue, to: afterValue, canonical: canonicalEdit
+    )
+    guard finalCandidates.count > 1 else { return nil }
+
+    let selectedAt = reducerTimestamp(
+        stringValue(usedObservation["observedAt"])
+            ?? stringValue(raw["terminalSnapshotAt"])
+            ?? stringValue(raw["terminalDecisionAt"])
+            ?? ""
+    )
+    var observations = (raw["mutationCheckpoints"] as? [[String: Any]] ?? [])
+        .compactMap { checkpoint -> (capturedAt: String, eventTimestamp: UInt64, value: String)? in
+            guard stringArray(checkpoint["axErrors"]).isEmpty,
+                  let observation = checkpoint["observation"] as? [String: Any],
+                  observation["valueWasTruncated"] as? Bool != true,
+                  let rawValue = stringValue(observation["value"]),
+                  let capturedAt = stringValue(observation["observedAt"]) else {
+                return nil
+            }
+            if let selectedAt {
+                guard let captured = reducerTimestamp(capturedAt),
+                      captured <= selectedAt else { return nil }
+            }
+            return (
+                capturedAt,
+                uint64Value(checkpoint["eventTimestampNanoseconds"]) ?? 0,
+                logicalEditableValue(
+                    rawValue,
+                    placeholderValue: stringValue(observation["placeholderValue"])
+                )
+            )
+        }
+    observations.sort {
+        if $0.capturedAt != $1.capturedAt { return $0.capturedAt < $1.capturedAt }
+        return $0.eventTimestamp < $1.eventTimestamp
+    }
+
+    var tagged = Array(beforeValue).enumerated().map {
+        TaggedReducerCharacter(character: $0.element, originalIndex: $0.offset)
+    }
+    var currentValue = beforeValue
+    var expectedCaret: Int?
+    var usedObservationCount = 0
+    let states = observations.map(\.value) + [afterValue]
+    for state in states where state != currentValue {
+        let canonical = minimalTextEdit(from: currentValue, to: state)
+        guard !canonical.isEmpty else { continue }
+        let candidates = equivalentMinimalEdits(
+            from: currentValue, to: state, canonical: canonical
+        )
+        let chosen: TextEdit
+        if candidates.count == 1 {
+            chosen = candidates[0]
+        } else if let expectedCaret {
+            let ranked = candidates.map { candidate in
+                (
+                    candidate,
+                    min(
+                        abs(candidate.characterOffset - expectedCaret),
+                        abs(
+                            candidate.characterOffset
+                                + candidate.removed.count - expectedCaret
+                        )
+                    )
+                )
+            }
+            guard let bestDistance = ranked.map(\.1).min(),
+                  ranked.filter({ $0.1 == bestDistance }).count == 1,
+                  let best = ranked.first(where: { $0.1 == bestDistance }) else {
+                return nil
+            }
+            chosen = best.0
+        } else {
+            return nil
+        }
+        guard let updated = applyingTagged(chosen, to: tagged),
+              String(updated.map(\.character)) == state else { return nil }
+        tagged = updated
+        currentValue = state
+        expectedCaret = chosen.characterOffset + chosen.inserted.count
+        usedObservationCount += 1
+    }
+    guard currentValue == afterValue,
+          String(tagged.map(\.character)) == afterValue else { return nil }
+
+    let survivingOriginals = Set(tagged.compactMap(\.originalIndex))
+    let missingOriginals = Set(0..<beforeValue.count).subtracting(survivingOriginals)
+    let authoredPositions = Set(tagged.indices.filter { tagged[$0].originalIndex == nil })
+    let proven = finalCandidates.filter { candidate in
+        let removedEnd = candidate.characterOffset + candidate.removed.count
+        let insertedEnd = candidate.characterOffset + candidate.inserted.count
+        let removed = Set<Int>(candidate.characterOffset..<removedEnd)
+        let inserted = Set<Int>(candidate.characterOffset..<insertedEnd)
+        return removed == missingOriginals && inserted == authoredPositions
+    }
+    guard proven.count == 1, let edit = proven.first,
+          edit != canonicalEdit,
+          !crossesStructuralBoundary(
+            from: canonicalEdit.characterOffset,
+            to: edit.characterOffset,
+            beforeValue: beforeValue,
+            afterValue: afterValue
+          ),
+          applying(edit, to: beforeValue) == afterValue else { return nil }
+    return CheckpointGroundedEdit(
+        edit: edit, observationCount: usedObservationCount
+    )
+}
+
+private func crossesStructuralBoundary(
+    from canonicalOffset: Int,
+    to groundedOffset: Int,
+    beforeValue: String,
+    afterValue: String
+) -> Bool {
+    let lower = min(canonicalOffset, groundedOffset)
+    let upper = max(canonicalOffset, groundedOffset)
+    guard lower < upper else { return false }
+    let structural: Set<Character> = ["\n", "\r", "\u{200B}"]
+    let before = Array(beforeValue)
+    let after = Array(afterValue)
+    let beforeBoundary = before[lower..<min(upper, before.count)]
+    let afterBoundary = after[lower..<min(upper, after.count)]
+    return beforeBoundary.contains(where: structural.contains)
+        || afterBoundary.contains(where: structural.contains)
+}
+
+private func equivalentMinimalEdits(
+    from before: String,
+    to after: String,
+    canonical: TextEdit
+) -> [TextEdit] {
+    let old = Array(before)
+    let new = Array(after)
+    let removedCount = canonical.removed.count
+    let insertedCount = canonical.inserted.count
+    var sharedPrefix = 0
+    while sharedPrefix < min(old.count, new.count),
+          old[sharedPrefix] == new[sharedPrefix] {
+        sharedPrefix += 1
+    }
+    var sharedSuffix = 0
+    while sharedSuffix < min(old.count, new.count),
+          old[old.count - sharedSuffix - 1]
+            == new[new.count - sharedSuffix - 1] {
+        sharedSuffix += 1
+    }
+    let lower = max(0, old.count - removedCount - sharedSuffix)
+    let upper = min(
+        sharedPrefix,
+        min(old.count - removedCount, new.count - insertedCount)
+    )
+    guard lower <= upper, upper - lower <= 1_024 else { return [canonical] }
+    var result = [TextEdit]()
+    for offset in lower...upper {
+        let removed = String(old[offset..<(offset + removedCount)])
+        let inserted = String(new[offset..<(offset + insertedCount)])
+        let operation: EditOperation = removed.isEmpty
+            ? .insert : inserted.isEmpty ? .delete : .replace
+        let candidate = TextEdit(
+            operation: operation,
+            characterOffset: offset,
+            removed: removed,
+            inserted: inserted
+        )
+        if applying(candidate, to: before) == after, !result.contains(candidate) {
+            result.append(candidate)
+        }
+    }
+    return result.isEmpty ? [canonical] : result
+}
+
+private func applyingTagged(
+    _ edit: TextEdit,
+    to source: [TaggedReducerCharacter]
+) -> [TaggedReducerCharacter]? {
+    let removedCount = edit.removed.count
+    guard edit.characterOffset >= 0,
+          edit.characterOffset + removedCount <= source.count,
+          String(
+            source[edit.characterOffset..<(edit.characterOffset + removedCount)]
+                .map(\.character)
+          ) == edit.removed else { return nil }
+    var result = source
+    result.replaceSubrange(
+        edit.characterOffset..<(edit.characterOffset + removedCount),
+        with: edit.inserted.map {
+            TaggedReducerCharacter(character: $0, originalIndex: nil)
+        }
+    )
+    return result
+}
+
+/// A pointer-triggered READ is stale only when its final trigger activity
+/// predates a WRITE and its delayed capture lands inside that WRITE interval.
+/// Activity which begins after the WRITE starts is a genuine new read
+/// opportunity and is deliberately retained.
+private func removeStaleDelayedReads(
+    candidates: [ReducerCandidate],
+    sessionID: String
+) -> ReducerOverlapResult {
+    let writes = candidates.filter { $0.kind == "write" }
+    var accepted = [ReducerCandidate]()
+    var dispositions = [ReducerDisposition]()
+    for candidate in candidates {
+        guard candidate.kind == "read" else {
+            accepted.append(candidate)
+            continue
+        }
+        let supersedingWrite = writes
+            .filter { staleDelayedRead(candidate, wasSupersededBy: $0) }
+            .min { $0.overlapBoundaryAt < $1.overlapBoundaryAt }
+        guard let supersedingWrite else {
+            accepted.append(candidate)
+            continue
+        }
+        dispositions.append(ReducerDisposition(
+            line: candidate.rawLine,
+            object: reducerUnresolved(
+                sessionID: sessionID, raw: candidate.raw,
+                line: candidate.rawLine, kind: "read",
+                rule: "semantic_time_stale_delayed_read_v1",
+                reason: "read_candidate_superseded_by_write",
+                details: [
+                    "lastActivityAt": stringValue(candidate.raw["lastActivityAt"]) ?? "",
+                    "capturedAt": stringValue(candidate.raw["capturedAt"]) ?? "",
+                    "supersedingWriteEventID": stringValue(
+                        supersedingWrite.event["eventID"]
+                    ) ?? "",
+                    "supersedingWriteBeganAt": stringValue(
+                        supersedingWrite.raw["beganAt"]
+                    ) ?? "",
+                    "supersedingWriteLastInputAt": stringValue(
+                        supersedingWrite.raw["lastInputAt"]
+                    ) ?? "",
+                    "supersedingWriteTerminalDecisionAt": stringValue(
+                        supersedingWrite.raw["terminalDecisionAt"]
+                    ) ?? "",
+                ]
+            )
+        ))
+    }
+    return ReducerOverlapResult(events: accepted, dispositions: dispositions)
+}
+
+private func staleDelayedRead(
+    _ read: ReducerCandidate,
+    wasSupersededBy write: ReducerCandidate
+) -> Bool {
+    guard read.kind == "read", write.kind == "write",
+          let readProcess = intValue(read.raw["processIdentifier"]),
+          let writeProcess = intValue(write.event["processIdentifier"]),
+          readProcess == writeProcess,
+          let lastActivityAt = stringValue(read.raw["lastActivityAt"]),
+          let capturedAt = stringValue(read.raw["capturedAt"]),
+          let writeBeganAt = stringValue(write.raw["beganAt"]),
+          let terminalDecisionAt = stringValue(write.raw["terminalDecisionAt"]),
+          let lastActivity = reducerTimestamp(lastActivityAt),
+          let captured = reducerTimestamp(capturedAt),
+          let writeBegan = reducerTimestamp(writeBeganAt),
+          let terminalDecision = reducerTimestamp(terminalDecisionAt) else {
+        return false
+    }
+    return lastActivity < writeBegan
+        && captured >= writeBegan
+        && captured <= terminalDecision
+}
+
+private func reducerTimestamp(_ value: String) -> Date? {
+    ReducerTimestampParser.formatter.date(from: value)
+}
+
+private enum ReducerTimestampParser {
+    static let formatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
 }
 
 /// Overlap is an interpretation of the semantic event timeline, not the order
@@ -386,9 +697,26 @@ private func reduceWrite(_ raw: [String: Any], sessionID: String)
         )
     }
 
+    let checkpointGrounding = checkpointGroundedEquivalentEdit(
+        raw: raw,
+        beforeValue: beforeValue,
+        afterValue: afterValue,
+        usedObservation: selection.observation,
+        canonicalEdit: observedEdit
+    )
+    let resolvedEdit = checkpointGrounding?.edit ?? observedEdit
+    guard applying(resolvedEdit, to: beforeValue) == afterValue,
+          resolvedEdit.removed.count == observedEdit.removed.count,
+          resolvedEdit.inserted.count == observedEdit.inserted.count else {
+        return fail(
+            "checkpoint_alignment_is_not_equivalent",
+            rule: "checkpoint_grounded_equivalent_diff_v1"
+        )
+    }
+
     let authorship = reduceAuthorship(
         raw: raw, beforeValue: beforeValue,
-        usedObservation: selection.observation, observedEdit: observedEdit
+        usedObservation: selection.observation, observedEdit: resolvedEdit
     )
     guard authorship.resolution == "resolved" else {
         return fail(authorship.resolution, rule: "paste_authorship_v1")
@@ -398,14 +726,20 @@ private func reduceWrite(_ raw: [String: Any], sessionID: String)
     }
 
     let conditioning = raw["conditioningState"] as? [String: Any] ?? [:]
-    let cursorFidelity = reducerCursorFidelity(raw: raw, terminalEditOffset: observedEdit.characterOffset)
+    let cursorFidelity = reducerCursorFidelity(raw: raw, terminalEditOffset: resolvedEdit.characterOffset)
     let target = raw["targetIdentity"] as? [String: Any] ?? [:]
     let eventID = stableEventID(sessionID: sessionID, lineage: [recordID], ordinal: 0)
-    let outcome: [String: Any] = [
+    let observedOutcome: [String: Any] = [
         "operation": observedEdit.operation.rawValue,
         "characterOffset": observedEdit.characterOffset,
         "removedContent": observedEdit.removed,
         "content": observedEdit.inserted,
+    ]
+    let outcome: [String: Any] = [
+        "operation": resolvedEdit.operation.rawValue,
+        "characterOffset": resolvedEdit.characterOffset,
+        "removedContent": resolvedEdit.removed,
+        "content": resolvedEdit.inserted,
     ]
     let segments: [[String: Any]] = authorship.segments.map { segment in
         var result: [String: Any] = ["type": segment.type, "content": segment.content]
@@ -445,12 +779,12 @@ private func reduceWrite(_ raw: [String: Any], sessionID: String)
         "authorshipSegments": segments,
         "resolvedCompletion": authorship.resolvedCompletion,
         "stateContinuity": authorship.stateContinuity,
-        "observedNetEdit": outcome,
+        "observedNetEdit": observedOutcome,
         "outcome": outcome,
-        "operation": observedEdit.operation.rawValue,
-        "content": observedEdit.inserted,
-        "removedContent": observedEdit.removed,
-        "characterOffset": observedEdit.characterOffset,
+        "operation": resolvedEdit.operation.rawValue,
+        "content": resolvedEdit.inserted,
+        "removedContent": resolvedEdit.removed,
+        "characterOffset": resolvedEdit.characterOffset,
         "inputEventCount": intValue(raw["inputEventCount"]) ?? 0,
         "appName": appName,
         "bundleIdentifier": bundle ?? NSNull(),
@@ -463,6 +797,10 @@ private func reduceWrite(_ raw: [String: Any], sessionID: String)
             "reason": selection.reason,
             "selectedObservationID": stringValue(selection.observation["observationID"]) ?? "",
             "selectedObservationSource": selection.source,
+            "alignmentRule": checkpointGrounding == nil
+                ? "canonical_minimal_diff"
+                : "checkpoint_grounded_equivalent_diff_v1",
+            "alignmentObservationCount": checkpointGrounding?.observationCount ?? 0,
             "rawLineage": [recordID],
             "outputOrdinal": 0,
         ],

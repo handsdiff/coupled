@@ -140,7 +140,7 @@ rectangular screenshot.
 ## Implemented semantic reduction and causal compilation
 
 Current compiler: `phase1-causal-v13`
-Current reducer: `phase1-semantic-v2`
+Current reducer: `phase1-semantic-v3`
 
 The reducer consumes only `session.json` and `raw.jsonl`; deleting or corrupting
 `events.preview.jsonl` produces byte-identical finalized events. Event IDs are
@@ -148,13 +148,21 @@ stable across reducer versions because they derive from session ID, ordered raw
 lineage, and output ordinal. `reduction.json` binds the session, raw stream,
 finalized events, and unresolved records by SHA-256.
 
-Against `ordinary-work-audit-3`, semantic v2 recovered both Gemini submissions
+Against `ordinary-work-audit-3`, semantic v3 recovered both Gemini submissions
 from synchronous pre-Return observations, rejected the impossible 3,263-character
-Obsidian expansion from a delete-only burst, produced 310 READs and 186 WRITEs,
-and recorded 85 non-event dispositions (both deliberate filters and unresolved
-evidence). Causal v13 then produced 101
-training examples, 85 target exclusions, eight context exclusions, and zero
+Obsidian expansion from a delete-only burst, produced 303 READs and 186 WRITEs,
+and recorded 92 non-event dispositions (both deliberate filters and unresolved
+evidence). Seven delayed READs whose trigger preceded a WRITE but whose capture
+landed inside it are now reducer dispositions; a genuine READ triggered during
+a longer WRITE remains in history. Causal v13 then produced 101
+training examples, 85 target exclusions, zero context exclusions, and zero
 integrity rejections; the causal audit passed.
+
+Against `semantic-v2-validation-2`, semantic v3 reconstructs the demonstrated
+middle insertion as `" then typing in between here"` while retaining the
+equivalent canonical pixel-state diff `"hen typing in between here t"` as
+`observedNetEdit`. All other validation writes and all 186 writes in
+`ordinary-work-audit-3` remain semantically unchanged.
 
 Timing:
 
@@ -176,14 +184,20 @@ The raw-input semantic reducer:
 - rejects delete-only transitions which appear to insert content;
 - bridges AX observation epochs only across proven clipboard-matched Cmd-V evidence;
 - independently recomputes READ surface-race and Chrome auxiliary-window eligibility;
+- removes a stale delayed READ before overlap only when its trigger predates a
+  WRITE and its capture lands within that WRITE interval; new activity during a
+  long WRITE remains eligible;
 - applies adjacent READ overlap in semantic time using READ `capturedAt` and
   finalized WRITE `beganAt`, independent of asynchronous raw append order;
+- uses ordered mutation observations only to disambiguate equivalent inline
+  BEFORE-to-AFTER edits, without admitting temporary corrected text or crossing
+  newline/zero-width structural boundaries;
 - leaves ambiguous evidence unresolved instead of guessing.
 
 The compiler:
 
 - verifies reducer artifacts, stable event IDs, raw lineage, selected observations, and all source hashes without duplicating semantic reduction;
-- excludes stale reads from older sessions;
+- retains stale-read exclusion only in the schema-14 compatibility importer;
 - serializes causal READ/WRITE history;
 - uses compact model-facing history while retaining the richer canonical projection as `auditSerialized`;
 - serializes structured historical WRITE text exactly once in provenance-bearing authorship segments;
@@ -354,11 +368,11 @@ No ablation requires changing the collector schema. The principal missing layer 
 
 ### Before the next authoritative collection
 
-Treat `phase1-semantic-v2`, `phase1-causal-v13`, and the current three-second
+Treat `phase1-semantic-v3`, `phase1-causal-v13`, and the current three-second
 delays/crop configuration as the candidate baseline.
 
 1. Run normal work without changing collector rules mid-session.
-2. Reduce the raw session with `phase1-semantic-v2`; inspect finalized events and every non-event disposition.
+2. Reduce the raw session with `phase1-semantic-v3`; inspect finalized events and every non-event disposition.
 3. Compile the finalized reduction with `phase1-causal-v13`, supplying the raw session directory for hash and lineage verification.
 4. Manually sample the temporal trace against the actual work and record Phase 1's fidelity categories: missing events, temporal-ordering errors, incorrect content inclusion, authorship errors, write-boundary disagreement, destination ambiguity, and future leakage.
 5. Quantify reducer unresolved reasons plus target/context exclusions. Fix only recurrent material errors demonstrated by that trace; otherwise freeze the collector/reducer/compiler versions.

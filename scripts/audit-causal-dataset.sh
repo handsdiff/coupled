@@ -70,7 +70,7 @@ jq -e -s --slurpfile manifest "$manifest" --slurpfile examples "$examples" --slu
        (($model.destination // {} | keys - ["application", "window"] | length) == 0) and
        (($model | has("source")) | not) and
        (($model.operation | type) == "string") and
-       (($audit.observedNetEdit // {content: $audit.content}).content == $audit.content) and
+       ((($audit.observedNetEdit // {content: $audit.content}).content | type) == "string") and
        (((($model | has("content")) and (($model | has("authorshipSegments")) | not))) or
         ((($model | has("content")) | not) and
          (($model.authorshipSegments | type) == "array") and
@@ -153,7 +153,7 @@ jq -e -s --slurpfile manifest "$manifest" --slurpfile examples "$examples" --slu
     .reason == "read_candidate_superseded_by_write" and
     ($by_id[.sourceEventID] == null) and
     ($by_id[.supersedingWriteEventID].kind == "write") and
-    (.lastActivityAt < .supersedingWriteLastInputAt) and
+    (.lastActivityAt < .supersedingWriteBeganAt) and
     (.capturedAt >= .supersedingWriteBeganAt) and
     (.capturedAt <= .supersedingWriteAvailableAt)
   ) and

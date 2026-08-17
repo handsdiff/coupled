@@ -336,17 +336,19 @@ public struct CausalDatasetCompiler {
         }
 
         var contextExclusions = [[String: Any]]()
-        let verifiedWrites = converted.filter { $0.kind == "write" }
-        converted.removeAll { candidate in
-            guard candidate.kind == "read",
-                  let supersedingWrite = verifiedWrites.first(where: {
-                      staleReadCandidate(candidate, wasSupersededBy: $0)
-                  }) else { return false }
-            contextExclusions.append(contextExclusion(
-                read: candidate,
-                supersedingWrite: supersedingWrite
-            ))
-            return true
+        if !usesFinalizedReduction {
+            let verifiedWrites = converted.filter { $0.kind == "write" }
+            converted.removeAll { candidate in
+                guard candidate.kind == "read",
+                      let supersedingWrite = verifiedWrites.first(where: {
+                          staleReadCandidate(candidate, wasSupersededBy: $0)
+                      }) else { return false }
+                contextExclusions.append(contextExclusion(
+                    read: candidate,
+                    supersedingWrite: supersedingWrite
+                ))
+                return true
+            }
         }
         converted.sort(by: causalOrder)
         let targets = converted
@@ -633,14 +635,12 @@ private func staleReadCandidate(
           let lastActivityAt = read.object.string("lastActivityAt"),
           let capturedAt = read.object.string("capturedAt"),
           let writeBeganAt = write.object.string("beganAt"),
-          let lastInputAt = write.object.string("lastInputAt"),
           let terminalDecisionAt = write.object.string("terminalDecisionAt"),
           let lastActivity = parseTimestamp(lastActivityAt),
           let captured = parseTimestamp(capturedAt),
           let writeBegan = parseTimestamp(writeBeganAt),
-          let lastInput = parseTimestamp(lastInputAt),
           let terminalDecision = parseTimestamp(terminalDecisionAt) else { return false }
-    return lastActivity < lastInput
+    return lastActivity < writeBegan
         && captured >= writeBegan
         && captured <= terminalDecision
 }

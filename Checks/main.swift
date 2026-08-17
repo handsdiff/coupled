@@ -1027,14 +1027,16 @@ try! jsonData([
 ], pretty: true).write(to: motivatingInput.appendingPathComponent("session.json"))
 
 func rawScreenFixture(
-    id: String, capturedAt: String, content: String
+    id: String, capturedAt: String, content: String,
+    triggerAt: String? = nil
 ) -> [String: Any] {
-    [
+    let activityAt = triggerAt ?? capturedAt
+    return [
         "schemaVersion": 6, "recordType": "screen_ocr_observation",
         "recordID": id, "sessionID": "motivating-session",
         "observedAt": capturedAt, "settledAt": capturedAt, "capturedAt": capturedAt,
-        "surfaceResolvedAt": capturedAt, "firstActivityAt": capturedAt,
-        "lastActivityAt": capturedAt, "readDelaySeconds": 3,
+        "surfaceResolvedAt": capturedAt, "firstActivityAt": activityAt,
+        "lastActivityAt": activityAt, "readDelaySeconds": 3,
         "triggerTypes": ["scroll"], "eventCount": 1,
         "content": content,
         "recognizedLineCount": content.split(separator: "\n").count,
@@ -1048,7 +1050,7 @@ func rawScreenFixture(
         "windowID": 7, "windowTitle": "Fixture", "appName": "Fixture",
         "bundleIdentifier": "fixture.app", "processIdentifier": 42,
         "triggerSurface": [
-            "resolvedAt": capturedAt, "displayID": 1,
+            "resolvedAt": activityAt, "displayID": 1,
             "displayBounds": ["x": 0, "y": 0, "width": 1000, "height": 800],
             "windowID": 7, "windowTitle": "Fixture",
             "windowBounds": ["x": 0, "y": 0, "width": 1000, "height": 800],
@@ -1066,7 +1068,8 @@ func schema15WriteFixture(
     terminalAt: String,
     inputHints: [String],
     returnCheckpoints: [[String: Any]] = [],
-    pasteCheckpoints: [[String: Any]] = []
+    pasteCheckpoints: [[String: Any]] = [],
+    mutationCheckpoints: [[String: Any]]? = nil
 ) -> [String: Any] {
     let before = observation(beforeValue, at: beganAt)
     let after = observation(afterValue, at: terminalAt)
@@ -1112,7 +1115,7 @@ func schema15WriteFixture(
         "before": before, "after": after,
         "returnCheckpoints": returnCheckpoints,
         "pasteCheckpoints": pasteCheckpoints,
-        "mutationCheckpoints": [[
+        "mutationCheckpoints": mutationCheckpoints ?? [[
             "checkpointID": "\(id)-mutation", "inputObservedAt": beganAt,
             "eventTimestampNanoseconds": 1, "captureRequestedAt": beganAt,
             "observation": after, "axErrors": [],
@@ -1148,6 +1151,33 @@ let unresolvedPaste = schema15WriteFixture(
     beganAt: "2026-01-01T00:00:13.000Z",
     terminalAt: "2026-01-01T00:00:16.000Z", inputHints: ["paste"]
 )
+let repeatedBoundaryBefore = "typing here then typing here again"
+let repeatedBoundaryAfter = "typing here then then typing in between here typing here again"
+let repeatedBoundaryStates = [
+    "typing here thent typing here again",
+    repeatedBoundaryBefore,
+    "typing here then  typing here again",
+    repeatedBoundaryAfter,
+]
+let repeatedBoundaryWrite = schema15WriteFixture(
+    id: "repeated-boundary-write",
+    beforeValue: repeatedBoundaryBefore,
+    afterValue: repeatedBoundaryAfter,
+    beganAt: "2026-01-01T00:00:17.000Z",
+    terminalAt: "2026-01-01T00:00:20.000Z",
+    inputHints: ["typed", "delete", "typed", "typed"],
+    mutationCheckpoints: repeatedBoundaryStates.enumerated().map { index, value in
+        let timestamp = "2026-01-01T00:00:17.\(index + 1)00Z"
+        return [
+            "checkpointID": "repeated-boundary-\(index)",
+            "inputObservedAt": timestamp,
+            "eventTimestampNanoseconds": index + 1,
+            "captureRequestedAt": timestamp,
+            "observation": observation(value, at: timestamp),
+            "axErrors": [],
+        ] as [String: Any]
+    }
+)
 
 // Deliberately append the READ captured at t=3 before the WRITE which began at
 // t=2 but settled at t=4. Raw-order overlap would incorrectly emit only gamma.
@@ -1160,7 +1190,12 @@ writeFixtureJSONL([
         id: "read-after-write-began", capturedAt: "2026-01-01T00:00:03.000Z",
         content: "beta\ngamma"
     ),
+    rawScreenFixture(
+        id: "stale-delayed-read", capturedAt: "2026-01-01T00:00:03.500Z",
+        content: "stale content", triggerAt: "2026-01-01T00:00:01.500Z"
+    ),
     semanticTimeWrite, geminiWrite, deleteOnlyWrite, unresolvedPaste,
+    repeatedBoundaryWrite,
 ], to: motivatingInput.appendingPathComponent("raw.jsonl"))
 
 _ = try! reducer.reduce(
@@ -1177,7 +1212,15 @@ expect(
     motivatingEvents.first { $0["eventID"] as? String != nil
         && ($0["sourceRecordIDs"] as? [String]) == ["read-after-write-began"] }?["content"]
         as? String == "beta\ngamma",
-    "READ overlap uses capturedAt plus WRITE beganAt rather than raw append order"
+    "genuine READ activity during a long WRITE survives semantic overlap reduction"
+)
+expect(
+    motivatingDispositions.contains {
+        ($0["sourceRecordIDs"] as? [String]) == ["stale-delayed-read"]
+            && $0["reason"] as? String == "read_candidate_superseded_by_write"
+            && $0["rule"] as? String == "semantic_time_stale_delayed_read_v1"
+    },
+    "pointer activity before a WRITE cannot emit a delayed READ inside that WRITE"
 )
 let recoveredGemini = motivatingEvents.first {
     ($0["sourceRecordIDs"] as? [String]) == ["gemini-return-reset"]
@@ -1201,6 +1244,32 @@ expect(
             && $0["reason"] as? String == "paste_checkpoint_missing"
     },
     "paste without grounding remains an explicit non-event disposition"
+)
+let repeatedBoundaryEvent = motivatingEvents.first {
+    ($0["sourceRecordIDs"] as? [String]) == ["repeated-boundary-write"]
+}
+expect(
+    repeatedBoundaryEvent?["content"] as? String == " then typing in between here"
+        && repeatedBoundaryEvent?["resolvedCompletion"] as? String
+            == " then typing in between here"
+        && (repeatedBoundaryEvent?["observedNetEdit"] as? [String: Any])?["content"]
+            as? String == "hen typing in between here t"
+        && (repeatedBoundaryEvent?["reduction"] as? [String: Any])?["alignmentRule"]
+            as? String == "checkpoint_grounded_equivalent_diff_v1",
+    "ordered checkpoints resolve repeated-boundary authorship without changing the observed transition"
+)
+
+let motivatingDataset = fixtureRoot.appendingPathComponent("motivating-dataset")
+_ = try! CausalDatasetCompiler().compile(
+    inputDirectory: motivatingReduction,
+    sourceDirectory: motivatingInput,
+    outputDirectory: motivatingDataset
+)
+expect(
+    readFixtureJSONL(
+        motivatingDataset.appendingPathComponent("context-exclusions.jsonl")
+    ).isEmpty,
+    "finalized reductions resolve stale delayed READs before causal compilation"
 )
 
 let tamperedReduction = fixtureRoot.appendingPathComponent("tampered-reduction")

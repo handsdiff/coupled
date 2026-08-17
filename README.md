@@ -306,16 +306,16 @@ Reduce a completed raw session, then compile the finalized semantic artifact:
 ```sh
 ./scripts/coupled reduce \
   --input ./coupled-data/SESSION \
-  --output ./coupled-data/SESSION-phase1-events-v2
+  --output ./coupled-data/SESSION-phase1-events-v3
 
 ./scripts/coupled compile \
-  --input ./coupled-data/SESSION-phase1-events-v2 \
+  --input ./coupled-data/SESSION-phase1-events-v3 \
   --source ./coupled-data/SESSION \
   --output ./coupled-data/SESSION-phase1-v13
 
 ./scripts/audit-causal-dataset.sh \
   ./coupled-data/SESSION-phase1-v13 \
-  ./coupled-data/SESSION-phase1-events-v2 \
+  ./coupled-data/SESSION-phase1-events-v3 \
   ./coupled-data/SESSION
 ```
 
@@ -349,9 +349,14 @@ The fresh output directory contains:
 - `dataset.json`: conversion rules, source digests, counts, and schema details.
 
 The reducer verifies local observation transitions and conservatively leaves
-ambiguous evidence unresolved. READ overlap is computed from `capturedAt` with
-finalized WRITE `beganAt` boundaries, never raw append order. The compiler verifies raw lineage plus source
-and artifact hashes without independently choosing the semantic observation.
+ambiguous evidence unresolved. A delayed READ whose trigger predates a WRITE
+and whose capture lands inside that WRITE is removed before viewport overlap;
+genuine new activity during a long WRITE remains eligible. READ overlap is
+then computed from `capturedAt` with finalized WRITE `beganAt` boundaries,
+never raw append order. Ordered mutation checkpoints may disambiguate only
+equivalent minimal BEFORE-to-AFTER edits; temporary corrected text cannot enter
+the target. The compiler verifies raw lineage plus source and artifact hashes
+without independently choosing the semantic observation.
 A target's context contains only events whose
 `availableAt` is strictly earlier than its `beganAt`; append/emission order is
 never treated as causal order. Reads become available at `capturedAt`, and
