@@ -451,6 +451,18 @@ execution path is authorized, and actual billing must be recorded afterward.
 The local SDK integration and repository regressions pass with 28 exact Datums,
 482,253 submitted positions per epoch, and 203 loss-bearing positions.
 
+The canonical clean-tree preparation was generated from commit `cd5d30c` at:
+
+```text
+coupled-data/normal-work-dry-run-8-phase1-tinker-overfit-plan-cd5d30c.json
+```
+
+Its SHA-256 is
+`2c4d00657d5432f71edbd2b8c8d0deae0e24f738459c9032fab7bea02a912777`.
+The manifest is bound to the frozen pack and passing remote-tokenizer report,
+records all 20 deterministic epoch-order hashes, and reports a clean working
+tree. It remains a review artifact, not an executable authorization.
+
 ## Latest validation
 
 `read-boundary-test-1` confirmed:
