@@ -423,6 +423,34 @@ The preflight created a project-scoped base-model sampling client only to fetch
 model/tokenizer metadata. It did not construct a `Datum`, transmit packed
 tokens, labels, or human content, sample, train, or create a checkpoint.
 
+The data-bearing smoke procedure is now frozen one gate further, still without
+executing it. `scripts/prepare-phase1-tinker-overfit.py` imports the pinned SDK
+locally, constructs every real Tinker `Datum`, and exhaustively round-trips its
+`ModelInput`, `int64` target tensor, and `float32` weight tensor against the
+provider-neutral causal-shift contract. The command contains no API-key,
+`ServiceClient`, network, training, sampling, or checkpoint path.
+
+The prepared execution plan is deliberately fixed rather than self-expanding:
+
+- Qwen 3.5 9B Base with rank-32 LoRA, seed 17, and Adam at learning rate
+  `2e-4`;
+- 20 epochs, batch size one, 560 optimizer steps, and deterministic
+  per-epoch SHA-256 ordering;
+- 9,645,060 maximum submitted training positions;
+- weighted base/final NLL, exact greedy generation for all 28 targets, exact
+  paste-marker and EOS checks, and three-example state-reload parity;
+- separate trained sampler, full optimizer-state, and reloaded-state sampler
+  checkpoints with seven-day TTL;
+- no automatic retries or extra epochs if acceptance fails.
+
+At the August 17 price snapshot, training projects to `$14.110723`, bounded
+prefill evaluation to `$0.997970`, and bounded sampled output to `$0.000565`.
+The plan adds a `$1.00` checkpoint/storage reserve, for `$16.109258` projected
+total under a `$20.00` reviewed ceiling. Prices must be reverified before an
+execution path is authorized, and actual billing must be recorded afterward.
+The local SDK integration and repository regressions pass with 28 exact Datums,
+482,253 submitted positions per epoch, and 203 loss-bearing positions.
+
 ## Latest validation
 
 `read-boundary-test-1` confirmed:
@@ -598,9 +626,10 @@ delays/crop configuration as the candidate baseline.
 
 ## Next step
 
-Review the passing authenticated tokenizer report, then explicitly authorize
-or decline the data-bearing Run 8 mechanical overfit. If authorized, freeze
-the exact Tinker training procedure and projected maximum spend before sending
-any `Datum`; save sampler weights and full optimizer state, verify loss and
-reload/generation behavior, record actual usage, and do not interpret the
+Review the local SDK execution-plan artifact, then explicitly authorize or
+decline implementation and execution of the data-bearing Run 8 mechanical
+overfit. The current preparation command cannot transmit data. A separately
+authorized runner must enforce the frozen operation and `$20.00` ceilings,
+save sampler weights and full optimizer state, verify loss plus
+reload/generation behavior, record actual usage, and not interpret this
 mechanical overfit as evidence for the Phase 1 hypothesis.
