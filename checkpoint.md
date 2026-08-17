@@ -463,6 +463,53 @@ The manifest is bound to the frozen pack and passing remote-tokenizer report,
 records all 20 deterministic epoch-order hashes, and reports a clean working
 tree. It remains a review artifact, not an executable authorization.
 
+## Mechanical Tinker smoke result
+
+The user explicitly authorized the frozen data-bearing smoke under its `$20`
+ceiling. The manifest-gated runner was committed as `0061a2a`, official Tinker
+prices were reverified unchanged, and the run executed in a dedicated private
+Tinker project without exceeding or extending the approved plan. The private
+project identifier is intentionally not recorded in version control.
+
+Canonical run report:
+
+```text
+coupled-data/normal-work-dry-run-8-phase1-tinker-overfit-run-0061a2a.json
+```
+
+Report SHA-256:
+`26edbdeeec5e688af0e18b191462e8f284f5538de682d99fba60afcc0ad5ac58`.
+
+The mechanical gate passed completely:
+
+- 20 fixed epochs, 560 forward/backward calls, 560 optimizer steps, and exactly
+  9,645,060 submitted training positions;
+- base weighted NLL `5.9992910034` and trained weighted NLL `0.0036094220`, a
+  final/base ratio of `0.0006016414` against the required maximum `0.35`;
+- all 28 greedy generations exactly matched their frozen targets and all 28
+  terminated on EOS;
+- all six paste-bearing examples generated the exact five-token `<|paste|>`
+  marker sequence;
+- the saved full optimizer state reloaded successfully, and its separately
+  saved sampler reproduced selected weighted log-probabilities and generated
+  token/stop-reason outputs exactly;
+- the sampler, full optimizer state, and reloaded sampler checkpoints were all
+  created with seven-day TTLs;
+- 1,512,076 prefill positions, 221 observed sampled tokens, and three
+  checkpoint saves remained inside the approved operation ceilings.
+
+At the reverified frozen rates, logical operations cost an estimated
+`$15.109134` before checkpoint storage: `$14.110723` training, `$0.997970`
+uncached-prefill upper bound, and `$0.000441` sampling. Tinker's hourly billing
+feed had not yet posted the session when the run completed, so provider-billed
+usage remains a follow-up audit rather than being falsely reported as final.
+
+This result proves the packed artifact, causal shift, masks, EOS behavior,
+literal five-token paste marker, Tinker adapter, optimizer, checkpoints,
+reload, and generation path work together. It is deliberately not evidence
+for the Phase 1 behavioral hypothesis: all 28 examples were training examples,
+and the test was constructed to overfit them.
+
 ## Latest validation
 
 `read-boundary-test-1` confirmed:
@@ -638,10 +685,10 @@ delays/crop configuration as the candidate baseline.
 
 ## Next step
 
-Review the local SDK execution-plan artifact, then explicitly authorize or
-decline implementation and execution of the data-bearing Run 8 mechanical
-overfit. The current preparation command cannot transmit data. A separately
-authorized runner must enforce the frozen operation and `$20.00` ceilings,
-save sampler weights and full optimizer state, verify loss plus
-reload/generation behavior, record actual usage, and not interpret this
-mechanical overfit as evidence for the Phase 1 hypothesis.
+After the delayed provider-billing audit, retain the now-passing mechanical
+harness and collect substantially more ordinary work through the frozen
+collector/reducer/compiler pipeline. Reserve later chronological sessions as
+validation data, score them before training on them, and then run the initial
+Phase 1 comparison between the base model, the trained full-history model, and
+the matched reduced/no-history control. Do not tune the data conversion on the
+held-out sessions or interpret Run 8's memorization as a behavioral result.
