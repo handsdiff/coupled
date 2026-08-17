@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,6 +36,27 @@ def sha256(path: Path) -> str:
 def token_ids_sha256(token_ids: list[int]) -> str:
     encoded = json.dumps(token_ids, ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256((encoded + "\n").encode()).hexdigest()
+
+
+def vocabulary_mapping_sha256(vocabulary: dict[str, int]) -> str:
+    digest = hashlib.sha256()
+    for token, token_id in sorted(vocabulary.items()):
+        encoded = json.dumps(
+            [token, token_id], ensure_ascii=False, separators=(",", ":")
+        )
+        digest.update((encoded + "\n").encode())
+    return digest.hexdigest()
+
+
+def token_mapping_sha256(tokenizer: Any, token_ids: list[int]) -> str:
+    digest = hashlib.sha256()
+    for token_id in token_ids:
+        token = tokenizer.convert_ids_to_tokens(token_id)
+        encoded = json.dumps(
+            [token_id, token], ensure_ascii=False, separators=(",", ":")
+        )
+        digest.update((encoded + "\n").encode())
+    return digest.hexdigest()
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -344,15 +364,7 @@ def adapt_dataset_to_tinker(dataset: PackedDataset) -> list[TinkerDatumContract]
     return datums
 
 
-def validate_local_frozen_tokenizer(dataset: PackedDataset) -> dict[str, Any]:
-    """Validate only the tokenizer files frozen beside the pack.
-
-    This is intentionally not described as server compatibility. The remote
-    model tokenizer requires a later authenticated preflight.
-    """
-
-    os.environ.setdefault("HF_HUB_OFFLINE", "1")
-    os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+def load_local_frozen_tokenizer(dataset: PackedDataset) -> tuple[Any, str]:
     try:
         import transformers
         from transformers import AutoTokenizer
@@ -360,11 +372,21 @@ def validate_local_frozen_tokenizer(dataset: PackedDataset) -> dict[str, Any]:
         raise TrainingContractError(
             "local tokenizer validation requires transformers; use the tokenizer venv"
         ) from error
-
     tokenizer = AutoTokenizer.from_pretrained(
         dataset.directory / "tokenizer",
         local_files_only=True,
     )
+    return tokenizer, transformers.__version__
+
+
+def validate_local_frozen_tokenizer(dataset: PackedDataset) -> dict[str, Any]:
+    """Validate only the tokenizer files frozen beside the pack.
+
+    This is intentionally not described as server compatibility. The remote
+    model tokenizer requires a later authenticated preflight.
+    """
+
+    tokenizer, transformers_version = load_local_frozen_tokenizer(dataset)
     metadata = dataset.manifest["tokenizer"]
     if len(tokenizer) != metadata.get("savedVocabularySize"):
         raise TrainingContractError("local tokenizer length differs from the frozen manifest")
@@ -400,7 +422,7 @@ def validate_local_frozen_tokenizer(dataset: PackedDataset) -> dict[str, Any]:
     return {
         "scope": "local_frozen_tokenizer_only",
         "status": "passed",
-        "transformersVersion": transformers.__version__,
+        "transformersVersion": transformers_version,
         "tokenizerClass": type(tokenizer).__name__,
         "tokenizerLength": len(tokenizer),
         "baseVocabularySize": tokenizer.vocab_size,
@@ -408,6 +430,137 @@ def validate_local_frozen_tokenizer(dataset: PackedDataset) -> dict[str, Any]:
         "padTokenID": tokenizer.pad_token_id,
         "pasteMarkerTokenIDs": paste_ids,
         "representativeRoundTrips": representatives,
+    }
+
+
+def compare_pack_tokenizers(
+    dataset: PackedDataset,
+    local_tokenizer: Any,
+    remote_tokenizer: Any,
+) -> dict[str, Any]:
+    """Compare complete vocabularies and every token sequence in the frozen pack."""
+
+    local_vocabulary = local_tokenizer.get_vocab()
+    remote_vocabulary = remote_tokenizer.get_vocab()
+    local_vocabulary_hash = vocabulary_mapping_sha256(local_vocabulary)
+    remote_vocabulary_hash = vocabulary_mapping_sha256(remote_vocabulary)
+    vocabulary_exact = local_vocabulary == remote_vocabulary
+
+    used_token_ids = sorted(
+        {
+            token_id
+            for row in dataset.rows
+            for token_id in require_int_list(row.get("inputIDs"), "inputIDs")
+        }
+    )
+    used_id_mismatches = [
+        token_id
+        for token_id in used_token_ids
+        if local_tokenizer.convert_ids_to_tokens(token_id)
+        != remote_tokenizer.convert_ids_to_tokens(token_id)
+    ]
+    local_used_mapping_hash = token_mapping_sha256(local_tokenizer, used_token_ids)
+    remote_used_mapping_hash = token_mapping_sha256(remote_tokenizer, used_token_ids)
+
+    sequence_mismatches: list[str] = []
+    local_sequence_digest = hashlib.sha256()
+    remote_sequence_digest = hashlib.sha256()
+    for row in dataset.rows:
+        example_id = row["exampleID"]
+        token_ids = row["inputIDs"]
+        local_decoded = local_tokenizer.decode(
+            token_ids,
+            skip_special_tokens=False,
+            clean_up_tokenization_spaces=False,
+        )
+        remote_decoded = remote_tokenizer.decode(
+            token_ids,
+            skip_special_tokens=False,
+            clean_up_tokenization_spaces=False,
+        )
+        local_hash = hashlib.sha256(local_decoded.encode()).hexdigest()
+        remote_hash = hashlib.sha256(remote_decoded.encode()).hexdigest()
+        local_sequence_digest.update(f"{example_id}:{local_hash}\n".encode())
+        remote_sequence_digest.update(f"{example_id}:{remote_hash}\n".encode())
+        if local_decoded != remote_decoded:
+            sequence_mismatches.append(example_id)
+
+    representative_strings = [
+        "Phase 1 causal write prediction",
+        "caf\u00e9 \U0001f642",
+        dataset.paste_marker,
+    ]
+    representative_mismatches: list[str] = []
+    for text in representative_strings:
+        local_ids = local_tokenizer.encode(text, add_special_tokens=False)
+        remote_ids = remote_tokenizer.encode(text, add_special_tokens=False)
+        if local_ids != remote_ids:
+            representative_mismatches.append(text)
+
+    special_tokens_exact = (
+        local_tokenizer.eos_token_id == remote_tokenizer.eos_token_id
+        and local_tokenizer.pad_token_id == remote_tokenizer.pad_token_id
+        and remote_tokenizer.eos_token_id == dataset.eos_token_id
+        and remote_tokenizer.pad_token_id == dataset.pad_token_id
+    )
+    paste_marker_exact = remote_tokenizer.encode(
+        dataset.paste_marker, add_special_tokens=False
+    ) == dataset.paste_marker_token_ids
+    compatible = all(
+        [
+            vocabulary_exact,
+            not used_id_mismatches,
+            not sequence_mismatches,
+            not representative_mismatches,
+            special_tokens_exact,
+            paste_marker_exact,
+        ]
+    )
+    return {
+        "status": "passed" if compatible else "failed",
+        "compatible": compatible,
+        "completeVocabulary": {
+            "localEntries": len(local_vocabulary),
+            "remoteEntries": len(remote_vocabulary),
+            "localSHA256": local_vocabulary_hash,
+            "remoteSHA256": remote_vocabulary_hash,
+            "exact": vocabulary_exact,
+        },
+        "packTokenIDs": {
+            "uniqueIDs": len(used_token_ids),
+            "localMappingSHA256": local_used_mapping_hash,
+            "remoteMappingSHA256": remote_used_mapping_hash,
+            "mismatchCount": len(used_id_mismatches),
+            "mismatchIDs": used_id_mismatches[:100],
+        },
+        "packSequenceDecoding": {
+            "sequences": len(dataset.rows),
+            "localSHA256": local_sequence_digest.hexdigest(),
+            "remoteSHA256": remote_sequence_digest.hexdigest(),
+            "mismatchCount": len(sequence_mismatches),
+            "mismatchExampleIDs": sequence_mismatches,
+        },
+        "representativeEncoding": {
+            "mismatchCount": len(representative_mismatches),
+            "mismatchStrings": representative_mismatches,
+        },
+        "specialTokensExact": special_tokens_exact,
+        "pasteMarkerExact": paste_marker_exact,
+        "local": {
+            "class": type(local_tokenizer).__name__,
+            "length": len(local_tokenizer),
+            "baseVocabularySize": local_tokenizer.vocab_size,
+            "eosTokenID": local_tokenizer.eos_token_id,
+            "padTokenID": local_tokenizer.pad_token_id,
+        },
+        "remote": {
+            "class": type(remote_tokenizer).__name__,
+            "length": len(remote_tokenizer),
+            "baseVocabularySize": remote_tokenizer.vocab_size,
+            "eosTokenID": remote_tokenizer.eos_token_id,
+            "padTokenID": remote_tokenizer.pad_token_id,
+            "nameOrPath": getattr(remote_tokenizer, "name_or_path", None),
+        },
     }
 
 
