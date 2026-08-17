@@ -402,6 +402,27 @@ training request were transmitted. The command must be retried after billing
 is enabled; the hardened retry records sanitized authentication, billing, and
 permission failures without persisting the API key or raw server error.
 
+After billing was enabled, the authenticated retry passed from clean commit
+`3dfc597` in the dedicated private project:
+
+- Tinker reported `Qwen/Qwen3.5-9B-Base` with 65,536-token context;
+- all 248,077 complete token-to-ID vocabulary entries matched, with mapping
+  SHA-256 `5f7bdf3d3fbddbdb7571c8fa268146cb84d82d4c1652eadf1a0e5420295d1dc3`;
+- all 4,110 unique token IDs appearing in the frozen pack matched;
+- all 28 complete packed sequences decoded identically;
+- EOS, padding, representative encodings, and the five-token `<|paste|>`
+  encoding matched;
+- report SHA-256 is
+  `87689efc2d9d70d995564d908d596a55eaedad2f61379617e2173d8ef577e6c4`.
+
+Tinker exposed the correct model repository but no underlying server
+model-weight revision, so that revision remains explicitly unverified. The
+SDK's tokenizer loader likewise exposed no resolved Hugging Face revision; the
+complete mapping and actual-pack comparisons are the compatibility evidence.
+The preflight created a project-scoped base-model sampling client only to fetch
+model/tokenizer metadata. It did not construct a `Datum`, transmit packed
+tokens, labels, or human content, sample, train, or create a checkpoint.
+
 ## Latest validation
 
 `read-boundary-test-1` confirmed:
@@ -577,7 +598,9 @@ delays/crop configuration as the candidate baseline.
 
 ## Next step
 
-Enable a Tinker billing balance, then rerun only the authenticated
-remote-tokenizer preflight in the dedicated private project. Review its
-complete-vocabulary and frozen-pack token comparison, then pause again before
-implementing or executing the data-bearing overfit run.
+Review the passing authenticated tokenizer report, then explicitly authorize
+or decline the data-bearing Run 8 mechanical overfit. If authorized, freeze
+the exact Tinker training procedure and projected maximum spend before sending
+any `Datum`; save sampler weights and full optimizer state, verify loss and
+reload/generation behavior, record actual usage, and do not interpret the
+mechanical overfit as evidence for the Phase 1 hypothesis.
