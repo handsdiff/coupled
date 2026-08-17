@@ -301,7 +301,15 @@ before handling it.
 
 ## Phase 1 reduction and causal compilation
 
-Reduce a completed raw session, then compile the finalized semantic artifact:
+For a release reduction, rebuild the CLI first. `./scripts/check.sh` validates
+the current source but does not refresh `.build/debug/coupled`; invoking a stale
+debug executable can produce artifacts from older reducer logic.
+
+```sh
+./scripts/build.sh
+```
+
+Then reduce a completed raw session and compile the finalized semantic artifact:
 
 ```sh
 ./scripts/coupled reduce \
