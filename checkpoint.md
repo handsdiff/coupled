@@ -140,7 +140,7 @@ rectangular screenshot.
 ## Implemented semantic reduction and causal compilation
 
 Current compiler: `phase1-causal-v13`
-Current reducer: `phase1-semantic-v4`
+Current reducer: `phase1-semantic-v5`
 
 The reducer consumes only `session.json` and `raw.jsonl`; deleting or corrupting
 `events.preview.jsonl` produces byte-identical finalized events. Event IDs are
@@ -179,6 +179,20 @@ byte-identical. Causal v13 produces 81 training examples, 11 pure-deletion
 target exclusions, zero context exclusions, and zero integrity rejections; the
 causal audit passes.
 
+Against `normal-work-dry-run-7`, semantic v5 keeps Cut transitions in later
+history while assigning them no authored segments, uses the post-input Cut
+checkpoint when the terminal AX state changes epochs, and rejects an impossible
+Cut expansion when no contracting observation exists. It recovers eleven
+additional paste-containing WRITEs from later ordered same-field observations;
+each local transition contains the exact conditioned clipboard payload once and
+only structural whitespace around it. The three terminal fragments `./sc`,
+`cou`, and `stop` reduce to one proven same-editable autocomplete completion,
+`./scripts/coupled stop`, while a selection-only cursor relocation fixture
+remains two WRITEs. No unrelated semantic-v4 event changes apart from sequence
+renumbering. The replay produces 37 READs, 67 WRITEs, and 18 non-event
+dispositions. Causal v13 produces 25 training examples, 42 target exclusions,
+zero context exclusions, and zero integrity rejections; the causal audit passes.
+
 Timing:
 
 ```text
@@ -197,6 +211,13 @@ The raw-input semantic reducer:
 - writes only `events.jsonl`, `unresolved.jsonl`, and `reduction.json`;
 - recovers transient submitted fields from pre-Return checkpoints;
 - rejects delete-only transitions which appear to insert content;
+- retains Cut-only document transitions with empty authored completion and no
+  target loss, preferring a contracting post-input observation over a later AX
+  epoch change;
+- resolves a delayed paste only from an ordered same-field observation with one
+  exact conditioned clipboard span and structural surrounding text;
+- composes same-editable autocomplete attempts only when the next BEFORE proves
+  an end-of-field application completion of the prior AFTER;
 - bridges AX observation epochs only across proven clipboard-matched Cmd-V evidence;
 - independently recomputes READ surface-race and Chrome auxiliary-window eligibility;
 - removes a stale delayed READ before overlap only when its trigger predates a
@@ -383,11 +404,11 @@ No ablation requires changing the collector schema. The principal missing layer 
 
 ### Before the next authoritative collection
 
-Treat `phase1-semantic-v4`, `phase1-causal-v13`, and the current three-second
+Treat `phase1-semantic-v5`, `phase1-causal-v13`, and the current three-second
 delays/crop configuration as the candidate baseline.
 
 1. Run normal work without changing collector rules mid-session.
-2. Reduce the raw session with `phase1-semantic-v4`; inspect finalized events and every non-event disposition.
+2. Reduce the raw session with `phase1-semantic-v5`; inspect finalized events and every non-event disposition.
 3. Compile the finalized reduction with `phase1-causal-v13`, supplying the raw session directory for hash and lineage verification.
 4. Manually sample the temporal trace against the actual work and record Phase 1's fidelity categories: missing events, temporal-ordering errors, incorrect content inclusion, authorship errors, write-boundary disagreement, destination ambiguity, and future leakage.
 5. Quantify reducer unresolved reasons plus target/context exclusions. Fix only recurrent material errors demonstrated by that trace; otherwise freeze the collector/reducer/compiler versions.

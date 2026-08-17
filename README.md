@@ -306,16 +306,16 @@ Reduce a completed raw session, then compile the finalized semantic artifact:
 ```sh
 ./scripts/coupled reduce \
   --input ./coupled-data/SESSION \
-  --output ./coupled-data/SESSION-phase1-events-v4
+  --output ./coupled-data/SESSION-phase1-events-v5
 
 ./scripts/coupled compile \
-  --input ./coupled-data/SESSION-phase1-events-v4 \
+  --input ./coupled-data/SESSION-phase1-events-v5 \
   --source ./coupled-data/SESSION \
   --output ./coupled-data/SESSION-phase1-v13
 
 ./scripts/audit-causal-dataset.sh \
   ./coupled-data/SESSION-phase1-v13 \
-  ./coupled-data/SESSION-phase1-events-v4 \
+  ./coupled-data/SESSION-phase1-events-v5 \
   ./coupled-data/SESSION
 ```
 
@@ -360,8 +360,15 @@ strict large-discontinuity and locally coherent-trajectory rule. READ overlap is
 then computed from `capturedAt` with every observed WRITE `beganAt` boundary,
 never raw append order. Ordered mutation checkpoints may disambiguate only
 equivalent minimal BEFORE-to-AFTER edits; temporary corrected text cannot enter
-the target. The compiler verifies raw lineage plus source and artifact hashes
-without independently choosing the semantic observation.
+the target. Cut-only transitions remain in history with no authored target.
+A premature post-paste checkpoint may use a later same-field observation only
+when its local transition contains the exact conditioned clipboard once, with
+only structural whitespace around it. Same-editable navigation attempts become
+one resulting-content WRITE only when the next BEFORE proves an application
+completion extending the prior AFTER at the trailing caret; selection-only
+cursor movement remains a boundary. The compiler verifies raw lineage plus
+source and artifact hashes without independently choosing the semantic
+observation.
 A target's context contains only events whose
 `availableAt` is strictly earlier than its `beganAt`; append/emission order is
 never treated as causal order. Reads become available at `capturedAt`, and

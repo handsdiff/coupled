@@ -1080,6 +1080,7 @@ func schema15WriteFixture(
         "destination": [
             "appName": "Fixture", "bundleIdentifier": "fixture.app",
             "processIdentifier": 42, "windowTitle": "Fixture", "role": "AXTextArea",
+            "fieldDescription": "Fixture editor", "fieldLabel": "",
         ],
         "cursorContext": [
             "schemaVersion": 2, "source": "accessibility_string_for_range",
@@ -1112,6 +1113,8 @@ func schema15WriteFixture(
         "targetIdentity": [
             "bundleIdentifier": "fixture.app", "processIdentifier": 42,
             "role": "AXTextArea", "windowTitle": "Fixture",
+            "fieldDescription": "Fixture editor", "fieldLabel": "",
+            "elementHash": 12345,
         ],
         "before": before, "after": after,
         "returnCheckpoints": returnCheckpoints,
@@ -1290,6 +1293,107 @@ var sensitiveTarget = sensitiveWrite["targetIdentity"] as! [String: Any]
 sensitiveTarget["fieldDescription"] = "digit 1 of 6"
 sensitiveWrite["targetIdentity"] = sensitiveTarget
 
+let cutOnlyWrite = schema15WriteFixture(
+    id: "cut-only-write",
+    beforeValue: "alpha\nselected block\nomega",
+    afterValue: "alpha\n\nomega",
+    beganAt: "2026-01-01T00:00:37.000Z",
+    terminalAt: "2026-01-01T00:00:40.000Z",
+    inputHints: ["cut"]
+)
+let delayedPasteBefore = "prefix"
+let delayedPasteAfter = "prefixCOPIED\n"
+let delayedPastePre = observation(
+    delayedPasteBefore,
+    at: "2026-01-01T00:00:41.010Z"
+)
+let delayedPasteStale = observation(
+    delayedPasteBefore,
+    at: "2026-01-01T00:00:41.050Z"
+)
+var delayedPasteWrite = schema15WriteFixture(
+    id: "delayed-paste-write",
+    beforeValue: delayedPasteBefore,
+    afterValue: delayedPasteAfter,
+    beganAt: "2026-01-01T00:00:41.000Z",
+    terminalAt: "2026-01-01T00:00:44.000Z",
+    inputHints: ["paste"],
+    pasteCheckpoints: [[
+        "checkpointID": "delayed-paste-checkpoint",
+        "clipboardSnapshotID": "delayed-paste-snapshot",
+        "clipboardChangeCount": 9,
+        "clipboardText": "COPIED",
+        "clipboardTextWasTruncated": false,
+        "inputObservedAt": "2026-01-01T00:00:41.000Z",
+        "eventTimestampNanoseconds": 1,
+        "prePasteObservation": delayedPastePre,
+        "prePasteAXErrors": [],
+        "observation": delayedPasteStale,
+        "axErrors": [],
+    ]],
+    mutationCheckpoints: []
+)
+var delayedConditioning = delayedPasteWrite["conditioningState"] as! [String: Any]
+delayedConditioning["clipboard"] = [
+    "schemaVersion": 1,
+    "snapshotID": "delayed-paste-snapshot",
+    "changeCount": 9,
+    "capturedAt": "2026-01-01T00:00:41.000Z",
+    "text": "COPIED",
+    "textWasTruncated": false,
+]
+delayedPasteWrite["conditioningState"] = delayedConditioning
+
+var autocompleteOne = schema15WriteFixture(
+    id: "autocomplete-one",
+    beforeValue: "", afterValue: "./sc",
+    beganAt: "2026-01-01T00:00:45.000Z",
+    terminalAt: "2026-01-01T00:00:45.200Z",
+    inputHints: ["typed"]
+)
+autocompleteOne["boundaryReason"] = "selection_navigation"
+var autocompleteTwo = schema15WriteFixture(
+    id: "autocomplete-two",
+    beforeValue: "./scripts/", afterValue: "./scripts/cou",
+    beganAt: "2026-01-01T00:00:45.400Z",
+    terminalAt: "2026-01-01T00:00:45.600Z",
+    inputHints: ["typed"]
+)
+autocompleteTwo["boundaryReason"] = "selection_navigation"
+var autocompleteThree = schema15WriteFixture(
+    id: "autocomplete-three",
+    beforeValue: "./scripts/coupled ", afterValue: "./scripts/coupled stop",
+    beganAt: "2026-01-01T00:00:45.800Z",
+    terminalAt: "2026-01-01T00:00:46.000Z",
+    inputHints: ["typed", "return"],
+    returnCheckpoints: [[
+        "checkpointID": "autocomplete-return",
+        "inputObservedAt": "2026-01-01T00:00:45.950Z",
+        "eventTimestampNanoseconds": 2,
+        "observation": observation(
+            "./scripts/coupled stop",
+            at: "2026-01-01T00:00:45.950Z"
+        ),
+        "axErrors": [],
+    ]]
+)
+autocompleteThree["boundaryReason"] = "return_pressed"
+var cursorMoveOne = schema15WriteFixture(
+    id: "cursor-move-one",
+    beforeValue: "abc", afterValue: "abcd",
+    beganAt: "2026-01-01T00:00:47.000Z",
+    terminalAt: "2026-01-01T00:00:47.200Z",
+    inputHints: ["typed"]
+)
+cursorMoveOne["boundaryReason"] = "selection_navigation"
+let cursorMoveTwo = schema15WriteFixture(
+    id: "cursor-move-two",
+    beforeValue: "abcd", afterValue: "abXcd",
+    beganAt: "2026-01-01T00:00:47.400Z",
+    terminalAt: "2026-01-01T00:00:47.600Z",
+    inputHints: ["typed"]
+)
+
 // Deliberately append the READ captured at t=3 before the WRITE which began at
 // t=2 but settled at t=4. Raw-order overlap would incorrectly emit only gamma.
 writeFixtureJSONL([
@@ -1314,6 +1418,9 @@ writeFixtureJSONL([
     semanticTimeWrite, geminiWrite, deleteOnlyWrite, unresolvedPaste,
     repeatedBoundaryWrite, epochJumpWrite, formattingWrite,
     fastStartWarmup, fastStartContinuation, sensitiveWrite,
+    cutOnlyWrite, delayedPasteWrite,
+    autocompleteOne, autocompleteTwo, autocompleteThree,
+    cursorMoveOne, cursorMoveTwo,
 ], to: motivatingInput.appendingPathComponent("raw.jsonl"))
 
 _ = try! reducer.reduce(
@@ -1419,12 +1526,89 @@ expect(
     },
     "verification and credential fields never become semantic WRITE targets"
 )
+let cutOnlyEvent = motivatingEvents.first {
+    ($0["sourceRecordIDs"] as? [String]) == ["cut-only-write"]
+}
+expect(
+    cutOnlyEvent?["resolvedCompletion"] as? String == ""
+        && (cutOnlyEvent?["authorshipSegments"] as? [[String: Any]])?.isEmpty == true
+        && cutOnlyEvent?["authorshipEvidence"] as? String
+            == "cut_only_no_authored_content"
+        && (cutOnlyEvent?["observedNetEdit"] as? [String: Any])?["content"]
+            as? String == ""
+        && (cutOnlyEvent?["observedNetEdit"] as? [String: Any])?["removedContent"]
+            as? String == "selected block",
+    "cut-only transition remains history without an authored target"
+)
+let delayedPasteEvent = motivatingEvents.first {
+    ($0["sourceRecordIDs"] as? [String]) == ["delayed-paste-write"]
+}
+let delayedPasteSegments = delayedPasteEvent?["authorshipSegments"]
+    as? [[String: Any]]
+expect(
+    delayedPasteEvent?["resolvedCompletion"] as? String == "COPIED\n"
+        && delayedPasteEvent?["stateContinuity"] as? String
+            == "same_ax_field_delayed_paste_observation"
+        && delayedPasteEvent?["authorshipEvidence"] as? String
+            == "grounded_delayed_paste_observation"
+        && delayedPasteSegments?.count == 1
+        && delayedPasteSegments?.first?["type"] as? String == "paste"
+        && delayedPasteSegments?.first?["content"] as? String == "COPIED\n",
+    "premature paste checkpoint uses a later exact clipboard-grounded observation"
+)
+let autocompleteEvent = motivatingEvents.first {
+    ($0["sourceRecordIDs"] as? [String])
+        == ["autocomplete-one", "autocomplete-two", "autocomplete-three"]
+}
+expect(
+    autocompleteEvent?["resolvedCompletion"] as? String
+        == "./scripts/coupled stop"
+        && autocompleteEvent?["stateContinuity"] as? String
+            == "same_editable_autocomplete_chain"
+        && motivatingEvents.filter {
+            let ids = $0["sourceRecordIDs"] as? [String] ?? []
+            return ids.contains { $0.hasPrefix("autocomplete-") }
+        }.count == 1,
+    "same-editable application completion reduces to one resulting-content WRITE"
+)
+expect(
+    motivatingEvents.filter {
+        let ids = $0["sourceRecordIDs"] as? [String] ?? []
+        return ids == ["cursor-move-one"] || ids == ["cursor-move-two"]
+    }.count == 2,
+    "selection-only cursor relocation remains two independently conditioned WRITEs"
+)
 
 let motivatingDataset = fixtureRoot.appendingPathComponent("motivating-dataset")
 _ = try! CausalDatasetCompiler().compile(
     inputDirectory: motivatingReduction,
     sourceDirectory: motivatingInput,
     outputDirectory: motivatingDataset
+)
+let motivatingExamples = readFixtureJSONL(
+    motivatingDataset.appendingPathComponent("examples.jsonl")
+)
+expect(
+    !motivatingExamples.contains {
+        $0["targetEventID"] as? String == cutOnlyEvent?["eventID"] as? String
+    },
+    "cut-only WRITE is retained in history but excluded as a target"
+)
+expect(
+    motivatingExamples.contains {
+        $0["targetEventID"] as? String == delayedPasteEvent?["eventID"] as? String
+            && (($0["target"] as? [String: Any])?["segments"]
+                as? [[String: Any]])?.first?["type"] as? String == "paste"
+    },
+    "delayed grounded paste compiles to a paste-action target"
+)
+expect(
+    motivatingExamples.contains {
+        $0["targetEventID"] as? String == autocompleteEvent?["eventID"] as? String
+            && ($0["target"] as? [String: Any])?["resolvedContent"] as? String
+                == "./scripts/coupled stop"
+    },
+    "multi-record autocomplete lineage compiles to one full-content target"
 )
 expect(
     readFixtureJSONL(

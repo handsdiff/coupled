@@ -699,8 +699,12 @@ private func verifyReducedWrite(
     attempts: [String: [String: Any]]
 ) -> CanonicalWriteResult {
     let sourceIDs = event.stringArray("sourceRecordIDs")
-    guard sourceIDs.count == 1, let attempt = attempts[sourceIDs[0]] else {
-        return .failure("missing_unique_raw_write_attempt")
+    let sourceAttempts = sourceIDs.compactMap { attempts[$0] }
+    guard !sourceIDs.isEmpty,
+          Set(sourceIDs).count == sourceIDs.count,
+          sourceAttempts.count == sourceIDs.count,
+          let firstAttempt = sourceAttempts.first else {
+        return .failure("missing_raw_write_lineage")
     }
     guard let sessionID = event.string("sessionID"),
           let reduction = event["reduction"] as? [String: Any],
@@ -714,11 +718,17 @@ private func verifyReducedWrite(
           reduction.string("reason") != nil,
           reduction.stringArray("rawLineage") == sourceIDs,
           let selectedID = reduction.string("selectedObservationID"),
-          rawObservationIDs(attempt).contains(selectedID) else {
+          sourceAttempts.contains(where: { rawObservationIDs($0).contains(selectedID) }) else {
         return .failure("reducer_decision_or_selected_observation_missing")
     }
+    if let authorshipObservationID = event.string("authorshipObservationID"),
+       !sourceAttempts.contains(where: {
+           rawObservationIDs($0).contains(authorshipObservationID)
+       }) {
+        return .failure("authorship_observation_missing_from_raw_lineage")
+    }
     guard let eventConditioning = event["conditioningState"] as? [String: Any],
-          let rawConditioning = attempt["conditioningState"] as? [String: Any],
+          let rawConditioning = firstAttempt["conditioningState"] as? [String: Any],
           (try? canonicalJSONString(eventConditioning))
             == (try? canonicalJSONString(rawConditioning)) else {
         return .failure("conditioning_state_does_not_match_raw_evidence")
