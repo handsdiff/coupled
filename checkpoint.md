@@ -52,6 +52,8 @@ target sequence = authored text + grounded paste actions + loader-appended EOS
 
 Operation, removal, offsets, destination, timestamps, cursor metadata, and pasted payload tokens do not receive target loss. A proven paste action is serialized as the reserved `<|paste|>` marker using the model's existing tokenizer; its resolved payload remains available in the WRITE event and in later history.
 
+Event validity and target eligibility are separate. Text-only targets require at least four trimmed Swift `Character` values; shorter WRITEs remain in causal history but receive no target loss. Grounded paste-only and mixed paste targets bypass this minimum because the paste action itself is loss-bearing. The compiler records the threshold in the dataset manifest and records each such exclusion as `authored_content_below_minimum_length`.
+
 ## Implemented collection
 
 ### WRITE capture
@@ -317,6 +319,7 @@ The compiler:
 - appends pre-mutation destination/cursor/clipboard conditioning as the query;
 - emits structured authored-text and grounded paste-action targets;
 - excludes pure deletions;
+- excludes text-only targets below the versioned minimum trimmed authored-content length while retaining their WRITEs in causal history;
 - records target and context exclusions explicitly;
 - audits lineage back to source records.
 
@@ -342,6 +345,47 @@ Implemented:
 - The model vocabulary is not resized or otherwise modified. Exact decoded `<|paste|>` is interpreted as the action marker at inference; partial markers are invalid.
 
 A literal EOS string must not be inserted into source targets.
+
+## Mechanical training-harness preflight
+
+The provider-neutral local training contract is now implemented in
+`scripts/phase1_training_contract.py`. It validates the frozen pack and maps
+each aligned causal-LM row to the shifted token-level representation expected
+by Tinker:
+
+```text
+model_input[i] = packed.inputIDs[i]
+target[i]      = packed.inputIDs[i + 1]
+weight[i]      = 1 iff packed.labels[i + 1] is loss-bearing
+```
+
+Every weighted position must satisfy
+`target[i] == packed.labels[i + 1]`. The repository check includes a
+regression that rejects a one-token label mismatch and incorrect target-token
+accounting.
+
+The canonical Run 8 pack passed local preflight without importing the Tinker
+SDK, authenticating, accessing the network, or transmitting data:
+
+- 28 shifted datums;
+- 482,281 packed tokens before the causal shift;
+- 482,253 submitted positions per epoch after removing one position per datum;
+- 203 loss-bearing positions and 482,050 zero-weight positions;
+- maximum submitted datum length 30,050 tokens;
+- exact local frozen-tokenizer checks for vocabulary length, EOS, padding,
+  `<|paste|>` encoding, and representative Unicode round trips.
+
+At the manually verified August 17, 2026 training price of $1.463 per million
+submitted tokens, the projected training-only cost is $0.705536 per epoch,
+$7.055361 for ten epochs, or $14.110723 for twenty epochs. Evaluation,
+sampling, storage, taxes, and any changed pricing are excluded.
+
+This validates only the mechanical data/label contract. It does not show that
+the Phase 1 hypothesis works. A later separately authorized gate must verify
+the server-side tokenizer without submitting the dataset, use a dedicated
+private Tinker project rather than its default project, and then stop again
+before any personal data transfer. An authorized training smoke must save both
+sampler weights and full optimizer state and record actual usage and cost.
 
 ## Latest validation
 
@@ -466,7 +510,8 @@ Ready from the current data and packer:
 - **Qwen context scaling:** repack the same compiled examples at 8K, 16K, 32K, and 64K with `--input-token-budget`; event-aware truncation keeps the query and valid event records intact.
 - **Behavioral-cloning target:** current labels implement authored text, grounded paste markers, and EOS only.
 
-The substrate is ready, but an experiment harness is still required:
+The substrate and local token/label validator are ready, but the remote
+training runner and broader experiment harness are still required:
 
 - **Learning objective:** `resolvedContent`, structured paste actions, and target lineage support either token NLL or a resolved-content semantic reward, but GRPO/RLOO and reward execution are not implemented.
 - **Checkpoint recency:** event chronology supports identical daily scoring, but immutable daily model lineage, replay, and `d`, `d-1`, `d-3`, `d-7` scoring are not implemented.
@@ -493,8 +538,9 @@ delays/crop configuration as the candidate baseline.
 ### Before initial offline training
 
 1. Pass the ordinary-work reconstruction audit above and freeze an immutable dataset version.
-2. Verify the training harness consumes the packed `labels` unchanged and the inference parser executes only a complete decoded `<|paste|>` marker.
-3. Run the initial Phase 1 smoke test on eligible writes from the combined Obsidian, Chrome/browser, Codex, and VS Code stream, reporting aggregate and per-application results before the longer prospective continual experiment.
+2. Retain the now-passing exhaustive causal-shift check, then separately verify the authenticated server tokenizer against the frozen local tokenizer without submitting the dataset.
+3. With explicit authorization, run a mechanical overfit of the immutable pack in a dedicated private project, saving sampler and optimizer-state checkpoints and checking loss, reload, exact `<|paste|>` generation, and EOS token termination.
+4. Run the initial Phase 1 experiment on eligible writes from the combined Obsidian, Chrome/browser, Codex, and VS Code stream, reporting aggregate and per-application results before the longer prospective continual experiment.
 
 ### Before live prediction
 
@@ -516,8 +562,7 @@ delays/crop configuration as the candidate baseline.
 
 ## Next step
 
-Package the raw-first collector, run a short live smoke test to confirm
-`raw.jsonl` precedes `events.preview.jsonl`, then perform the next ordinary-work
-candidate session. Reduce, compile, audit, and manually inspect it before any
-further semantic rule change. Focus-time conditioning remains required before
-live prediction, but it is not a blocker for this offline training-data audit.
+Review the local Tinker preflight report. If separately authorized, implement
+and run only the authenticated remote-tokenizer preflight against the named
+Qwen revision in a dedicated private project without submitting Run 8. Pause
+again before implementing or executing the data-bearing overfit run.
