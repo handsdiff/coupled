@@ -306,16 +306,16 @@ Reduce a completed raw session, then compile the finalized semantic artifact:
 ```sh
 ./scripts/coupled reduce \
   --input ./coupled-data/SESSION \
-  --output ./coupled-data/SESSION-phase1-events-v3
+  --output ./coupled-data/SESSION-phase1-events-v4
 
 ./scripts/coupled compile \
-  --input ./coupled-data/SESSION-phase1-events-v3 \
+  --input ./coupled-data/SESSION-phase1-events-v4 \
   --source ./coupled-data/SESSION \
   --output ./coupled-data/SESSION-phase1-v13
 
 ./scripts/audit-causal-dataset.sh \
   ./coupled-data/SESSION-phase1-v13 \
-  ./coupled-data/SESSION-phase1-events-v3 \
+  ./coupled-data/SESSION-phase1-events-v4 \
   ./coupled-data/SESSION
 ```
 
@@ -350,9 +350,14 @@ The fresh output directory contains:
 
 The reducer verifies local observation transitions and conservatively leaves
 ambiguous evidence unresolved. A delayed READ whose trigger predates a WRITE
-and whose capture lands inside that WRITE is removed before viewport overlap;
-genuine new activity during a long WRITE remains eligible. READ overlap is
-then computed from `capturedAt` with finalized WRITE `beganAt` boundaries,
+and whose capture lands inside that WRITE is removed before viewport overlap.
+Genuine new activity during a long WRITE remains eligible only when its OCR
+does not contain a proven active-WRITE prefix.
+Verification/credential fields and fast-start attempts without true
+pre-mutation conditioning remain explicit non-events. Catastrophic terminal AX
+epoch changes may use a complete post-final-input checkpoint only under a
+strict large-discontinuity and locally coherent-trajectory rule. READ overlap is
+then computed from `capturedAt` with every observed WRITE `beganAt` boundary,
 never raw append order. Ordered mutation checkpoints may disambiguate only
 equivalent minimal BEFORE-to-AFTER edits; temporary corrected text cannot enter
 the target. The compiler verifies raw lineage plus source and artifact hashes

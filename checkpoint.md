@@ -140,7 +140,7 @@ rectangular screenshot.
 ## Implemented semantic reduction and causal compilation
 
 Current compiler: `phase1-causal-v13`
-Current reducer: `phase1-semantic-v3`
+Current reducer: `phase1-semantic-v4`
 
 The reducer consumes only `session.json` and `raw.jsonl`; deleting or corrupting
 `events.preview.jsonl` produces byte-identical finalized events. Event IDs are
@@ -163,6 +163,21 @@ middle insertion as `" then typing in between here"` while retaining the
 equivalent canonical pixel-state diff `"hen typing in between here t"` as
 `observedNetEdit`. All other validation writes and all 186 writes in
 `ordinary-work-audit-3` remain semantically unchanged.
+
+Against `normal-work-dry-run-6`, semantic v4 repairs the demonstrated
+catastrophic Obsidian AX epoch jump by selecting a complete checkpoint captured
+after the final input only when the terminal transition replaces at least 256
+characters on both sides and the recent checkpoint trajectory remains locally
+coherent. It excludes one noncontiguous Obsidian formatting transition, one
+READ containing a 99-character exact normalized prefix of an active WRITE, two
+fast-start WRITEs whose BEFORE already contained the first mutation, and six
+segmented verification-code fields. The result is 157 READs, 92 WRITEs, and 84
+non-event dispositions. Compared with semantic v3, exactly ten bad events are
+removed, the repaired Obsidian event retains its stable ID, and every other
+event is byte-identical apart from sequence renumbering. Repeated reduction is
+byte-identical. Causal v13 produces 81 training examples, 11 pure-deletion
+target exclusions, zero context exclusions, and zero integrity rejections; the
+causal audit passes.
 
 Timing:
 
@@ -368,11 +383,11 @@ No ablation requires changing the collector schema. The principal missing layer 
 
 ### Before the next authoritative collection
 
-Treat `phase1-semantic-v3`, `phase1-causal-v13`, and the current three-second
+Treat `phase1-semantic-v4`, `phase1-causal-v13`, and the current three-second
 delays/crop configuration as the candidate baseline.
 
 1. Run normal work without changing collector rules mid-session.
-2. Reduce the raw session with `phase1-semantic-v3`; inspect finalized events and every non-event disposition.
+2. Reduce the raw session with `phase1-semantic-v4`; inspect finalized events and every non-event disposition.
 3. Compile the finalized reduction with `phase1-causal-v13`, supplying the raw session directory for hash and lineage verification.
 4. Manually sample the temporal trace against the actual work and record Phase 1's fidelity categories: missing events, temporal-ordering errors, incorrect content inclusion, authorship errors, write-boundary disagreement, destination ambiguity, and future leakage.
 5. Quantify reducer unresolved reasons plus target/context exclusions. Fix only recurrent material errors demonstrated by that trace; otherwise freeze the collector/reducer/compiler versions.

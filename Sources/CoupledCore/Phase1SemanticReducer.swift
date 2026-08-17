@@ -4,7 +4,7 @@ import Foundation
 public struct Phase1SemanticReducerConfiguration: Sendable {
     public let reducerVersion: String
 
-    public init(reducerVersion: String = "phase1-semantic-v3") {
+    public init(reducerVersion: String = "phase1-semantic-v4") {
         self.reducerVersion = reducerVersion
     }
 }
@@ -67,6 +67,13 @@ public struct Phase1SemanticReducer {
             throw Phase1SemanticReducerError.invalidManifest("missing sessionID")
         }
         let raw = try reducerReadJSONL(rawURL)
+        let fastStartContinuations = reducerFastStartContinuationRecordIDs(raw)
+        let writeOverlapBoundaries = raw.compactMap { record -> ReducerWriteBoundary? in
+            guard stringValue(record.object["recordType"]) == "active_tap_write_attempt",
+                  (intValue(record.object["inputEventCount"]) ?? 0) > 0,
+                  let beganAt = stringValue(record.object["beganAt"]) else { return nil }
+            return ReducerWriteBoundary(rawLine: record.line, beganAt: beganAt)
+        }
         var seenRawIDs = Set<String>()
         for record in raw {
             guard let id = record.object["recordID"] as? String else { continue }
@@ -111,6 +118,18 @@ public struct Phase1SemanticReducer {
                     ))
                 }
             case "active_tap_write_attempt":
+                if let recordID = stringValue(object["recordID"]),
+                   fastStartContinuations.contains(recordID) {
+                    dispositions.append(ReducerDisposition(
+                        line: record.line,
+                        object: reducerUnresolved(
+                            sessionID: sessionID, raw: object, line: record.line,
+                            kind: "write", rule: "fast_start_conditioning_guard_v1",
+                            reason: "pre_first_mutation_conditioning_unavailable"
+                        )
+                    ))
+                    continue
+                }
                 switch reduceWrite(object, sessionID: sessionID) {
                 case .failure(let failure):
                     dispositions.append(ReducerDisposition(line: record.line, object: reducerUnresolved(
@@ -141,8 +160,14 @@ public struct Phase1SemanticReducer {
             candidates: candidates, sessionID: sessionID
         )
         dispositions.append(contentsOf: staleReadResult.dispositions)
-        let overlapResult = applySemanticReadOverlap(
+        let authorshipReadResult = removeReadsContainingActiveWriteContent(
             candidates: staleReadResult.events, sessionID: sessionID
+        )
+        dispositions.append(contentsOf: authorshipReadResult.dispositions)
+        let overlapResult = applySemanticReadOverlap(
+            candidates: authorshipReadResult.events,
+            writeBoundaries: writeOverlapBoundaries,
+            sessionID: sessionID
         )
         dispositions.append(contentsOf: overlapResult.dispositions)
         var events = overlapResult.events.sorted { $0.rawLine < $1.rawLine }.map(\.event)
@@ -186,6 +211,7 @@ public struct Phase1SemanticReducer {
             ],
             "eventIdentity": "sha256(sessionID + ordered raw lineage + output ordinal); reducer version excluded",
             "staleDelayedReadRule": "exclude only when trigger lastActivityAt precedes WRITE beganAt and delayed capturedAt falls within that WRITE interval for the same process",
+            "activeWriteReadAuthorshipRule": "exclude a READ captured during a same-process WRITE only when normalized OCR contains at least 24 exact normalized characters from the beginning of the finalized WRITE completion",
             "readOverlapOrdering": "READ capturedAt with finalized WRITE beganAt boundaries; raw append order ignored",
             "previewAuthority": false,
         ]
@@ -209,6 +235,7 @@ private struct ReducerCandidate {
     var event: [String: Any]
 }
 private struct ReducerDisposition { let line: Int; let object: [String: Any] }
+private struct ReducerWriteBoundary { let rawLine: Int; let beganAt: String }
 private struct ReducerOverlapResult {
     let events: [ReducerCandidate]
     let dispositions: [ReducerDisposition]
@@ -217,6 +244,63 @@ private struct ReducerFailure: Error {
     let rule: String
     let reason: String
     let details: [String: Any]
+}
+
+/// Some renderer-backed editors expose a non-editable container for the first
+/// key, then replace it with the real editable before the next key. The later
+/// BEFORE already contains that first mutation, so it is not a valid query for
+/// a focus-time next-content target. This narrow detector rejects only the
+/// immediately adjacent, one-character continuation demonstrated by the raw
+/// evidence; it does not attempt to invent the missing conditioning state.
+private func reducerFastStartContinuationRecordIDs(
+    _ records: [ReducerLine]
+) -> Set<String> {
+    let attempts = records.filter {
+        stringValue($0.object["recordType"]) == "active_tap_write_attempt"
+    }
+    var result = Set<String>()
+    for index in attempts.indices.dropFirst() {
+        let prior = attempts[attempts.index(before: index)].object
+        let current = attempts[index].object
+        guard stringValue(prior["boundaryReason"]) == "target_changed",
+              intValue(prior["inputEventCount"]) == 1,
+              Set(stringArray(prior["inputHints"])) == ["typed"],
+              (prior["before"] as? [String: Any]) == nil,
+              !stringArray(prior["beforeAXErrors"]).isEmpty,
+              stringValue(prior["bundleIdentifier"])
+                == stringValue(current["bundleIdentifier"]),
+              intValue(prior["processIdentifier"])
+                == intValue(current["processIdentifier"]),
+              let priorAt = stringValue(prior["beganAt"]).flatMap(reducerTimestamp),
+              let currentAt = stringValue(current["beganAt"]).flatMap(reducerTimestamp),
+              currentAt >= priorAt,
+              currentAt.timeIntervalSince(priorAt) <= 0.5,
+              let before = current["before"] as? [String: Any],
+              stringArray(current["beforeAXErrors"]).isEmpty,
+              before["valueWasTruncated"] as? Bool != true,
+              let rawBefore = stringValue(before["value"]),
+              logicalEditableValue(
+                rawBefore,
+                placeholderValue: stringValue(before["placeholderValue"])
+              ).count == 1,
+              let firstCheckpoint = (current["mutationCheckpoints"] as? [[String: Any]])?.first,
+              stringArray(firstCheckpoint["axErrors"]).isEmpty,
+              let observation = firstCheckpoint["observation"] as? [String: Any],
+              observation["valueWasTruncated"] as? Bool != true,
+              let rawCheckpoint = stringValue(observation["value"]),
+              let recordID = stringValue(current["recordID"]) else { continue }
+        let beforeValue = logicalEditableValue(
+            rawBefore, placeholderValue: stringValue(before["placeholderValue"])
+        )
+        let checkpointValue = logicalEditableValue(
+            rawCheckpoint,
+            placeholderValue: stringValue(observation["placeholderValue"])
+        )
+        guard checkpointValue.hasPrefix(beforeValue),
+              checkpointValue.count > beforeValue.count else { continue }
+        result.insert(recordID)
+    }
+    return result
 }
 
 private struct CheckpointGroundedEdit {
@@ -513,6 +597,89 @@ private func staleDelayedRead(
         && captured <= terminalDecision
 }
 
+/// A new pointer trigger during a long WRITE can be a genuine read opportunity,
+/// but the resulting screenshot may also contain the in-progress editable. We
+/// initially reject the whole READ only when the finalized WRITE proves that a
+/// substantial exact prefix of user output was present in OCR. This avoids
+/// treating outbound text as later inbound context without attempting fragile
+/// line-level OCR surgery.
+private func removeReadsContainingActiveWriteContent(
+    candidates: [ReducerCandidate],
+    sessionID: String
+) -> ReducerOverlapResult {
+    let writes = candidates.filter { $0.kind == "write" }
+    var accepted = [ReducerCandidate]()
+    var dispositions = [ReducerDisposition]()
+    for candidate in candidates {
+        guard candidate.kind == "read" else {
+            accepted.append(candidate)
+            continue
+        }
+        let contaminated = writes.compactMap { write -> (ReducerCandidate, Int)? in
+            guard let matched = activeWritePrefixMatchLength(
+                read: candidate, write: write
+            ) else { return nil }
+            return (write, matched)
+        }.max { $0.1 < $1.1 }
+        guard let (write, matchedLength) = contaminated else {
+            accepted.append(candidate)
+            continue
+        }
+        dispositions.append(ReducerDisposition(
+            line: candidate.rawLine,
+            object: reducerUnresolved(
+                sessionID: sessionID, raw: candidate.raw,
+                line: candidate.rawLine, kind: "read",
+                rule: "active_write_read_authorship_guard_v1",
+                reason: "read_contains_active_write_content",
+                details: [
+                    "capturedAt": stringValue(candidate.raw["capturedAt"]) ?? "",
+                    "activeWriteEventID": stringValue(write.event["eventID"]) ?? "",
+                    "activeWriteBeganAt": stringValue(write.raw["beganAt"]) ?? "",
+                    "activeWriteTerminalDecisionAt": stringValue(
+                        write.raw["terminalDecisionAt"]
+                    ) ?? "",
+                    "matchedNormalizedPrefixCharacterCount": matchedLength,
+                ]
+            )
+        ))
+    }
+    return ReducerOverlapResult(events: accepted, dispositions: dispositions)
+}
+
+private func activeWritePrefixMatchLength(
+    read: ReducerCandidate,
+    write: ReducerCandidate
+) -> Int? {
+    guard read.kind == "read", write.kind == "write",
+          intValue(read.raw["processIdentifier"])
+            == intValue(write.event["processIdentifier"]),
+          let captured = stringValue(read.raw["capturedAt"]).flatMap(reducerTimestamp),
+          let began = stringValue(write.raw["beganAt"]).flatMap(reducerTimestamp),
+          let terminal = stringValue(write.raw["terminalDecisionAt"]).flatMap(reducerTimestamp),
+          captured >= began, captured <= terminal,
+          let readContent = stringValue(read.raw["content"]),
+          let completion = stringValue(write.event["resolvedCompletion"]) else {
+        return nil
+    }
+    let normalizedRead = normalizedReducerText(readContent)
+    let normalizedWrite = normalizedReducerText(completion)
+    guard normalizedWrite.count >= 24 else { return nil }
+    let maximum = min(normalizedWrite.count, 512)
+    for length in stride(from: maximum, through: 24, by: -1) {
+        if normalizedRead.contains(String(normalizedWrite.prefix(length))) {
+            return length
+        }
+    }
+    return nil
+}
+
+private func normalizedReducerText(_ value: String) -> String {
+    value.split(whereSeparator: { $0.isWhitespace })
+        .joined(separator: " ")
+        .lowercased()
+}
+
 private func reducerTimestamp(_ value: String) -> Date? {
     ReducerTimestampParser.formatter.date(from: value)
 }
@@ -531,23 +698,44 @@ private enum ReducerTimestampParser {
 /// becomes causally available later at terminalDecisionAt.
 private func applySemanticReadOverlap(
     candidates: [ReducerCandidate],
+    writeBoundaries: [ReducerWriteBoundary],
     sessionID: String
 ) -> ReducerOverlapResult {
-    let timeline = candidates.indices.sorted { lhs, rhs in
-        let left = candidates[lhs]
-        let right = candidates[rhs]
-        if left.overlapBoundaryAt != right.overlapBoundaryAt {
-            return left.overlapBoundaryAt < right.overlapBoundaryAt
+    enum TimelineItem {
+        case candidate(Int)
+        case writeBoundary(ReducerWriteBoundary)
+    }
+    func ordering(_ item: TimelineItem) -> (String, Int, Int) {
+        switch item {
+        case .candidate(let index):
+            let candidate = candidates[index]
+            return (
+                candidate.overlapBoundaryAt,
+                candidate.kind == "write" ? 0 : 1,
+                candidate.rawLine
+            )
+        case .writeBoundary(let boundary):
+            return (boundary.beganAt, 0, boundary.rawLine)
         }
-        if left.kind != right.kind {
-            return left.kind == "write"
-        }
-        return left.rawLine < right.rawLine
+    }
+    let timeline = (
+        candidates.indices.map(TimelineItem.candidate)
+            + writeBoundaries.map(TimelineItem.writeBoundary)
+    ).sorted { lhs, rhs in
+        let left = ordering(lhs)
+        let right = ordering(rhs)
+        if left.0 != right.0 { return left.0 < right.0 }
+        if left.1 != right.1 { return left.1 < right.1 }
+        return left.2 < right.2
     }
     var deduplicator = AdjacentViewportDeduplicator()
     var accepted = [ReducerCandidate]()
     var dispositions = [ReducerDisposition]()
-    for index in timeline {
+    for item in timeline {
+        guard case .candidate(let index) = item else {
+            deduplicator.reset()
+            continue
+        }
         var candidate = candidates[index]
         if candidate.kind == "write" {
             deduplicator.reset()
@@ -662,6 +850,13 @@ private func reduceWrite(_ raw: [String: Any], sessionID: String)
     guard (raw["tapTimeoutCountDuringBurst"] as? NSNumber)?.uint64Value ?? 0 == 0 else {
         return fail("tap_timeout")
     }
+    if let category = sensitiveWriteFieldCategory(raw) {
+        return fail(
+            "sensitive_input_field",
+            rule: "sensitive_input_guard_v1",
+            details: ["category": category]
+        )
+    }
     guard stringArray(raw["beforeAXErrors"]).isEmpty,
           let before = raw["before"] as? [String: Any],
           before["valueWasTruncated"] as? Bool != true,
@@ -711,6 +906,18 @@ private func reduceWrite(_ raw: [String: Any], sessionID: String)
         return fail(
             "checkpoint_alignment_is_not_equivalent",
             rule: "checkpoint_grounded_equivalent_diff_v1"
+        )
+    }
+    if Set(stringArray(raw["inputHints"])).isDisjoint(with: ["paste"]),
+       resolvedEdit.removed.count >= 16,
+       resolvedEdit.inserted.contains(resolvedEdit.removed) {
+        return fail(
+            "noncontiguous_authorship_unresolved",
+            rule: "application_formatting_authorship_guard_v1",
+            details: [
+                "observedInsertedCharacterCount": resolvedEdit.inserted.count,
+                "preservedInteriorCharacterCount": resolvedEdit.removed.count,
+            ]
         )
     }
 
@@ -810,6 +1017,39 @@ private func reduceWrite(_ raw: [String: Any], sessionID: String)
     return .success(event)
 }
 
+private func sensitiveWriteFieldCategory(_ raw: [String: Any]) -> String? {
+    let conditioning = raw["conditioningState"] as? [String: Any]
+    let destination = conditioning?["destination"] as? [String: Any] ?? [:]
+    let target = raw["targetIdentity"] as? [String: Any] ?? [:]
+    let role = (
+        stringValue(destination["role"])
+            ?? stringValue(target["role"])
+            ?? ""
+    ).lowercased()
+    if role.contains("securetextfield") { return "secure_text_field" }
+
+    let descriptors = [
+        stringValue(destination["fieldDescription"]),
+        stringValue(destination["fieldLabel"]),
+        stringValue(target["fieldDescription"]),
+        stringValue(target["fieldLabel"]),
+    ].compactMap { $0?.lowercased() }.joined(separator: " ")
+    guard !descriptors.isEmpty else { return nil }
+    if descriptors.range(
+        of: #"\bdigit\s+\d+\s+of\s+\d+\b"#,
+        options: .regularExpression
+    ) != nil {
+        return "segmented_verification_code"
+    }
+    for marker in [
+        "one-time code", "one time code", "verification code",
+        "security code", "authentication code", "passcode", "password",
+    ] where descriptors.contains(marker) {
+        return "credential_or_verification_field"
+    }
+    return nil
+}
+
 private func selectWriteObservation(_ raw: [String: Any], beforeValue: String) -> ReducerSelection? {
     let lastTimestamp = uint64Value(raw["lastEventTimestampNanoseconds"])
     let returns = raw["returnCheckpoints"] as? [[String: Any]] ?? []
@@ -888,6 +1128,14 @@ private func selectWriteObservation(_ raw: [String: Any], beforeValue: String) -
             )
         }
     }
+    if let checkpoint = reliableFinalMutationCheckpoint(
+        raw: raw,
+        beforeValue: beforeValue,
+        terminalValue: terminalValue,
+        lastEventTimestamp: lastTimestamp
+    ) {
+        return checkpoint
+    }
     if terminalValue == beforeValue, let latest {
         guard latest.selection.source != "post_input_checkpoint" else { return nil }
         return ReducerSelection(
@@ -905,6 +1153,76 @@ private func selectWriteObservation(_ raw: [String: Any], beforeValue: String) -
     return ReducerSelection(
         observation: terminal, source: "terminal_after",
         checkpointID: nil, reason: "terminal_observation"
+    )
+}
+
+/// Recover only the demonstrated catastrophic AX epoch jump: a complete
+/// checkpoint captured after the final input continues a locally coherent
+/// mutation trajectory, while the later terminal state replaces hundreds of
+/// characters on both sides without another input. Smaller post-input changes
+/// remain ordinary terminal application behavior.
+private func reliableFinalMutationCheckpoint(
+    raw: [String: Any],
+    beforeValue: String,
+    terminalValue: String,
+    lastEventTimestamp: UInt64?
+) -> ReducerSelection? {
+    guard (raw["pasteCheckpoints"] as? [[String: Any]] ?? []).isEmpty,
+          let lastEventTimestamp,
+          let lastInputAt = stringValue(raw["lastInputAt"]).flatMap(reducerTimestamp) else {
+        return nil
+    }
+    let terminalTransition = minimalTextEdit(from: beforeValue, to: terminalValue)
+    guard terminalTransition.removed.count >= 256,
+          terminalTransition.inserted.count >= 256 else { return nil }
+
+    let complete = (raw["mutationCheckpoints"] as? [[String: Any]] ?? [])
+        .compactMap { checkpoint -> (UInt64, Date, [String: Any], String, String)? in
+            guard stringArray(checkpoint["axErrors"]).isEmpty,
+                  let timestamp = uint64Value(checkpoint["eventTimestampNanoseconds"]),
+                  let observation = checkpoint["observation"] as? [String: Any],
+                  observation["valueWasTruncated"] as? Bool != true,
+                  let rawValue = stringValue(observation["value"]),
+                  let capturedText = stringValue(observation["observedAt"]),
+                  let capturedAt = reducerTimestamp(capturedText) else { return nil }
+            return (
+                timestamp,
+                capturedAt,
+                observation,
+                logicalEditableValue(
+                    rawValue,
+                    placeholderValue: stringValue(observation["placeholderValue"])
+                ),
+                stringValue(checkpoint["checkpointID"]) ?? ""
+            )
+        }
+        .sorted {
+            if $0.0 != $1.0 { return $0.0 < $1.0 }
+            return $0.1 < $1.1
+        }
+    guard complete.count >= 2,
+          let final = complete.last,
+          final.0 == lastEventTimestamp,
+          final.1 >= lastInputAt,
+          !minimalTextEdit(from: beforeValue, to: final.3).isEmpty else {
+        return nil
+    }
+    let finalToTerminal = minimalTextEdit(from: final.3, to: terminalValue)
+    guard finalToTerminal.removed.count >= 256,
+          finalToTerminal.inserted.count >= 256 else { return nil }
+
+    let recent = Array(complete.suffix(16))
+    for pair in zip(recent, recent.dropFirst()) {
+        let transition = minimalTextEdit(from: pair.0.3, to: pair.1.3)
+        guard transition.removed.count + transition.inserted.count <= 16 else {
+            return nil
+        }
+    }
+    return ReducerSelection(
+        observation: final.2,
+        source: "post_input_checkpoint",
+        checkpointID: final.4,
+        reason: "terminal_ax_epoch_discontinuity"
     )
 }
 

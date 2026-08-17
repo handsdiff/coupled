@@ -1099,7 +1099,8 @@ func schema15WriteFixture(
     return [
         "schemaVersion": 15, "recordType": "active_tap_write_attempt",
         "recordID": id, "sessionID": "motivating-session",
-        "bundleIdentifier": "fixture.app", "observedAt": terminalAt,
+        "bundleIdentifier": "fixture.app", "processIdentifier": 42,
+        "observedAt": terminalAt,
         "beganAt": beganAt, "lastInputAt": beganAt,
         "terminalDecisionAt": terminalAt, "terminalSnapshotAt": terminalAt,
         "configuredWriteDelaySeconds": 3,
@@ -1125,7 +1126,8 @@ func schema15WriteFixture(
 }
 
 let semanticTimeWrite = schema15WriteFixture(
-    id: "semantic-time-write", beforeValue: "", afterValue: "typed",
+    id: "semantic-time-write", beforeValue: "",
+    afterValue: "there was a paper about encrypted reasoning blocks",
     beganAt: "2026-01-01T00:00:02.000Z",
     terminalAt: "2026-01-01T00:00:04.000Z", inputHints: ["typed"]
 )
@@ -1179,6 +1181,115 @@ let repeatedBoundaryWrite = schema15WriteFixture(
     }
 )
 
+let epochBefore = String(repeating: "old document ", count: 30)
+let epochStableOne = epochBefore + "human though"
+let epochStableFinal = epochBefore + "human thought"
+let epochTerminal = String(repeating: "different accessibility epoch ", count: 30)
+var epochJumpWrite = schema15WriteFixture(
+    id: "terminal-epoch-jump",
+    beforeValue: epochBefore,
+    afterValue: epochTerminal,
+    beganAt: "2026-01-01T00:00:21.000Z",
+    terminalAt: "2026-01-01T00:00:24.000Z",
+    inputHints: ["typed", "typed"],
+    mutationCheckpoints: [
+        [
+            "checkpointID": "epoch-stable-one",
+            "inputObservedAt": "2026-01-01T00:00:21.100Z",
+            "eventTimestampNanoseconds": 1,
+            "captureRequestedAt": "2026-01-01T00:00:21.150Z",
+            "observation": observation(
+                epochStableOne, at: "2026-01-01T00:00:21.160Z"
+            ),
+            "axErrors": [],
+        ],
+        [
+            "checkpointID": "epoch-stable-final",
+            "inputObservedAt": "2026-01-01T00:00:21.200Z",
+            "eventTimestampNanoseconds": 2,
+            "captureRequestedAt": "2026-01-01T00:00:21.250Z",
+            "observation": observation(
+                epochStableFinal, at: "2026-01-01T00:00:21.260Z"
+            ),
+            "axErrors": [],
+        ],
+    ]
+)
+epochJumpWrite["lastInputAt"] = "2026-01-01T00:00:21.200Z"
+
+let formattingBefore = "prefix\nhttps://example.com\nsuffix"
+let formattingAfter = "prefix\n\nhttps://example.com\n authored\nsuffix"
+let formattingWrite = schema15WriteFixture(
+    id: "noncontiguous-formatting",
+    beforeValue: formattingBefore,
+    afterValue: formattingAfter,
+    beganAt: "2026-01-01T00:00:25.000Z",
+    terminalAt: "2026-01-01T00:00:28.000Z",
+    inputHints: ["typed"]
+)
+
+let fastStartWarmup: [String: Any] = [
+    "schemaVersion": 15, "recordType": "active_tap_write_attempt",
+    "recordID": "fast-start-warmup", "sessionID": "motivating-session",
+    "bundleIdentifier": "fixture.app", "processIdentifier": 42,
+    "observedAt": "2026-01-01T00:00:29.100Z",
+    "beganAt": "2026-01-01T00:00:29.000Z",
+    "lastInputAt": "2026-01-01T00:00:29.000Z",
+    "terminalDecisionAt": "2026-01-01T00:00:29.100Z",
+    "configuredWriteDelaySeconds": 3,
+    "firstEventTimestampNanoseconds": 1,
+    "lastEventTimestampNanoseconds": 1,
+    "inputEventCount": 1, "inputHints": ["typed"],
+    "inputEvents": [[
+        "observedAt": "2026-01-01T00:00:29.000Z",
+        "eventTimestampNanoseconds": 1,
+        "hint": "typed", "mutationCapable": true,
+    ]],
+    "boundaryReason": "target_changed",
+    "beforeAXErrors": ["focused_element:unsupported_role:AXGroup"],
+    "afterAXErrors": ["target:unavailable"],
+    "returnCheckpoints": [], "pasteCheckpoints": [],
+    "mutationCheckpoints": [[
+        "checkpointID": "fast-start-unavailable",
+        "inputObservedAt": "2026-01-01T00:00:29.000Z",
+        "eventTimestampNanoseconds": 1,
+        "captureRequestedAt": "2026-01-01T00:00:29.050Z",
+        "axErrors": ["target:unavailable"],
+    ]],
+    "tapTimeoutCountDuringBurst": 0,
+]
+let fastStartContinuation = schema15WriteFixture(
+    id: "fast-start-continuation",
+    beforeValue: "i", afterValue: "is it possible",
+    beganAt: "2026-01-01T00:00:29.100Z",
+    terminalAt: "2026-01-01T00:00:32.100Z",
+    inputHints: ["typed"],
+    mutationCheckpoints: [[
+        "checkpointID": "fast-start-first-visible",
+        "inputObservedAt": "2026-01-01T00:00:29.100Z",
+        "eventTimestampNanoseconds": 1,
+        "captureRequestedAt": "2026-01-01T00:00:29.150Z",
+        "observation": observation("is", at: "2026-01-01T00:00:29.160Z"),
+        "axErrors": [],
+    ]]
+)
+
+var sensitiveWrite = schema15WriteFixture(
+    id: "verification-digit",
+    beforeValue: "", afterValue: "X",
+    beganAt: "2026-01-01T00:00:33.000Z",
+    terminalAt: "2026-01-01T00:00:36.000Z",
+    inputHints: ["typed"]
+)
+var sensitiveConditioning = sensitiveWrite["conditioningState"] as! [String: Any]
+var sensitiveDestination = sensitiveConditioning["destination"] as! [String: Any]
+sensitiveDestination["fieldDescription"] = "digit 1 of 6"
+sensitiveConditioning["destination"] = sensitiveDestination
+sensitiveWrite["conditioningState"] = sensitiveConditioning
+var sensitiveTarget = sensitiveWrite["targetIdentity"] as! [String: Any]
+sensitiveTarget["fieldDescription"] = "digit 1 of 6"
+sensitiveWrite["targetIdentity"] = sensitiveTarget
+
 // Deliberately append the READ captured at t=3 before the WRITE which began at
 // t=2 but settled at t=4. Raw-order overlap would incorrectly emit only gamma.
 writeFixtureJSONL([
@@ -1191,11 +1302,18 @@ writeFixtureJSONL([
         content: "beta\ngamma"
     ),
     rawScreenFixture(
+        id: "read-containing-active-write",
+        capturedAt: "2026-01-01T00:00:03.250Z",
+        content: "page text\nthere was a paper about encr",
+        triggerAt: "2026-01-01T00:00:02.500Z"
+    ),
+    rawScreenFixture(
         id: "stale-delayed-read", capturedAt: "2026-01-01T00:00:03.500Z",
         content: "stale content", triggerAt: "2026-01-01T00:00:01.500Z"
     ),
     semanticTimeWrite, geminiWrite, deleteOnlyWrite, unresolvedPaste,
-    repeatedBoundaryWrite,
+    repeatedBoundaryWrite, epochJumpWrite, formattingWrite,
+    fastStartWarmup, fastStartContinuation, sensitiveWrite,
 ], to: motivatingInput.appendingPathComponent("raw.jsonl"))
 
 _ = try! reducer.reduce(
@@ -1213,6 +1331,14 @@ expect(
         && ($0["sourceRecordIDs"] as? [String]) == ["read-after-write-began"] }?["content"]
         as? String == "beta\ngamma",
     "genuine READ activity during a long WRITE survives semantic overlap reduction"
+)
+expect(
+    motivatingDispositions.contains {
+        ($0["sourceRecordIDs"] as? [String]) == ["read-containing-active-write"]
+            && $0["reason"] as? String == "read_contains_active_write_content"
+            && $0["rule"] as? String == "active_write_read_authorship_guard_v1"
+    },
+    "READ containing a proven in-progress WRITE prefix is not inbound history"
 )
 expect(
     motivatingDispositions.contains {
@@ -1257,6 +1383,41 @@ expect(
         && (repeatedBoundaryEvent?["reduction"] as? [String: Any])?["alignmentRule"]
             as? String == "checkpoint_grounded_equivalent_diff_v1",
     "ordered checkpoints resolve repeated-boundary authorship without changing the observed transition"
+)
+let recoveredEpochWrite = motivatingEvents.first {
+    ($0["sourceRecordIDs"] as? [String]) == ["terminal-epoch-jump"]
+}
+expect(
+    recoveredEpochWrite?["content"] as? String == "human thought"
+        && recoveredEpochWrite?["derivationObservationSource"] as? String
+            == "post_input_checkpoint"
+        && (recoveredEpochWrite?["reduction"] as? [String: Any])?["reason"]
+            as? String == "terminal_ax_epoch_discontinuity",
+    "catastrophic terminal AX epoch jump uses the reliable post-final-input checkpoint"
+)
+expect(
+    motivatingDispositions.contains {
+        ($0["sourceRecordIDs"] as? [String]) == ["noncontiguous-formatting"]
+            && $0["reason"] as? String == "noncontiguous_authorship_unresolved"
+    },
+    "noncontiguous editor formatting cannot become authored supervision"
+)
+expect(
+    motivatingDispositions.contains {
+        ($0["sourceRecordIDs"] as? [String]) == ["fast-start-continuation"]
+            && $0["reason"] as? String
+                == "pre_first_mutation_conditioning_unavailable"
+    } && !motivatingEvents.contains {
+        ($0["sourceRecordIDs"] as? [String]) == ["fast-start-continuation"]
+    },
+    "fast-start continuation with the first character already in BEFORE is ineligible"
+)
+expect(
+    motivatingDispositions.contains {
+        ($0["sourceRecordIDs"] as? [String]) == ["verification-digit"]
+            && $0["reason"] as? String == "sensitive_input_field"
+    },
+    "verification and credential fields never become semantic WRITE targets"
 )
 
 let motivatingDataset = fixtureRoot.appendingPathComponent("motivating-dataset")
