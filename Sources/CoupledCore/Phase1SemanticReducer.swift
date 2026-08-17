@@ -4,7 +4,7 @@ import Foundation
 public struct Phase1SemanticReducerConfiguration: Sendable {
     public let reducerVersion: String
 
-    public init(reducerVersion: String = "phase1-semantic-v5") {
+    public init(reducerVersion: String = "phase1-semantic-v6") {
         self.reducerVersion = reducerVersion
     }
 }
@@ -68,7 +68,7 @@ public struct Phase1SemanticReducer {
         }
         let raw = try reducerReadJSONL(rawURL)
         let fastStartContinuations = reducerFastStartContinuationRecordIDs(raw)
-        let autocompleteChains = reducerAutocompleteChains(raw)
+        let navigationChains = reducerNavigationChains(raw)
         let writeOverlapBoundaries = raw.compactMap { record -> ReducerWriteBoundary? in
             guard stringValue(record.object["recordType"]) == "active_tap_write_attempt",
                   (intValue(record.object["inputEventCount"]) ?? 0) > 0,
@@ -119,13 +119,13 @@ public struct Phase1SemanticReducer {
                     ))
                 }
             case "active_tap_write_attempt":
-                if autocompleteChains.consumedRecordIDs.contains(
+                if navigationChains.consumedRecordIDs.contains(
                     stringValue(object["recordID"]) ?? ""
                 ) {
                     continue
                 }
                 let chain = stringValue(object["recordID"])
-                    .flatMap { autocompleteChains.byFirstRecordID[$0] }
+                    .flatMap { navigationChains.byFirstRecordID[$0] }
                 let writeObject = chain?.merged ?? object
                 let writeLine = chain?.rawLine ?? record.line
                 let writeLineage = chain?.lineage
@@ -232,7 +232,8 @@ public struct Phase1SemanticReducer {
             "activeWriteReadAuthorshipRule": "exclude a READ captured during a same-process WRITE only when normalized OCR contains at least 24 exact normalized characters from the beginning of the finalized WRITE completion",
             "cutAuthorshipRule": "a cut-only transition remains WRITE history but has no authored target segments",
             "pasteObservationRule": "a premature post-paste checkpoint may use the earliest later same-attempt observation whose local transition contains the exact conditioned clipboard payload once and only structural surrounding characters",
-            "autocompleteRule": "selection-navigation attempts are one WRITE only when the same retained editable proves an end-of-field application completion between the prior AFTER and next BEFORE within WRITE_DELAY",
+            "ambiguousPasteHistoryRule": "a complete reconstructible paste-containing transition from BEFORE to the selected observation remains WRITE history with unresolved authorship and receives no target loss",
+            "navigationContinuationRule": "selection-navigation attempts are one WRITE only when the same retained editable either proves an end-of-field application completion or proves that value, caret, and selection were unchanged within WRITE_DELAY",
             "readOverlapOrdering": "READ capturedAt with finalized WRITE beganAt boundaries; raw append order ignored",
             "previewAuthority": false,
         ]
@@ -267,26 +268,25 @@ private struct ReducerFailure: Error {
     let details: [String: Any]
 }
 
-private struct ReducerAutocompleteChain {
+private struct ReducerNavigationChain {
     let rawLine: Int
     let lineage: [String]
     let merged: [String: Any]
 }
 
-private struct ReducerAutocompleteChains {
-    let byFirstRecordID: [String: ReducerAutocompleteChain]
+private struct ReducerNavigationChains {
+    let byFirstRecordID: [String: ReducerNavigationChain]
     let consumedRecordIDs: Set<String>
 }
 
 /// The collector intentionally persists a boundary before a navigation key is
-/// delivered. If that key makes the same retained editable grow at its trailing
-/// caret before the next mutation, the intervening content is application
-/// completion rather than cursor relocation. Preserve the separate raw attempts
-/// but reduce the proven chain to the resulting content Phase 1 is meant to
-/// learn. A selection-only move has identical values and therefore cannot pass.
-private func reducerAutocompleteChains(
+/// delivered. Continue the same semantic WRITE when the next BEFORE proves
+/// either an application completion at the trailing caret or a true no-op:
+/// identical value, caret, and selection on the same retained editable. Any
+/// observable cursor or selection relocation remains a new opportunity.
+private func reducerNavigationChains(
     _ records: [ReducerLine]
-) -> ReducerAutocompleteChains {
+) -> ReducerNavigationChains {
     let attempts = records.filter {
         stringValue($0.object["recordType"]) == "active_tap_write_attempt"
     }.sorted {
@@ -294,13 +294,13 @@ private func reducerAutocompleteChains(
         let right = stringValue($1.object["beganAt"]) ?? ""
         return left == right ? $0.line < $1.line : left < right
     }
-    var byFirst = [String: ReducerAutocompleteChain]()
+    var byFirst = [String: ReducerNavigationChain]()
     var consumed = Set<String>()
     var index = 0
     while index < attempts.count {
         var end = index
         while end + 1 < attempts.count,
-              provenAutocompleteContinuation(
+              provenNavigationContinuation(
                 prior: attempts[end].object,
                 next: attempts[end + 1].object
               ) {
@@ -313,31 +313,30 @@ private func reducerAutocompleteChains(
         let members = Array(attempts[index...end])
         let lineage = members.compactMap { stringValue($0.object["recordID"]) }
         if lineage.count == members.count, let firstID = lineage.first {
-            let chain = ReducerAutocompleteChain(
+            let chain = ReducerNavigationChain(
                 rawLine: members[0].line,
                 lineage: lineage,
-                merged: mergedAutocompleteAttempt(members.map(\.object))
+                merged: mergedNavigationAttempt(members.map(\.object))
             )
             byFirst[firstID] = chain
             consumed.formUnion(lineage.dropFirst())
         }
         index = end + 1
     }
-    return ReducerAutocompleteChains(
+    return ReducerNavigationChains(
         byFirstRecordID: byFirst,
         consumedRecordIDs: consumed
     )
 }
 
-private func provenAutocompleteContinuation(
+private func provenNavigationContinuation(
     prior: [String: Any], next: [String: Any]
 ) -> Bool {
     let priorHints = Set(stringArray(prior["inputHints"]))
     let nextHints = Set(stringArray(next["inputHints"]))
     guard stringValue(prior["boundaryReason"]) == "selection_navigation",
-          !priorHints.isEmpty, priorHints.isSubset(of: ["typed"]),
-          nextHints.contains("typed"),
-          nextHints.isDisjoint(with: ["cut", "delete", "paste", "undo_redo"]),
+          !priorHints.isEmpty,
+          !nextHints.isEmpty,
           sameRetainedEditable(prior, next),
           sameConditionedClipboard(prior, next),
           let priorLast = stringValue(prior["lastInputAt"]).flatMap(reducerTimestamp),
@@ -359,15 +358,25 @@ private func provenAutocompleteContinuation(
     let nextValue = logicalEditableValue(
         nextRaw, placeholderValue: stringValue(nextBefore["placeholderValue"])
     )
-    guard !priorValue.isEmpty,
+    let priorLocation = intValue(priorAfter["selectedRangeLocation"])
+    let nextLocation = intValue(nextBefore["selectedRangeLocation"])
+    let priorLength = intValue(priorAfter["selectedRangeLength"])
+    let nextLength = intValue(nextBefore["selectedRangeLength"])
+    if priorValue == nextValue,
+       priorLocation == nextLocation,
+       priorLength == nextLength {
+        return true
+    }
+    guard priorHints.isSubset(of: ["typed"]),
+          nextHints.contains("typed"),
+          nextHints.isDisjoint(with: ["cut", "delete", "paste", "undo_redo"]),
+          !priorValue.isEmpty,
           nextValue.count > priorValue.count,
           nextValue.hasPrefix(priorValue),
-          intValue(priorAfter["selectedRangeLength"]) == 0,
-          intValue(nextBefore["selectedRangeLength"]) == 0,
-          intValue(priorAfter["selectedRangeLocation"]) == priorValue.utf16.count,
-          intValue(nextBefore["selectedRangeLocation"]) == nextValue.utf16.count else {
-        return false
-    }
+          priorLength == 0,
+          nextLength == 0,
+          priorLocation == priorValue.utf16.count,
+          nextLocation == nextValue.utf16.count else { return false }
     let completion = minimalTextEdit(from: priorValue, to: nextValue)
     return completion.removed.isEmpty && !completion.inserted.isEmpty
 }
@@ -400,7 +409,7 @@ private func sameConditionedClipboard(
             == (right?["textWasTruncated"] as? Bool)
 }
 
-private func mergedAutocompleteAttempt(
+private func mergedNavigationAttempt(
     _ attempts: [[String: Any]]
 ) -> [String: Any] {
     guard let first = attempts.first, let last = attempts.last else { return [:] }
@@ -423,7 +432,7 @@ private func mergedAutocompleteAttempt(
     merged["tapTimeoutCountDuringBurst"] = attempts.reduce(UInt64(0)) {
         $0 + (uint64Value($1["tapTimeoutCountDuringBurst"]) ?? 0)
     }
-    merged["semanticComposition"] = "same_editable_autocomplete_chain"
+    merged["semanticComposition"] = "same_editable_navigation_chain"
     return merged
 }
 
@@ -1033,9 +1042,9 @@ private func reduceWrite(
     }
     guard let recordID = stringValue(raw["recordID"]) else { return fail("missing_record_id") }
     let sourceRecordIDs = lineage ?? [recordID]
-    let composedAutocomplete = sourceRecordIDs.count > 1
+    let composedNavigation = sourceRecordIDs.count > 1
         && stringValue(raw["semanticComposition"])
-            == "same_editable_autocomplete_chain"
+            == "same_editable_navigation_chain"
     guard (raw["tapTimeoutCountDuringBurst"] as? NSNumber)?.uint64Value ?? 0 == 0 else {
         return fail("tap_timeout")
     }
@@ -1123,7 +1132,7 @@ private func reduceWrite(
         )
     }
 
-    let authorship = cutOnly
+    let interpretedAuthorship = cutOnly
         ? ReducerAuthorship(
             segments: [],
             resolution: "resolved",
@@ -1137,8 +1146,31 @@ private func reduceWrite(
             raw: raw, beforeValue: beforeValue,
             usedObservation: selection.observation, observedEdit: resolvedEdit
         )
-    guard authorship.resolution == "resolved" else {
-        return fail(authorship.resolution, rule: "paste_authorship_v1")
+    let unresolvedPasteReason: String?
+    let authorship: ReducerAuthorship
+    if interpretedAuthorship.resolution != "resolved", hints.contains("paste") {
+        unresolvedPasteReason = interpretedAuthorship.resolution
+        let contextSegments = resolvedEdit.inserted.isEmpty
+            ? []
+            : [WriteAuthorshipSegment(
+                type: "unresolved_paste_transition",
+                content: resolvedEdit.inserted
+            )]
+        authorship = ReducerAuthorship(
+            segments: contextSegments,
+            resolution: "unresolved",
+            resolvedCompletion: resolvedEdit.inserted,
+            stateContinuity: "observed_document_transition_unresolved_authorship",
+            evidence: "complete_before_selected_observation_minimal_diff",
+            evidenceObservationID: stringValue(selection.observation["observationID"]),
+            semanticEdit: nil
+        )
+    } else {
+        unresolvedPasteReason = nil
+        guard interpretedAuthorship.resolution == "resolved" else {
+            return fail(interpretedAuthorship.resolution, rule: "paste_authorship_v1")
+        }
+        authorship = interpretedAuthorship
     }
     guard !authorship.segments.contains(where: {
         $0.type == "authored_text" && $0.content.contains("\u{200B}")
@@ -1185,8 +1217,10 @@ private func reduceWrite(
     let window = ((conditioning["destination"] as? [String: Any])?["windowTitle"] as? String)
         ?? stringValue(target["windowTitle"])
     let authorshipEvidence: Any
-    if composedAutocomplete {
-        authorshipEvidence = "same_editable_autocomplete_completion"
+    if unresolvedPasteReason != nil {
+        authorshipEvidence = "complete_before_selected_observation_minimal_diff"
+    } else if composedNavigation {
+        authorshipEvidence = "same_editable_navigation_completion"
     } else {
         authorshipEvidence = authorship.evidence ?? NSNull()
     }
@@ -1211,11 +1245,14 @@ private func reduceWrite(
         "cursorFidelity": cursorFidelity,
         "authorshipResolution": authorship.resolution,
         "authorshipEvidence": authorshipEvidence,
+        "authorshipUnresolvedReason": unresolvedPasteReason ?? NSNull(),
         "authorshipObservationID": authorship.evidenceObservationID ?? NSNull(),
         "authorshipSegments": segments,
         "resolvedCompletion": authorship.resolvedCompletion,
-        "stateContinuity": composedAutocomplete
-            ? "same_editable_autocomplete_chain"
+        "stateContinuity": unresolvedPasteReason != nil
+            ? authorship.stateContinuity
+            : composedNavigation
+            ? "same_editable_navigation_chain"
             : authorship.stateContinuity,
         "observedNetEdit": observedOutcome,
         "outcome": outcome,
@@ -1231,12 +1268,15 @@ private func reduceWrite(
         "sourceRecordIDs": sourceRecordIDs,
         "reduction": [
             "schemaVersion": 1,
-            "rule": composedAutocomplete
-                ? "same_editable_autocomplete_chain_v1"
+            "rule": unresolvedPasteReason != nil
+                ? "observable_ambiguous_paste_transition_v1"
+                : composedNavigation
+                ? "same_editable_navigation_chain_v2"
                 : "write_observation_selection_v1",
-            "reason": composedAutocomplete
-                ? "proven_application_completion_chain"
-                : selection.reason,
+            "reason": unresolvedPasteReason
+                ?? (composedNavigation
+                ? "proven_application_or_noop_navigation_chain"
+                : selection.reason),
             "selectedObservationID": stringValue(selection.observation["observationID"]) ?? "",
             "selectedObservationSource": selection.source,
             "alignmentRule": checkpointGrounding == nil

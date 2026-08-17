@@ -140,7 +140,7 @@ rectangular screenshot.
 ## Implemented semantic reduction and causal compilation
 
 Current compiler: `phase1-causal-v13`
-Current reducer: `phase1-semantic-v5`
+Current reducer: `phase1-semantic-v6`
 
 The reducer consumes only `session.json` and `raw.jsonl`; deleting or corrupting
 `events.preview.jsonl` produces byte-identical finalized events. Event IDs are
@@ -193,6 +193,23 @@ renumbering. The replay produces 37 READs, 67 WRITEs, and 18 non-event
 dispositions. Causal v13 produces 25 training examples, 42 target exclusions,
 zero context exclusions, and zero integrity rejections; the causal audit passes.
 
+Against `normal-work-dry-run-8`, semantic v6 extends the navigation rule only
+when the same retained editable proves either application completion or an
+exactly unchanged value, caret, and selection. Five raw terminal attempts now
+reduce from the original empty field to one `./scripts/coupled stop` WRITE;
+observable cursor relocation remains a boundary. Six Obsidian paste transitions
+with complete reconstructible document states but unresolved authorship remain
+context-only WRITEs with `unresolved_paste_transition` segments and never become
+targets. Their six former non-event dispositions disappear. Every common v5
+event retains the same stable ID and identical semantic fields apart from
+sequence renumbering. The replay produces 67 READs, 63 WRITEs, and 18 non-event
+dispositions. Causal v13 produces 31 training examples, 32 target exclusions,
+zero context exclusions, and zero integrity rejections; the causal audit passes.
+The unchanged Qwen tokenizer packs all 31 examples with six grounded paste
+actions, one loss-bearing EOS per target, zero discarded input tokens, and a
+passing packed-dataset audit. Unresolved paste-transition text remains history
+only and is never converted into a target marker.
+
 Timing:
 
 ```text
@@ -216,8 +233,11 @@ The raw-input semantic reducer:
   epoch change;
 - resolves a delayed paste only from an ordered same-field observation with one
   exact conditioned clipboard span and structural surrounding text;
-- composes same-editable autocomplete attempts only when the next BEFORE proves
-  an end-of-field application completion of the prior AFTER;
+- retains a complete reconstructible but authorship-ambiguous paste transition
+  in later history with explicit unresolved provenance and no target loss;
+- composes same-editable navigation attempts only when the next BEFORE proves
+  either an end-of-field application completion or exactly unchanged value,
+  caret, and selection;
 - bridges AX observation epochs only across proven clipboard-matched Cmd-V evidence;
 - independently recomputes READ surface-race and Chrome auxiliary-window eligibility;
 - removes a stale delayed READ before overlap only when its trigger predates a
@@ -404,11 +424,11 @@ No ablation requires changing the collector schema. The principal missing layer 
 
 ### Before the next authoritative collection
 
-Treat `phase1-semantic-v5`, `phase1-causal-v13`, and the current three-second
+Treat `phase1-semantic-v6`, `phase1-causal-v13`, and the current three-second
 delays/crop configuration as the candidate baseline.
 
 1. Run normal work without changing collector rules mid-session.
-2. Reduce the raw session with `phase1-semantic-v5`; inspect finalized events and every non-event disposition.
+2. Reduce the raw session with `phase1-semantic-v6`; inspect finalized events and every non-event disposition.
 3. Compile the finalized reduction with `phase1-causal-v13`, supplying the raw session directory for hash and lineage verification.
 4. Manually sample the temporal trace against the actual work and record Phase 1's fidelity categories: missing events, temporal-ordering errors, incorrect content inclusion, authorship errors, write-boundary disagreement, destination ambiguity, and future leakage.
 5. Quantify reducer unresolved reasons plus target/context exclusions. Fix only recurrent material errors demonstrated by that trace; otherwise freeze the collector/reducer/compiler versions.

@@ -743,6 +743,27 @@ private func verifyReducedWrite(
           segments.compactMap({ $0.string("content") }).joined() == completion else {
         return .failure("reduced_write_shape_or_authorship_is_invalid")
     }
+    if event.string("authorshipResolution") == "unresolved" {
+        let segmentsAreUnresolvedPaste = segments.allSatisfy {
+            $0.string("type") == "unresolved_paste_transition"
+                && $0.string("content") != nil
+        }
+        let lineageContainsPaste = sourceAttempts.contains {
+            Set($0.stringArray("inputHints")).contains("paste")
+        }
+        guard event.string("authorshipEvidence")
+                == "complete_before_selected_observation_minimal_diff",
+              event.string("authorshipUnresolvedReason") != nil,
+              event.string("stateContinuity")
+                == "observed_document_transition_unresolved_authorship",
+              reduction.string("rule")
+                == "observable_ambiguous_paste_transition_v1",
+              !segments.isEmpty,
+              segmentsAreUnresolvedPaste,
+              lineageContainsPaste else {
+            return .failure("unresolved_paste_history_contract_invalid")
+        }
+    }
     return .success(event)
 }
 

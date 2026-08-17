@@ -9,7 +9,7 @@ struct ReduceCommand {
     init(arguments: [String]) throws {
         var input: String?
         var output: String?
-        var version = "phase1-semantic-v5"
+        var version = "phase1-semantic-v6"
         var index = 0
         while index < arguments.count {
             let argument = arguments[index]

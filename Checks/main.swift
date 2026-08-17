@@ -1344,6 +1344,64 @@ delayedConditioning["clipboard"] = [
 ]
 delayedPasteWrite["conditioningState"] = delayedConditioning
 
+let ambiguousPasteBefore = "prefix\n"
+let ambiguousPasteAfter = "prefix\n-\u{200B} COPIED\n"
+let ambiguousPastePre = observation(
+    ambiguousPasteBefore,
+    at: "2026-01-01T00:00:44.010Z"
+)
+let ambiguousPastePost = observation(
+    ambiguousPasteAfter,
+    at: "2026-01-01T00:00:44.050Z"
+)
+var ambiguousPasteWrite = schema15WriteFixture(
+    id: "ambiguous-paste-history",
+    beforeValue: ambiguousPasteBefore,
+    afterValue: ambiguousPasteAfter,
+    beganAt: "2026-01-01T00:00:44.000Z",
+    terminalAt: "2026-01-01T00:00:44.500Z",
+    inputHints: ["paste"],
+    pasteCheckpoints: [[
+        "checkpointID": "ambiguous-paste-checkpoint",
+        "clipboardSnapshotID": "ambiguous-paste-snapshot",
+        "clipboardChangeCount": 10,
+        "clipboardText": "COPIED",
+        "clipboardTextWasTruncated": false,
+        "inputObservedAt": "2026-01-01T00:00:44.000Z",
+        "eventTimestampNanoseconds": 1,
+        "prePasteObservation": ambiguousPastePre,
+        "prePasteAXErrors": [],
+        "observation": ambiguousPastePost,
+        "axErrors": [],
+    ]]
+)
+var ambiguousConditioning = ambiguousPasteWrite["conditioningState"] as! [String: Any]
+ambiguousConditioning["clipboard"] = [
+    "schemaVersion": 1,
+    "snapshotID": "ambiguous-paste-snapshot",
+    "changeCount": 10,
+    "capturedAt": "2026-01-01T00:00:44.000Z",
+    "text": "COPIED",
+    "textWasTruncated": false,
+]
+ambiguousPasteWrite["conditioningState"] = ambiguousConditioning
+
+var untrustworthyPasteWrite = schema15WriteFixture(
+    id: "untrustworthy-paste",
+    beforeValue: "stable",
+    afterValue: "stableCOPIED",
+    beganAt: "2026-01-01T00:00:44.600Z",
+    terminalAt: "2026-01-01T00:00:44.900Z",
+    inputHints: ["paste"]
+)
+untrustworthyPasteWrite["afterAXErrors"] = ["invalid_ui_element"]
+untrustworthyPasteWrite["mutationCheckpoints"] = [[
+    "checkpointID": "untrustworthy-paste-mutation",
+    "inputObservedAt": "2026-01-01T00:00:44.600Z",
+    "eventTimestampNanoseconds": 1,
+    "axErrors": ["invalid_ui_element"],
+]]
+
 var autocompleteOne = schema15WriteFixture(
     id: "autocomplete-one",
     beforeValue: "", afterValue: "./sc",
@@ -1362,22 +1420,38 @@ var autocompleteTwo = schema15WriteFixture(
 autocompleteTwo["boundaryReason"] = "selection_navigation"
 var autocompleteThree = schema15WriteFixture(
     id: "autocomplete-three",
-    beforeValue: "./scripts/coupled ", afterValue: "./scripts/coupled stop",
+    beforeValue: "./scripts/coupled ", afterValue: "./scripts/coupled do",
     beganAt: "2026-01-01T00:00:45.800Z",
     terminalAt: "2026-01-01T00:00:46.000Z",
-    inputHints: ["typed", "return"],
+    inputHints: ["typed"]
+)
+autocompleteThree["boundaryReason"] = "selection_navigation"
+var autocompleteFour = schema15WriteFixture(
+    id: "autocomplete-four",
+    beforeValue: "./scripts/coupled do", afterValue: "./scripts/coupled doc",
+    beganAt: "2026-01-01T00:00:46.100Z",
+    terminalAt: "2026-01-01T00:00:46.200Z",
+    inputHints: ["typed"]
+)
+autocompleteFour["boundaryReason"] = "selection_navigation"
+var autocompleteFive = schema15WriteFixture(
+    id: "autocomplete-five",
+    beforeValue: "./scripts/coupled doc", afterValue: "./scripts/coupled stop",
+    beganAt: "2026-01-01T00:00:46.300Z",
+    terminalAt: "2026-01-01T00:00:46.500Z",
+    inputHints: ["delete", "typed", "return"],
     returnCheckpoints: [[
         "checkpointID": "autocomplete-return",
-        "inputObservedAt": "2026-01-01T00:00:45.950Z",
-        "eventTimestampNanoseconds": 2,
+        "inputObservedAt": "2026-01-01T00:00:46.450Z",
+        "eventTimestampNanoseconds": 3,
         "observation": observation(
             "./scripts/coupled stop",
-            at: "2026-01-01T00:00:45.950Z"
+            at: "2026-01-01T00:00:46.450Z"
         ),
         "axErrors": [],
     ]]
 )
-autocompleteThree["boundaryReason"] = "return_pressed"
+autocompleteFive["boundaryReason"] = "return_pressed"
 var cursorMoveOne = schema15WriteFixture(
     id: "cursor-move-one",
     beforeValue: "abc", afterValue: "abcd",
@@ -1386,13 +1460,16 @@ var cursorMoveOne = schema15WriteFixture(
     inputHints: ["typed"]
 )
 cursorMoveOne["boundaryReason"] = "selection_navigation"
-let cursorMoveTwo = schema15WriteFixture(
+var cursorMoveTwo = schema15WriteFixture(
     id: "cursor-move-two",
     beforeValue: "abcd", afterValue: "abXcd",
     beganAt: "2026-01-01T00:00:47.400Z",
     terminalAt: "2026-01-01T00:00:47.600Z",
     inputHints: ["typed"]
 )
+var cursorMoveTwoBefore = cursorMoveTwo["before"] as! [String: Any]
+cursorMoveTwoBefore["selectedRangeLocation"] = 2
+cursorMoveTwo["before"] = cursorMoveTwoBefore
 
 // Deliberately append the READ captured at t=3 before the WRITE which began at
 // t=2 but settled at t=4. Raw-order overlap would incorrectly emit only gamma.
@@ -1418,8 +1495,9 @@ writeFixtureJSONL([
     semanticTimeWrite, geminiWrite, deleteOnlyWrite, unresolvedPaste,
     repeatedBoundaryWrite, epochJumpWrite, formattingWrite,
     fastStartWarmup, fastStartContinuation, sensitiveWrite,
-    cutOnlyWrite, delayedPasteWrite,
+    cutOnlyWrite, delayedPasteWrite, ambiguousPasteWrite, untrustworthyPasteWrite,
     autocompleteOne, autocompleteTwo, autocompleteThree,
+    autocompleteFour, autocompleteFive,
     cursorMoveOne, cursorMoveTwo,
 ], to: motivatingInput.appendingPathComponent("raw.jsonl"))
 
@@ -1471,12 +1549,15 @@ expect(
     },
     "delete-only impossible insertion is a non-event disposition"
 )
+let missingPasteHistoryEvent = motivatingEvents.first {
+    ($0["sourceRecordIDs"] as? [String]) == ["missing-paste"]
+}
 expect(
-    motivatingDispositions.contains {
-        ($0["sourceRecordIDs"] as? [String]) == ["missing-paste"]
-            && $0["reason"] as? String == "paste_checkpoint_missing"
-    },
-    "paste without grounding remains an explicit non-event disposition"
+    missingPasteHistoryEvent?["authorshipResolution"] as? String == "unresolved"
+        && missingPasteHistoryEvent?["authorshipUnresolvedReason"] as? String
+            == "paste_checkpoint_missing"
+        && missingPasteHistoryEvent?["resolvedCompletion"] as? String == "COPIED",
+    "observable paste without grounding remains context-only WRITE history"
 )
 let repeatedBoundaryEvent = motivatingEvents.first {
     ($0["sourceRecordIDs"] as? [String]) == ["repeated-boundary-write"]
@@ -1556,20 +1637,50 @@ expect(
         && delayedPasteSegments?.first?["content"] as? String == "COPIED\n",
     "premature paste checkpoint uses a later exact clipboard-grounded observation"
 )
+let ambiguousPasteEvent = motivatingEvents.first {
+    ($0["sourceRecordIDs"] as? [String]) == ["ambiguous-paste-history"]
+}
+let ambiguousPasteSegments = ambiguousPasteEvent?["authorshipSegments"]
+    as? [[String: Any]]
+expect(
+    ambiguousPasteEvent?["authorshipResolution"] as? String == "unresolved"
+        && ambiguousPasteEvent?["authorshipUnresolvedReason"] as? String
+            == "unproven_ax_epoch_transition"
+        && ambiguousPasteEvent?["resolvedCompletion"] as? String
+            == "-\u{200B} COPIED\n"
+        && ambiguousPasteSegments?.count == 1
+        && ambiguousPasteSegments?.first?["type"] as? String
+            == "unresolved_paste_transition"
+        && ambiguousPasteSegments?.first?["content"] as? String
+            == "-\u{200B} COPIED\n",
+    "reconstructible paste formatting remains context-only with unresolved authorship"
+)
+expect(
+    motivatingDispositions.contains {
+        ($0["sourceRecordIDs"] as? [String]) == ["untrustworthy-paste"]
+            && $0["reason"] as? String == "no_meaningful_terminal_observation"
+    } && !motivatingEvents.contains {
+        ($0["sourceRecordIDs"] as? [String]) == ["untrustworthy-paste"]
+    },
+    "paste without a trustworthy document observation remains excluded"
+)
 let autocompleteEvent = motivatingEvents.first {
     ($0["sourceRecordIDs"] as? [String])
-        == ["autocomplete-one", "autocomplete-two", "autocomplete-three"]
+        == [
+            "autocomplete-one", "autocomplete-two", "autocomplete-three",
+            "autocomplete-four", "autocomplete-five",
+        ]
 }
 expect(
     autocompleteEvent?["resolvedCompletion"] as? String
         == "./scripts/coupled stop"
         && autocompleteEvent?["stateContinuity"] as? String
-            == "same_editable_autocomplete_chain"
+            == "same_editable_navigation_chain"
         && motivatingEvents.filter {
             let ids = $0["sourceRecordIDs"] as? [String] ?? []
             return ids.contains { $0.hasPrefix("autocomplete-") }
         }.count == 1,
-    "same-editable application completion reduces to one resulting-content WRITE"
+    "same-editable completion and no-op navigation reduce to one final WRITE"
 )
 expect(
     motivatingEvents.filter {
@@ -1588,6 +1699,9 @@ _ = try! CausalDatasetCompiler().compile(
 let motivatingExamples = readFixtureJSONL(
     motivatingDataset.appendingPathComponent("examples.jsonl")
 )
+let motivatingCompiledEvents = readFixtureJSONL(
+    motivatingDataset.appendingPathComponent("events.jsonl")
+)
 expect(
     !motivatingExamples.contains {
         $0["targetEventID"] as? String == cutOnlyEvent?["eventID"] as? String
@@ -1601,6 +1715,40 @@ expect(
                 as? [[String: Any]])?.first?["type"] as? String == "paste"
     },
     "delayed grounded paste compiles to a paste-action target"
+)
+let contextOnlyPasteIDs = Set([
+    missingPasteHistoryEvent?["eventID"] as? String,
+    ambiguousPasteEvent?["eventID"] as? String,
+].compactMap { $0 })
+expect(
+    motivatingExamples.allSatisfy {
+        guard let id = $0["targetEventID"] as? String else { return false }
+        return !contextOnlyPasteIDs.contains(id)
+    },
+    "unresolved paste transitions never receive target loss"
+)
+let compiledContextOnlyPastes = motivatingCompiledEvents.filter {
+    guard let id = $0["sourceEventID"] as? String else { return false }
+    return contextOnlyPasteIDs.contains(id)
+}
+expect(
+    compiledContextOnlyPastes.count == 2
+        && compiledContextOnlyPastes.allSatisfy {
+            guard let serializedText = $0["serialized"] as? String,
+                  let data = serializedText.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data),
+                  let serialized = object as? [String: Any],
+                  serialized["authorshipResolution"] as? String == "unresolved",
+                  let segments = serialized["authorshipSegments"]
+                    as? [[String: Any]] else {
+                return false
+            }
+            return segments.allSatisfy {
+                $0["type"] as? String == "unresolved_paste_transition"
+                    && $0["content"] as? String != nil
+            }
+        },
+    "context-only paste text and uncertainty remain visible in later model history"
 )
 expect(
     motivatingExamples.contains {
