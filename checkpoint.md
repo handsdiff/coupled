@@ -139,7 +139,7 @@ rectangular screenshot.
 
 ## Implemented semantic reduction and causal compilation
 
-Current compiler: `phase1-causal-v13`
+Current compiler: `phase1-causal-v14`
 Current reducer: `phase1-semantic-v6`
 
 The reducer consumes only `session.json` and `raw.jsonl`; deleting or corrupting
@@ -203,22 +203,32 @@ context-only WRITEs with `unresolved_paste_transition` segments and never become
 targets. Their six former non-event dispositions disappear. Every common v5
 event retains the same stable ID and identical semantic fields apart from
 sequence renumbering. The replay produces 67 READs, 63 WRITEs, and 18 non-event
-dispositions. Causal v13 produces 31 training examples, 32 target exclusions,
+dispositions. Causal v13 produced 31 training examples, 32 target exclusions,
 zero context exclusions, and zero integrity rejections; the causal audit passes.
-The unchanged Qwen tokenizer packs all 31 examples with six grounded paste
+Its unchanged Qwen tokenizer packed all 31 examples with six grounded paste
 actions, one loss-bearing EOS per target, zero discarded input tokens, and a
 passing packed-dataset audit. Unresolved paste-transition text remains history
 only and is never converted into a target marker.
 
-### Canonical Run 8 freeze record
+Phase1-causal-v14 adds one compiler-only eligibility policy: without a grounded
+paste action, trimmed authored content must contain at least four Swift
+`Character` values. This moves exactly `"I"`, `"for"`, and the whitespace-only
+WRITE from loss-bearing targets to explicit exclusions while retaining all
+three WRITEs in later causal history. Grounded paste-only and mixed paste
+targets remain eligible. Run 8 therefore contains 28 training examples, 35
+target exclusions, zero context exclusions, and zero rejections. Repeated
+causal compilation is byte-identical, the causal audit passes, and the Qwen
+pack contains the same six grounded paste actions with one loss-bearing EOS per
+target and zero discarded input tokens.
 
-The canonical Run 8 artifacts were regenerated with a freshly rebuilt CLI from
-implementation commit
-`c659a29eae5bb171e5b701b80e761805e981c7e2`. Running `check.sh` validates the
-source but does not refresh `.build/debug/coupled`; release reduction must run
-`./scripts/build.sh` first and use that freshly built executable. Two independent
-reductions from the rebuilt executable were byte-identical, and both the causal
-and packed-dataset audits passed.
+### Canonical Run 8 semantic and training freeze record
+
+The canonical semantic reduction was generated from reducer implementation
+commit `c659a29eae5bb171e5b701b80e761805e981c7e2`. The canonical v14 causal dataset
+and pack were generated from compiler implementation commit
+`bbe5e75262031c06a0ca5c1824f01c02fc02e09b`. Running `check.sh` validates the
+source but does not refresh `.build/debug/coupled`; release generation must run
+`./scripts/build.sh` first and use that freshly built executable.
 
 Canonical semantic reduction:
 `coupled-data/normal-work-dry-run-8-phase1-events-v6-c659a29-canonical`
@@ -230,30 +240,32 @@ unresolved.jsonl   e343628b7c45010dcbc7a198397e58aa8a54d425197bfdd4d614015c9a682
 ```
 
 Canonical causal dataset:
-`coupled-data/normal-work-dry-run-8-phase1-v13-v6-c659a29-canonical`
+`coupled-data/normal-work-dry-run-8-phase1-v14-v6-bbe5e75-canonical`
 
 ```text
 context-exclusions.jsonl e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-dataset.json              f9af30a2b9f9f2dcf81c269e32aa31f7d7a8bdd573ca5111b00f019cc8ea040a
-events.jsonl              961c829aec50bef24aa4bd4e85c311dc48928e14ed52c9b4b72e770ecec55ae8
-examples.jsonl            a1d519a5b560213c240e36e3fbb90ad50686113fe72e7ef217d18d3962d518e5
+dataset.json              ad531e39f05e441e16186f0b00c0d7a0b5c3814d95cdebccdc0d83170f66e873
+events.jsonl              e4dfd323820d215e35ed64b8835716bfc47bc9c176267786e41186b21dc073e2
+examples.jsonl            9a3d5d31a700e81135610740b44659a20ae415120e61e817a15b69db5366f677
 rejections.jsonl          e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-target-exclusions.jsonl   b6a6b19b0b920d8c810f89eb94413de93267ccb84d9fad13c10466b09f3ddcf2
+target-exclusions.jsonl   4a3a6fb9528060b04cb74c47503af3766a4de0e07f0bc517a7fce94e0ad55e9c
 ```
 
 Canonical Qwen pack:
-`coupled-data/normal-work-dry-run-8-phase1-v13-v6-c659a29-canonical-qwen-pack`
+`coupled-data/normal-work-dry-run-8-phase1-v14-v6-bbe5e75-canonical-qwen-pack`
 
 ```text
-packed-examples.jsonl eee915541b1c65e0f3aa099d20fe7a269efb361e2a5f27cba1994afb20854786
-packing.json          41aa2cc47a9313fb8cbd77c4ddeee532e53e7d0e8e1b769b4f71a5323128bba9
+packed-examples.jsonl a7d9457d87c6bc7c7cb461a358476b4caf06628e1f4132f32dbc68bde7ce5ef0
+packing.json          9e18e82cf91ad2f25b56970cadbb5752209535f1edfb6366638428573f662dfb
 ```
 
 The earlier `normal-work-dry-run-8-phase1-events-v6-final`,
 `normal-work-dry-run-8-phase1-v13-v6-final`, and associated `-qwen-pack`
 artifacts are superseded. The initially generated `-c659a29` artifacts without
 the `-canonical` suffix are also superseded because they were produced by a
-stale debug executable. None of those paths are training authority.
+stale debug executable. The canonical v13 causal dataset and pack are valid
+prior-policy artifacts but are superseded by v14 for initial training. None of
+those superseded paths are current training authority.
 
 Timing:
 
@@ -469,12 +481,12 @@ No ablation requires changing the collector schema. The principal missing layer 
 
 ### Before the next authoritative collection
 
-Treat `phase1-semantic-v6`, `phase1-causal-v13`, and the current three-second
+Treat `phase1-semantic-v6`, `phase1-causal-v14`, and the current three-second
 delays/crop configuration as the candidate baseline.
 
 1. Run normal work without changing collector rules mid-session.
 2. Reduce the raw session with `phase1-semantic-v6`; inspect finalized events and every non-event disposition.
-3. Compile the finalized reduction with `phase1-causal-v13`, supplying the raw session directory for hash and lineage verification.
+3. Compile the finalized reduction with `phase1-causal-v14`, supplying the raw session directory for hash and lineage verification.
 4. Manually sample the temporal trace against the actual work and record Phase 1's fidelity categories: missing events, temporal-ordering errors, incorrect content inclusion, authorship errors, write-boundary disagreement, destination ambiguity, and future leakage.
 5. Quantify reducer unresolved reasons plus target/context exclusions. Fix only recurrent material errors demonstrated by that trace; otherwise freeze the collector/reducer/compiler versions.
 

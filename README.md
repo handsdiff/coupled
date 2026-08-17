@@ -386,12 +386,18 @@ prior writes at `terminalDecisionAt`. Records explicitly marked
 `phase1Eligible: false`—including future displayed model predictions—are
 excluded before contexts and targets are built.
 
-Conversion `phase1-causal-v13` defines the supervised example as:
+Conversion `phase1-causal-v14` defines the supervised example as:
 
 ```text
 modelInput = causal read/write history + destination/cursor/clipboard query
 target     = authored-text segments + grounded paste-action segments
 ```
+
+For text-only targets, v14 requires at least four user-perceived characters
+after trimming surrounding whitespace. Shorter WRITEs remain in causal history
+but receive no target loss. A grounded paste action bypasses this minimum, so
+paste-only and mixed authored/paste targets remain eligible. The manifest pins
+the threshold and every exclusion records its measured authored length.
 
 The model-facing cursor is range-native semantic state: bounded text before the
 caret, selected text, and text after it. Known empty AI prompt chrome is stored
