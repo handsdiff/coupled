@@ -127,8 +127,9 @@ editable fields in the allowlisted applications.
 ./scripts/coupled logs
 ```
 
-Derived events are appended in emission order to `events.jsonl` and mirrored to
-the same live log. `Coupled.app` is headless; capture is started and stopped from
+Provisional events are appended in emission order to `events.preview.jsonl` and
+mirrored to the same live log. Raw evidence is the collection authority;
+finalized `events.jsonl` is created later by `coupled reduce`. `Coupled.app` is headless; capture is started and stopped from
 the terminal. `dist/Coupled Logs.app` is a separate, independently launchable
 viewer with no collector controls. It shows the active run's immutable resolved
 settings and the identical compact event stream. Open it from Finder, Spotlight,
@@ -252,9 +253,11 @@ the terminal or checkpoint observation chosen for derivation, while
 between them. `derivationObservationSource` and `fallbackReason` make that
 choice explicit. `configuredWriteDelaySeconds` describes the configured quiet
 period; `boundaryReason` states whether that period elapsed or Return/focus
-caused earlier settlement. The versioned `compile` command—not the collector—
-assigns causal `availableAt` and constructs ordered training data from these
-source timestamps. A write's conditioning snapshot can complete milliseconds
+caused earlier settlement. Raw write evidence is persisted before provisional
+preview interpretation. The versioned `reduce` command constructs finalized
+READ/WRITE events from `raw.jsonl`; `compile` then verifies hashes and lineage,
+assigns causal `availableAt`, and constructs ordered training data without
+repeating semantic reduction. A write's conditioning snapshot can complete milliseconds
 after its input event was intercepted, but the active event tap has not yet
 returned that mutation to the application. Its explicit capture semantics are
 `synchronous_before_application_mutation`; it is query state rather than an
@@ -296,18 +299,32 @@ the raw attempt records the failure and no derived write is guessed. Both files
 and retained screenshots can contain sensitive information; use the pause file
 before handling it.
 
-## Phase 1 causal compilation
+## Phase 1 reduction and causal compilation
 
-Compile a completed session into deterministic causal examples without
-reordering or modifying the source files:
+Reduce a completed raw session, then compile the finalized semantic artifact:
 
 ```sh
+./scripts/coupled reduce \
+  --input ./coupled-data/SESSION \
+  --output ./coupled-data/SESSION-phase1-events-v1
+
 ./scripts/coupled compile \
-  --input ./coupled-data/normal-work-dry-run-3 \
-  --output ./coupled-data/normal-work-dry-run-3-phase1-v11
+  --input ./coupled-data/SESSION-phase1-events-v1 \
+  --source ./coupled-data/SESSION \
+  --output ./coupled-data/SESSION-phase1-v13
+
 ./scripts/audit-causal-dataset.sh \
-  ./coupled-data/normal-work-dry-run-3-phase1-v11
+  ./coupled-data/SESSION-phase1-v13 \
+  ./coupled-data/SESSION-phase1-events-v1 \
+  ./coupled-data/SESSION
 ```
+
+The reduction directory contains only `events.jsonl`, `unresolved.jsonl`, and
+`reduction.json`. Every finalized event embeds deterministic raw lineage, the
+selected observation, its rule, and its decision reason. Event IDs depend on
+session, lineage, and output ordinal—not reducer version. The manifest binds
+the session/raw and finalized-artifact SHA-256 digests.
+`events.preview.jsonl` is never read by reduction or compilation.
 
 The fresh output directory contains:
 
@@ -325,12 +342,14 @@ The fresh output directory contains:
 - `context-exclusions.jsonl`: stale delayed reads omitted from causal history
   because later keyboard input superseded their pointer trigger before the
   screenshot was captured.
-- `rejections.jsonl`: writes that cannot be reconstructed exactly from their
-  retained raw BEFORE and selected AFTER observation.
+- `rejections.jsonl`: malformed or integrity-invalid finalized events. Semantic
+  ambiguity belongs in the reducer's `unresolved.jsonl`.
 - `dataset.json`: conversion rules, source digests, counts, and schema details.
 
-The compiler verifies `apply(BEFORE, derived edit) == selected logical AFTER`
-before admitting a target. A target's context contains only events whose
+The reducer verifies local observation transitions and conservatively leaves
+ambiguous evidence unresolved. The compiler verifies raw lineage plus source
+and artifact hashes without independently choosing the semantic observation.
+A target's context contains only events whose
 `availableAt` is strictly earlier than its `beganAt`; append/emission order is
 never treated as causal order. Reads become available at `capturedAt`, and
 prior writes at `terminalDecisionAt`. Records explicitly marked
@@ -568,7 +587,8 @@ Run short, controlled sessions before collecting normal work:
 2. Submit text in Obsidian, a browser field, and each AI-chat application.
 3. Scroll slowly, scroll quickly, dwell, reread, switch tabs, and overlap
    windows.
-4. Compare `raw.jsonl` with `events.jsonl` and the experience you remember.
+4. Compare `raw.jsonl`, `events.preview.jsonl`, and the experience you remember;
+   then inspect the reducer's finalized `events.jsonl` and `unresolved.jsonl`.
 5. Record missing text, false exposure, duplicate reads, wrong authorship,
    incorrect write boundaries, and sensitive content that should be excluded.
 6. Change one delay, exclusion, traversal rule, or interpretation at a time.

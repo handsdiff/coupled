@@ -65,7 +65,7 @@ public enum CausalDatasetCompilerError: Error, CustomStringConvertible {
     }
 }
 
-/// Converts an operational Coupled session into deterministic Phase 1 causal
+/// Converts a finalized semantic reduction into deterministic Phase 1 causal
 /// histories, pre-mutation queries, and human-written content targets. It deliberately
 /// preserves the complete model input. Model-specific tokenization and left
 /// truncation are a later packing step because a 32K suffix cannot be defined
@@ -78,16 +78,21 @@ public struct CausalDatasetCompiler {
     }
 
     @discardableResult
-    public func compile(inputDirectory: URL, outputDirectory: URL) throws
+    public func compile(
+        inputDirectory: URL,
+        sourceDirectory: URL? = nil,
+        outputDirectory: URL
+    ) throws
         -> CausalDatasetCompilerResult
     {
         let input = inputDirectory.standardizedFileURL
         let output = outputDirectory.standardizedFileURL
-        let sessionURL = input.appendingPathComponent("session.json")
+        let reductionURL = input.appendingPathComponent("reduction.json")
         let eventsURL = input.appendingPathComponent("events.jsonl")
-        let rawURL = input.appendingPathComponent("raw.jsonl")
-        for url in [sessionURL, eventsURL, rawURL] where !FileManager.default.fileExists(atPath: url.path) {
-            throw CausalDatasetCompilerError.missingFile(url.path)
+        let unresolvedURL = input.appendingPathComponent("unresolved.jsonl")
+        let usesFinalizedReduction = FileManager.default.fileExists(atPath: reductionURL.path)
+        guard FileManager.default.fileExists(atPath: eventsURL.path) else {
+            throw CausalDatasetCompilerError.missingFile(eventsURL.path)
         }
 
         let outputFiles = [
@@ -108,11 +113,65 @@ public struct CausalDatasetCompiler {
             throw CausalDatasetCompilerError.outputAlreadyExists(url.path)
         }
 
+        let reduction: [String: Any]?
+        let sessionURL: URL
+        let rawURL: URL
+        let sessionID: String
+        if usesFinalizedReduction {
+            let reductionData = try Data(contentsOf: reductionURL)
+            guard let parsed = try JSONSerialization.jsonObject(with: reductionData) as? [String: Any],
+                  let parsedSessionID = parsed.string("sessionID"), !parsedSessionID.isEmpty,
+                  let source = parsed["source"] as? [String: Any],
+                  let sourceDigests = source["digestsSHA256"] as? [String: Any],
+                  let artifact = parsed["artifacts"] as? [String: Any],
+                  let artifactDigests = artifact["digestsSHA256"] as? [String: Any] else {
+                throw CausalDatasetCompilerError.invalidManifest(
+                    "reduction identity, source, or artifact digests are missing"
+                )
+            }
+            reduction = parsed
+            sessionID = parsedSessionID
+            guard FileManager.default.fileExists(atPath: unresolvedURL.path) else {
+                throw CausalDatasetCompilerError.missingFile(unresolvedURL.path)
+            }
+            guard let sourceDirectory else {
+                throw CausalDatasetCompilerError.invalidManifest(
+                    "finalized reduction compilation requires the raw session source directory"
+                )
+            }
+            sessionURL = sourceDirectory.standardizedFileURL.appendingPathComponent("session.json")
+            rawURL = sourceDirectory.standardizedFileURL.appendingPathComponent("raw.jsonl")
+            for url in [sessionURL, rawURL] where !FileManager.default.fileExists(atPath: url.path) {
+                throw CausalDatasetCompilerError.missingFile(url.path)
+            }
+            guard sourceDigests.string("session.json") == (try sha256(of: sessionURL)),
+                  sourceDigests.string("raw.jsonl") == (try sha256(of: rawURL)),
+                  artifactDigests.string("events.jsonl") == (try sha256(of: eventsURL)),
+                  artifactDigests.string("unresolved.jsonl") == (try sha256(of: unresolvedURL)) else {
+                throw CausalDatasetCompilerError.invalidManifest("reduction digest verification failed")
+            }
+        } else {
+            // Compatibility importer for schema <= 14 fixtures and historical
+            // runs. New collectors write events.preview.jsonl instead, making
+            // reduction mandatory for all new collection.
+            reduction = nil
+            sessionURL = input.appendingPathComponent("session.json")
+            rawURL = input.appendingPathComponent("raw.jsonl")
+            for url in [sessionURL, rawURL] where !FileManager.default.fileExists(atPath: url.path) {
+                throw CausalDatasetCompilerError.missingFile(url.path)
+            }
+            let legacyManifestData = try Data(contentsOf: sessionURL)
+            guard let legacyManifest = try JSONSerialization.jsonObject(
+                with: legacyManifestData
+            ) as? [String: Any], let legacySessionID = legacyManifest.string("sessionID") else {
+                throw CausalDatasetCompilerError.invalidManifest("legacy session is missing sessionID")
+            }
+            sessionID = legacySessionID
+        }
         let manifestData = try Data(contentsOf: sessionURL)
         guard let manifest = try JSONSerialization.jsonObject(with: manifestData) as? [String: Any],
-              let sessionID = manifest.string("sessionID"),
-              !sessionID.isEmpty else {
-            throw CausalDatasetCompilerError.invalidManifest("missing sessionID")
+              manifest.string("sessionID") == sessionID else {
+            throw CausalDatasetCompilerError.invalidManifest("source sessionID does not match reduction")
         }
         let timingVersion = ((manifest["schemas"] as? [String: Any])?["timingSemanticsVersion"] as? NSNumber)?.intValue
         guard timingVersion == 2 else {
@@ -123,6 +182,15 @@ public struct CausalDatasetCompiler {
 
         let rawRecords = try readJSONL(rawURL)
         var attempts = [String: [String: Any]]()
+        var rawRecordIDs = Set<String>()
+        for record in rawRecords {
+            guard let recordID = record.object.string("recordID"), !recordID.isEmpty else { continue }
+            guard rawRecordIDs.insert(recordID).inserted else {
+                throw CausalDatasetCompilerError.invalidEvent(
+                    rawURL.path, record.line, "duplicate raw record ID \(recordID)"
+                )
+            }
+        }
         for record in rawRecords
             where record.object.string("recordType") == "active_tap_write_attempt" {
             guard let recordID = record.object.string("recordID"), !recordID.isEmpty else {
@@ -161,6 +229,21 @@ public struct CausalDatasetCompiler {
                 throw CausalDatasetCompilerError.invalidEvent(
                     eventsURL.path, source.line, "duplicate source event ID \(eventID)"
                 )
+            }
+            if usesFinalizedReduction {
+                let lineage = event.stringArray("sourceRecordIDs")
+                guard let decision = event["reduction"] as? [String: Any],
+                      let outputOrdinal = decision.number("outputOrdinal")?.intValue,
+                      !lineage.isEmpty, lineage.allSatisfy(rawRecordIDs.contains),
+                      eventID == compilerStableEventID(
+                        sessionID: sessionID, lineage: lineage, ordinal: outputOrdinal
+                      ),
+                      decision.stringArray("rawLineage") == lineage else {
+                    throw CausalDatasetCompilerError.invalidEvent(
+                        eventsURL.path, source.line,
+                        "finalized event has invalid raw lineage or stable identity"
+                    )
+                }
             }
             if event.boolean("phase1Eligible") == false {
                 rejections.append(rejection(
@@ -215,7 +298,10 @@ public struct CausalDatasetCompiler {
                 ))
                 continue
             }
-            switch canonicalWrite(event: event, attempts: attempts) {
+            let verification = usesFinalizedReduction
+                ? verifyReducedWrite(event: event, attempts: attempts)
+                : canonicalWrite(event: event, attempts: attempts)
+            switch verification {
             case .success(let canonicalEvent):
                 converted.append(ConvertedEvent(
                     source: source,
@@ -408,18 +494,22 @@ public struct CausalDatasetCompiler {
         try writeJSONL(contextExclusions, to: outputFiles[4])
         try writeJSONL(rejections, to: outputFiles[5])
 
-        let sourceDigests: [String: Any] = [
-            "session.json": try sha256(of: sessionURL),
+        var compiledSourceDigests: [String: Any] = [
             "events.jsonl": try sha256(of: eventsURL),
+            "session.json": try sha256(of: sessionURL),
             "raw.jsonl": try sha256(of: rawURL),
         ]
+        if usesFinalizedReduction {
+            compiledSourceDigests["reduction.json"] = try sha256(of: reductionURL)
+            compiledSourceDigests["unresolved.jsonl"] = try sha256(of: unresolvedURL)
+        }
         let datasetManifest: [String: Any] = [
             "schemaVersion": 11,
             "conversionVersion": configuration.conversionVersion,
             "sessionID": sessionID,
             "source": [
-                "sessionDirectory": input.path,
-                "digestsSHA256": sourceDigests,
+                "reducerVersion": reduction?.string("reducerVersion") ?? "legacy_collector_import",
+                "digestsSHA256": compiledSourceDigests,
                 "sourceEventCount": sourceEvents.count,
                 "rawRecordCount": rawRecords.count,
             ],
@@ -449,7 +539,7 @@ public struct CausalDatasetCompiler {
                     "legacy earliest mutation and terminal edit must agree with the initial cursor",
                 ],
                 "explicitExclusion": "phase1Eligible == false",
-                "writeVerification": "single-epoch source outcomes reconstruct the used observation; a segmented paste completion additionally requires exact local epoch, clipboard, checkpoint, and segment agreement",
+                "writeVerification": "the causal compiler verifies finalized event lineage and reducer/source hashes; semantic observation selection belongs exclusively to the versioned reducer",
                 "writeProjection": "the observed net edit remains the canonical initial-to-used-observation diff; only a proven Cmd-V AX epoch transition may carry a separately resolved segmented completion",
             ],
             "serialization": [
@@ -592,6 +682,76 @@ private func sourceEventID(event: [String: Any], sessionID: String, line: Int) -
 private enum CanonicalWriteResult {
     case success([String: Any])
     case failure(String)
+}
+
+/// Verifies reducer integrity and raw lineage without independently choosing an
+/// observation or reconstructing semantic authorship. Those decisions belong
+/// to the versioned reducer and are recorded on the finalized event.
+private func verifyReducedWrite(
+    event: [String: Any],
+    attempts: [String: [String: Any]]
+) -> CanonicalWriteResult {
+    let sourceIDs = event.stringArray("sourceRecordIDs")
+    guard sourceIDs.count == 1, let attempt = attempts[sourceIDs[0]] else {
+        return .failure("missing_unique_raw_write_attempt")
+    }
+    guard let sessionID = event.string("sessionID"),
+          let reduction = event["reduction"] as? [String: Any],
+          let outputOrdinal = reduction.number("outputOrdinal")?.intValue,
+          event.string("eventID") == compilerStableEventID(
+            sessionID: sessionID, lineage: sourceIDs, ordinal: outputOrdinal
+          ) else {
+        return .failure("unstable_or_invalid_reduced_event_id")
+    }
+    guard reduction.string("rule") != nil,
+          reduction.string("reason") != nil,
+          reduction.stringArray("rawLineage") == sourceIDs,
+          let selectedID = reduction.string("selectedObservationID"),
+          rawObservationIDs(attempt).contains(selectedID) else {
+        return .failure("reducer_decision_or_selected_observation_missing")
+    }
+    guard let eventConditioning = event["conditioningState"] as? [String: Any],
+          let rawConditioning = attempt["conditioningState"] as? [String: Any],
+          (try? canonicalJSONString(eventConditioning))
+            == (try? canonicalJSONString(rawConditioning)) else {
+        return .failure("conditioning_state_does_not_match_raw_evidence")
+    }
+    guard event.string("operation") != nil,
+          event.string("content") != nil,
+          event.string("removedContent") != nil,
+          event.number("characterOffset") != nil,
+          let completion = event.string("resolvedCompletion"),
+          let segments = event["authorshipSegments"] as? [[String: Any]],
+          segments.compactMap({ $0.string("content") }).count == segments.count,
+          segments.compactMap({ $0.string("content") }).joined() == completion else {
+        return .failure("reduced_write_shape_or_authorship_is_invalid")
+    }
+    return .success(event)
+}
+
+private func rawObservationIDs(_ attempt: [String: Any]) -> Set<String> {
+    var result = Set<String>()
+    for key in ["before", "after"] {
+        if let observation = attempt[key] as? [String: Any],
+           let id = observation.string("observationID") { result.insert(id) }
+    }
+    for key in ["returnCheckpoints", "pasteCheckpoints", "mutationCheckpoints"] {
+        for checkpoint in attempt[key] as? [[String: Any]] ?? [] {
+            if let observation = checkpoint["observation"] as? [String: Any],
+               let id = observation.string("observationID") { result.insert(id) }
+            if let observation = checkpoint["prePasteObservation"] as? [String: Any],
+               let id = observation.string("observationID") { result.insert(id) }
+        }
+    }
+    return result
+}
+
+private func compilerStableEventID(
+    sessionID: String, lineage: [String], ordinal: Int
+) -> String {
+    let material = sessionID + "\u{1f}" + lineage.joined(separator: "\u{1e}") + "\u{1f}\(ordinal)"
+    return "evt_" + SHA256.hash(data: Data(material.utf8))
+        .map { String(format: "%02x", $0) }.joined()
 }
 
 private func canonicalWrite(

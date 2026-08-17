@@ -33,6 +33,7 @@ func writeSessionManifest(_ configuration: Configuration) throws {
     }
     for path in [
         configuration.rawPath,
+        configuration.previewEventsPath,
         configuration.eventsPath,
         configuration.triggersPath,
         configuration.writesPath,
@@ -149,7 +150,7 @@ private struct SchemaManifest: Encodable {
     let rawScreenOCR = 6
     let derivedScreenRead = 7
     let rawReadCandidateSuppression = 2
-    let rawActiveTapWrite = 14
+    let rawActiveTapWrite = 15
     let derivedActiveTapWrite = 11
     let rawPasteAuditScreenshot = 1
     let writeSensorHealth = 1

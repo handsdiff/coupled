@@ -1,6 +1,17 @@
 # Coupled checkpoint
 
-The current committed `main` branch is the candidate implementation baseline, built on the grounded-paste, reverted-write, cursor-relocation, compact-history, and event-aware packing gates. The focused paste/read-attribution, reverted-write, and same-editable cursor-relocation acceptance traces have passed. Further collector or conversion changes are not treated as complete here until committed and validated.
+The candidate architecture is now raw-first:
+
+```text
+lossless sensor evidence
+→ versioned Phase 1 semantic READ/WRITE reduction
+→ causal examples
+→ tokenizer-specific packing and training
+```
+
+The live stream is a provisional monitor, not training authority. Further
+collector or reducer changes are not complete until their raw-lineage,
+determinism, and regression gates pass.
 
 ## Objective
 
@@ -18,9 +29,10 @@ Raw collection must preserve enough evidence to revise event construction later.
 
 ### Raw evidence versus interpretation
 
-- `raw.jsonl` preserves screenshots, OCR, Accessibility states, input timing, clipboard evidence, checkpoints, and suppression reasons.
-- `events.jsonl` contains provisional READ and WRITE events.
-- The causal compiler produces chronologically valid history and candidate training examples.
+- `raw.jsonl` preserves screenshots, OCR, Accessibility states, input timing, clipboard evidence, checkpoints, and capture dispositions. WRITE evidence is persisted before preview interpretation.
+- `events.preview.jsonl` contains provisional live READ and WRITE interpretations and is never a training input.
+- `coupled reduce` produces finalized `events.jsonl`, explicit `unresolved.jsonl`, and `reduction.json` from raw evidence.
+- The causal compiler verifies reducer/raw integrity and produces chronologically valid history and candidate training examples; it does not repeat semantic reduction.
 - Collector append order is never treated as causal order.
 
 ### Event content versus training target
@@ -57,8 +69,8 @@ Mechanism:
 2. Capture the focused editable's `BEFORE` state, complete within the configured value bound, before returning the input to the application; explicitly reject truncated evidence where reconstruction requires the missing text.
 3. Reset `WRITE_DELAY` after each subsequent input.
 4. Capture the held editable's terminal state.
-5. Derive the canonical minimum contiguous `BEFORE → AFTER` edit.
-6. Preserve the complete attempt and checkpoints in raw evidence.
+5. Persist the complete attempt and checkpoints to `raw.jsonl`.
+6. Derive a provisional live preview; the offline reducer later makes the authoritative versioned decision.
 
 Implemented safeguards:
 
@@ -116,26 +128,32 @@ Implemented safeguards:
 
 `Coupled.app` is a headless collector controlled from the terminal. `Coupled
 Logs.app` is a separate, independently launchable process that follows the same
-compact derived-event stream as `./scripts/coupled logs`. During a live run it
+compact provisional-event stream as `./scripts/coupled logs`. During a live run it
 also displays that run's immutable resolved `session.json` settings. It has no
 capture controls and retains only a bounded recent text buffer. Both
 `com.niyant.coupled` and `com.niyant.coupled.logs` are permanently excluded from
-READ and WRITE collection. The authoritative `events.jsonl`, `raw.jsonl`, and
-stdout mirror remain unchanged. The viewer must not overlap a captured work
+READ and WRITE collection. The authoritative collection artifact is `raw.jsonl`;
+the stdout mirror and `events.preview.jsonl` are debugging aids. The viewer must not overlap a captured work
 surface because semantic exclusion cannot remove pixels already covering a
 rectangular screenshot.
 
-## Implemented causal compilation
+## Implemented semantic reduction and causal compilation
 
 Current compiler: `phase1-causal-v13`
+Current reducer: `phase1-semantic-v1`
 
-The v13 paste-epoch path has passed deterministic reducer/compiler checks,
-regression compilation, and `paste-epoch-test-1`. Run 5's 48 target examples
-and all model-facing semantics are identical between v12 and v13;
-`ordinary-work-audit-2` still produces 17 examples with no rejection. The live
-test produced two exact `before ` + paste + ` after` completions—including a
-rapid-Return boundary—and compiled all eight session WRITEs with zero target
-exclusions or reconstruction rejection.
+The reducer consumes only `session.json` and `raw.jsonl`; deleting or corrupting
+`events.preview.jsonl` produces byte-identical finalized events. Event IDs are
+stable across reducer versions because they derive from session ID, ordered raw
+lineage, and output ordinal. `reduction.json` binds the session, raw stream,
+finalized events, and unresolved records by SHA-256.
+
+Against `ordinary-work-audit-3`, semantic v1 recovered both Gemini submissions
+from synchronous pre-Return observations, rejected the impossible 3,263-character
+Obsidian expansion from a delete-only burst, produced 310 READs and 186 WRITEs,
+and left 85 records explicitly unresolved. Causal v13 then produced 101
+training examples, 85 target exclusions, eight context exclusions, and zero
+integrity rejections; the causal audit passed.
 
 Timing:
 
@@ -148,10 +166,20 @@ context(target) =
     stable_sort(events where event.available_at < target.began_at)
 ```
 
+The raw-input semantic reducer:
+
+- reads raw evidence without consulting the provisional preview;
+- embeds raw lineage, selected observation, rule, and decision reason in every event;
+- writes only `events.jsonl`, `unresolved.jsonl`, and `reduction.json`;
+- recovers transient submitted fields from pre-Return checkpoints;
+- rejects delete-only transitions which appear to insert content;
+- bridges AX observation epochs only across proven clipboard-matched Cmd-V evidence;
+- independently recomputes READ surface-race and Chrome auxiliary-window eligibility;
+- leaves ambiguous evidence unresolved instead of guessing.
+
 The compiler:
 
-- reconstructs writes from raw evidence;
-- repairs known legacy synthetic deletions;
+- verifies reducer artifacts, stable event IDs, raw lineage, selected observations, and all source hashes without duplicating semantic reduction;
 - excludes stale reads from older sessions;
 - serializes causal READ/WRITE history;
 - uses compact model-facing history while retaining the richer canonical projection as `auditSerialized`;
@@ -161,6 +189,10 @@ The compiler:
 - excludes pure deletions;
 - records target and context exclusions explicitly;
 - audits lineage back to source records.
+
+Historical schema-14 sessions retain a compatibility importer for regression
+only. New schema-15 sessions write `events.preview.jsonl`, so they cannot bypass
+the reducer.
 
 For range-native semantic cursor contexts, complete semantic conditioning remains eligible even when unreliable numeric AX offsets disagree. Numeric offsets are diagnostic and do not alter reconstruction or impose a separate target gate. Phase 1 now states the same rule.
 
@@ -319,15 +351,14 @@ No ablation requires changing the collector schema. The principal missing layer 
 
 ### Before the next authoritative collection
 
-The focused component gates are complete. Treat `phase1-causal-v13` and the
-current three-second delays/crop configuration as the candidate baseline for an
-ordinary-work audit run.
+Treat `phase1-semantic-v1`, `phase1-causal-v13`, and the current three-second
+delays/crop configuration as the candidate baseline.
 
 1. Run normal work without changing collector rules mid-session.
-2. Compile the session with `phase1-causal-v13` and preserve the source digests and audit outputs.
-3. Manually sample the temporal trace against the actual work and record Phase 1's fidelity categories: missing events, temporal-ordering errors, incorrect content inclusion, authorship errors, write-boundary disagreement, destination ambiguity, and future leakage.
-4. Quantify target eligibility and exclusion reasons, including pure deletion, unresolved paste authorship, incomplete semantic cursor state, and rejected reconstruction.
-5. Fix only recurrent material errors demonstrated by that trace. If no training-blocking class appears, freeze the collector/configuration/conversion as the first immutable dataset version.
+2. Reduce the raw session with `phase1-semantic-v1`; inspect finalized events and every unresolved reason.
+3. Compile the finalized reduction with `phase1-causal-v13`, supplying the raw session directory for hash and lineage verification.
+4. Manually sample the temporal trace against the actual work and record Phase 1's fidelity categories: missing events, temporal-ordering errors, incorrect content inclusion, authorship errors, write-boundary disagreement, destination ambiguity, and future leakage.
+5. Quantify reducer unresolved reasons plus target/context exclusions. Fix only recurrent material errors demonstrated by that trace; otherwise freeze the collector/reducer/compiler versions.
 
 ### Before initial offline training
 
@@ -355,4 +386,8 @@ ordinary-work audit run.
 
 ## Next step
 
-Run one ordinary-work candidate session with the current baseline, then compile and audit it before changing capture behavior. This tests the Thesis claim at the right level: whether the interleaved stream faithfully preserves the information-to-authored-output conversion during natural work, rather than whether isolated sensors can pass synthetic cases. Focus-time conditioning remains required before live prediction, but it is not a blocker for this offline training-data audit because the current pre-mutation query is causally valid for completed examples.
+Package the raw-first collector, run a short live smoke test to confirm
+`raw.jsonl` precedes `events.preview.jsonl`, then perform the next ordinary-work
+candidate session. Reduce, compile, audit, and manually inspect it before any
+further semantic rule change. Focus-time conditioning remains required before
+live prediction, but it is not a blocker for this offline training-data audit.

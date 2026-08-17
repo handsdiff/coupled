@@ -1,8 +1,8 @@
 #!/bin/zsh
 set -euo pipefail
 
-if (( $# != 1 )); then
-  print -u2 "Usage: ./scripts/audit-causal-dataset.sh COMPILED_DATASET_DIRECTORY"
+if (( $# != 1 && $# != 3 )); then
+  print -u2 "Usage: ./scripts/audit-causal-dataset.sh DATASET [REDUCTION RAW_SESSION]"
   exit 1
 fi
 
@@ -184,9 +184,29 @@ jq -e -s --slurpfile manifest "$manifest" --slurpfile examples "$examples" --slu
   )
 ' "$events" >/dev/null
 
-source_dir="$(jq -r '.source.sessionDirectory' "$manifest")"
-for source_name in session.json events.jsonl raw.jsonl; do
-  source_file="$source_dir/$source_name"
+if (( $# == 3 )); then
+  reduction_dir="${2:A}"
+  raw_session_dir="${3:A}"
+  source_names=(reduction.json events.jsonl unresolved.jsonl session.json raw.jsonl)
+  source_files=(
+    "$reduction_dir/reduction.json"
+    "$reduction_dir/events.jsonl"
+    "$reduction_dir/unresolved.jsonl"
+    "$raw_session_dir/session.json"
+    "$raw_session_dir/raw.jsonl"
+  )
+else
+  source_dir="$(jq -r '.source.sessionDirectory' "$manifest")"
+  source_names=(session.json events.jsonl raw.jsonl)
+  source_files=(
+    "$source_dir/session.json"
+    "$source_dir/events.jsonl"
+    "$source_dir/raw.jsonl"
+  )
+fi
+for (( index = 1; index <= ${#source_names[@]}; index += 1 )); do
+  source_name="${source_names[index]}"
+  source_file="${source_files[index]}"
   [[ -f "$source_file" ]] || {
     print -u2 "Source file recorded by manifest is unavailable: $source_file"
     exit 1

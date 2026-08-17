@@ -927,6 +927,97 @@ expect(
     "grounded AX epoch transition preserves authored prefix, paste action, and suffix"
 )
 
+// Raw-first architecture: finalized semantics are deterministic and independent
+// of the collector's provisional preview artifact.
+let rawFirstInput = fixtureRoot.appendingPathComponent("raw-first-input")
+let rawFirstReductionA = fixtureRoot.appendingPathComponent("raw-first-reduction-a")
+let rawFirstReductionB = fixtureRoot.appendingPathComponent("raw-first-reduction-b")
+let rawFirstDataset = fixtureRoot.appendingPathComponent("raw-first-dataset")
+try! FileManager.default.createDirectory(at: rawFirstInput, withIntermediateDirectories: true)
+try! jsonData([
+    "sessionID": "raw-first-session",
+    "schemas": ["timingSemanticsVersion": 2],
+], pretty: true).write(to: rawFirstInput.appendingPathComponent("session.json"))
+let rawFirstBefore = observation("", at: "2026-01-01T00:00:01.000Z", selectionLocation: 0)
+let rawFirstAfter = observation("hello", at: "2026-01-01T00:00:04.000Z", selectionLocation: 5)
+let rawFirstConditioning: [String: Any] = [
+    "schemaVersion": 3,
+    "captureSemantics": "synchronous_before_application_mutation",
+    "inputInterceptedAt": "2026-01-01T00:00:01.000Z",
+    "capturedAt": "2026-01-01T00:00:01.000Z",
+    "destination": [
+        "appName": "Fixture", "bundleIdentifier": "fixture.app",
+        "processIdentifier": 42, "windowTitle": "Fixture", "role": "AXTextArea",
+    ],
+    "cursorContext": [
+        "schemaVersion": 2, "source": "accessibility_string_for_range",
+        "captureStatus": "complete", "fieldState": "editable_text",
+        "leftContext": "", "selectedText": "", "rightContext": "",
+    ],
+    "sourceObservationID": rawFirstBefore["observationID"] as! String,
+]
+let rawFirstAttempt: [String: Any] = [
+    "schemaVersion": 15, "recordType": "active_tap_write_attempt",
+    "recordID": "raw-first-attempt", "sessionID": "raw-first-session",
+    "bundleIdentifier": "fixture.app", "observedAt": "2026-01-01T00:00:04.000Z",
+    "beganAt": "2026-01-01T00:00:01.000Z",
+    "lastInputAt": "2026-01-01T00:00:01.000Z",
+    "terminalDecisionAt": "2026-01-01T00:00:04.000Z",
+    "terminalSnapshotAt": "2026-01-01T00:00:04.000Z",
+    "configuredWriteDelaySeconds": 3, "firstEventTimestampNanoseconds": 1,
+    "lastEventTimestampNanoseconds": 1, "inputEventCount": 1,
+    "inputHints": ["typed"],
+    "inputEvents": [[
+        "observedAt": "2026-01-01T00:00:01.000Z",
+        "eventTimestampNanoseconds": 1, "hint": "typed", "mutationCapable": true,
+    ]],
+    "boundaryReason": "write_delay_elapsed", "conditioningState": rawFirstConditioning,
+    "targetIdentity": [
+        "bundleIdentifier": "fixture.app", "processIdentifier": 42,
+        "role": "AXTextArea", "windowTitle": "Fixture",
+    ],
+    "before": rawFirstBefore, "after": rawFirstAfter,
+    "returnCheckpoints": [], "pasteCheckpoints": [],
+    "mutationCheckpoints": [[
+        "checkpointID": "raw-first-mutation", "inputObservedAt": "2026-01-01T00:00:01.000Z",
+        "eventTimestampNanoseconds": 1, "captureRequestedAt": "2026-01-01T00:00:01.050Z",
+        "observation": rawFirstAfter, "axErrors": [],
+    ]],
+    "beforeAXErrors": [], "afterAXErrors": [], "tapTimeoutCountDuringBurst": 0,
+]
+writeFixtureJSONL([rawFirstAttempt], to: rawFirstInput.appendingPathComponent("raw.jsonl"))
+try! Data("deliberately corrupt preview\n".utf8).write(
+    to: rawFirstInput.appendingPathComponent("events.preview.jsonl")
+)
+let reducer = Phase1SemanticReducer()
+_ = try! reducer.reduce(sourceDirectory: rawFirstInput, outputDirectory: rawFirstReductionA)
+try! Data("different corrupt preview\n".utf8).write(
+    to: rawFirstInput.appendingPathComponent("events.preview.jsonl")
+)
+_ = try! reducer.reduce(sourceDirectory: rawFirstInput, outputDirectory: rawFirstReductionB)
+expect(
+    try! Data(contentsOf: rawFirstReductionA.appendingPathComponent("events.jsonl"))
+        == Data(contentsOf: rawFirstReductionB.appendingPathComponent("events.jsonl")),
+    "semantic reduction is deterministic and preview-independent"
+)
+let rawFirstEvents = readFixtureJSONL(rawFirstReductionA.appendingPathComponent("events.jsonl"))
+expect(
+    rawFirstEvents.count == 1
+        && rawFirstEvents[0]["content"] as! String == "hello"
+        && (rawFirstEvents[0]["reduction"] as! [String: Any])["selectedObservationID"] as! String
+            == rawFirstAfter["observationID"] as! String,
+    "finalized write embeds its raw observation decision and lineage"
+)
+_ = try! CausalDatasetCompiler().compile(
+    inputDirectory: rawFirstReductionA,
+    sourceDirectory: rawFirstInput,
+    outputDirectory: rawFirstDataset
+)
+expect(
+    readFixtureJSONL(rawFirstDataset.appendingPathComponent("examples.jsonl")).count == 1,
+    "causal compiler consumes a hash-verified finalized reduction"
+)
+
 try! FileManager.default.removeItem(at: fixtureRoot)
 
 print("CoupledCore checks passed")

@@ -462,6 +462,46 @@ final class ActiveTapWriteCollector {
         terminalDecisionAt: String,
         tapTimeoutCountAtCompletion: UInt64
     ) {
+        // raw.jsonl is the authoritative substrate. Persist the complete sensor
+        // evidence before any provisional semantic interpretation runs.
+        let conditioningState = writeConditioningState(for: pending)
+        let rawEvidence = RawActiveTapWriteEvidence(
+            recordID: pending.attemptID,
+            bundleIdentifier: pending.bundleIdentifier,
+            observedAt: nowTimestamp(),
+            beganAt: pending.beganAt,
+            lastInputAt: pending.lastInputAt,
+            terminalDecisionAt: terminalDecisionAt,
+            terminalSnapshotAt: after.observation?.observedAt,
+            configuredWriteDelaySeconds: configuration.writeDelay,
+            firstEventTimestampNanoseconds: pending.firstEventTimestampNanoseconds,
+            lastEventTimestampNanoseconds: pending.lastEventTimestampNanoseconds,
+            inputEventCount: pending.inputEventCount,
+            inputHints: pending.inputHints.sorted(),
+            inputEvents: pending.inputEvents,
+            boundaryReason: boundaryReason,
+            conditioningState: conditioningState,
+            targetIdentity: pending.target?.identity,
+            before: pending.before,
+            after: after.observation,
+            returnCheckpoints: pending.returnCheckpoints,
+            pasteCheckpoints: pending.pasteCheckpoints,
+            mutationCheckpoints: pending.mutationCheckpoints,
+            beforeAXErrors: pending.beforeAXErrors,
+            afterAXErrors: after.errors,
+            beforeCaptureDurationMilliseconds: pending.beforeCaptureDurationMilliseconds,
+            firstCallbackDurationMilliseconds: pending.firstCallbackDurationMilliseconds,
+            maximumCallbackDurationMilliseconds: pending.maximumCallbackDurationMilliseconds,
+            tapTimeoutCountDuringBurst: tapTimeoutCountAtCompletion
+                - pending.tapTimeoutCountAtStart
+        )
+        do {
+            _ = try rawWriter.write(rawEvidence)
+        } catch {
+            writeDiagnostic("could not persist active-tap write evidence: \(error)")
+            return
+        }
+
         let decision: WriteDerivationDecision
         if tapTimeoutCountAtCompletion > pending.tapTimeoutCountAtStart {
             decision = .unresolved("tap_timeout")
@@ -495,62 +535,10 @@ final class ActiveTapWriteCollector {
             )
         }
         let proposedEventID = decision.edit == nil ? nil : UUID().uuidString
-        let conditioningState = writeConditioningState(for: pending)
         let cursorFidelity = cursorFidelityEvidence(
             for: pending,
             terminalEditOffset: decision.edit?.characterOffset
         )
-        let rawRecord = RawActiveTapWriteAttempt(
-            recordID: pending.attemptID,
-            bundleIdentifier: pending.bundleIdentifier,
-            observedAt: nowTimestamp(),
-            beganAt: pending.beganAt,
-            lastInputAt: pending.lastInputAt,
-            terminalDecisionAt: terminalDecisionAt,
-            terminalSnapshotAt: after.observation?.observedAt,
-            configuredWriteDelaySeconds: configuration.writeDelay,
-            firstEventTimestampNanoseconds: pending.firstEventTimestampNanoseconds,
-            lastEventTimestampNanoseconds: pending.lastEventTimestampNanoseconds,
-            inputEventCount: pending.inputEventCount,
-            inputHints: pending.inputHints.sorted(),
-            inputEvents: pending.inputEvents,
-            boundaryReason: boundaryReason,
-            resolution: decision.resolution,
-            derivationObservationSource: decision.observationSource,
-            fallbackReason: decision.fallbackReason,
-            usedCheckpointID: decision.usedCheckpointID,
-            usedObservationCapturedAt: decision.usedObservationCapturedAt,
-            conditioningState: conditioningState,
-            cursorFidelity: cursorFidelity,
-            targetIdentity: pending.target?.identity,
-            before: pending.before,
-            after: after.observation,
-            returnCheckpoints: pending.returnCheckpoints,
-            pasteCheckpoints: pending.pasteCheckpoints,
-            mutationCheckpoints: pending.mutationCheckpoints,
-            authorshipResolution: authorship?.result.resolution,
-            authorshipEvidence: authorship?.evidence,
-            authorshipSegments: authorship?.result.segments ?? [],
-            resolvedCompletion: authorship?.resolvedCompletion,
-            stateContinuity: authorship?.stateContinuity,
-            observedNetEdit: decision.edit.map(ActiveTapWriteOutcome.init),
-            beforeAXErrors: pending.beforeAXErrors,
-            afterAXErrors: after.errors,
-            beforeCaptureDurationMilliseconds: pending.beforeCaptureDurationMilliseconds,
-            firstCallbackDurationMilliseconds: pending.firstCallbackDurationMilliseconds,
-            maximumCallbackDurationMilliseconds: pending.maximumCallbackDurationMilliseconds,
-            tapTimeoutCountDuringBurst: tapTimeoutCountAtCompletion
-                - pending.tapTimeoutCountAtStart,
-            proposedEventID: proposedEventID
-        )
-
-        do {
-            _ = try rawWriter.write(rawRecord)
-        } catch {
-            writeDiagnostic("could not persist active-tap write evidence: \(error)")
-            return
-        }
-
         guard let edit = decision.edit,
               let proposedEventID,
               let target = pending.target,
@@ -1945,8 +1933,8 @@ private struct WriteDerivationDecision {
     }
 }
 
-private struct RawActiveTapWriteAttempt: Encodable {
-    let schemaVersion = 14
+private struct RawActiveTapWriteEvidence: Encodable {
+    let schemaVersion = 15
     let recordType = "active_tap_write_attempt"
     let recordID: String
     let bundleIdentifier: String
@@ -1962,32 +1950,19 @@ private struct RawActiveTapWriteAttempt: Encodable {
     let inputHints: [String]
     let inputEvents: [ActiveTapInputEvidence]
     let boundaryReason: String
-    let resolution: String
-    let derivationObservationSource: String?
-    let fallbackReason: String?
-    let usedCheckpointID: String?
-    let usedObservationCapturedAt: String?
     let conditioningState: ActiveTapWriteConditioningState?
-    let cursorFidelity: ActiveTapCursorFidelityEvidence
     let targetIdentity: ActiveTapTargetIdentity?
     let before: ActiveTapEditableObservation?
     let after: ActiveTapEditableObservation?
     let returnCheckpoints: [ActiveTapReturnCheckpoint]
     let pasteCheckpoints: [ActiveTapPasteCheckpoint]
     let mutationCheckpoints: [ActiveTapMutationCheckpoint]
-    let authorshipResolution: String?
-    let authorshipEvidence: String?
-    let authorshipSegments: [WriteAuthorshipSegment]
-    let resolvedCompletion: String?
-    let stateContinuity: String?
-    let observedNetEdit: ActiveTapWriteOutcome?
     let beforeAXErrors: [String]
     let afterAXErrors: [String]
     let beforeCaptureDurationMilliseconds: Double
     let firstCallbackDurationMilliseconds: Double?
     let maximumCallbackDurationMilliseconds: Double
     let tapTimeoutCountDuringBurst: UInt64
-    let proposedEventID: String?
 }
 
 private struct RawWriteSensorHealth: Encodable {

@@ -10,6 +10,7 @@ USAGE
   coupled writes [options]     Emit typed-character bursts after an idle delay.
   coupled reads [options]      Emit timing-only read candidates after an idle delay.
   coupled events [options]     Emit screen-text reads and settled editable diffs.
+  coupled reduce [options]     Build finalized READ/WRITE events from raw evidence.
   coupled compile [options]    Build deterministic Phase 1 causal examples.
   coupled collect [options]    Continuously emit interpreted events as JSONL.
   coupled snapshot [options]   Capture one visible-text snapshot and exit.
@@ -35,8 +36,9 @@ OPTIONS
   --prompt-permissions         Ask macOS to show relevant permission prompts
   -h, --help                   Show this help
 
-COMPILE OPTIONS
-  --input PATH                 Session directory containing session/events/raw JSON
+REDUCE / COMPILE OPTIONS
+  --input PATH                 Session (reduce) or finalized reduction (compile)
+  --source PATH                Raw session used by a finalized reduction (compile)
   --output PATH                Fresh directory for compiled dataset files
   --conversion-version NAME    Frozen conversion name (default: phase1-causal-v13)
   --include-timestamps-in-context
@@ -52,9 +54,14 @@ FILES
   writes.jsonl                 Settled per-app typed-character write bursts
   reads.jsonl                  Settled per-app/per-display read candidates
   raw.jsonl                    Full OCR observations and active write attempts
-  events.jsonl                 Overlap-reduced reads and verified writes
+  events.preview.jsonl         Provisional live READ/WRITE interpretation only
   session.json                 Immutable resolved configuration and schema manifest
   screenshots/*.png            Retained full-window read evidence (events command)
+
+REDUCED FILES
+  events.jsonl                 Finalized versioned READ/WRITE projection
+  unresolved.jsonl             Ambiguous raw evidence excluded from events
+  reduction.json               Reducer version, rules, counts, and SHA-256 bindings
 
 COMPILED FILES
   dataset.json                 Conversion manifest, timing rules, and source digests
@@ -70,6 +77,11 @@ Secure fields are excluded. Treat all output as sensitive.
 """
 
 do {
+    if CommandLine.arguments.dropFirst().first == "reduce" {
+        let command = try ReduceCommand(arguments: Array(CommandLine.arguments.dropFirst(2)))
+        try command.run()
+        exit(EXIT_SUCCESS)
+    }
     if CommandLine.arguments.dropFirst().first == "compile" {
         let command = try CompileCommand(arguments: Array(CommandLine.arguments.dropFirst(2)))
         try command.run()
@@ -117,7 +129,7 @@ do {
         guard AXIsProcessTrusted() else { throw MainError.missingAccessibility }
         try writeSessionManifest(configuration)
         let eventWriter = try JSONLWriter(
-            path: configuration.eventsPath,
+            path: configuration.previewEventsPath,
             sessionID: configuration.sessionID
         )
         let rawWriter = try JSONLWriter(

@@ -123,6 +123,11 @@ struct Configuration {
     }
 
     var rawPath: String { URL(fileURLWithPath: outputDirectory).appendingPathComponent("raw.jsonl").path }
+    /// Provisional live interpretation for inspection only. Finalized semantic
+    /// events are produced later by `coupled reduce` from raw.jsonl.
+    var previewEventsPath: String {
+        URL(fileURLWithPath: outputDirectory).appendingPathComponent("events.preview.jsonl").path
+    }
     var eventsPath: String { URL(fileURLWithPath: outputDirectory).appendingPathComponent("events.jsonl").path }
     var triggersPath: String { URL(fileURLWithPath: outputDirectory).appendingPathComponent("triggers.jsonl").path }
     var writesPath: String { URL(fileURLWithPath: outputDirectory).appendingPathComponent("writes.jsonl").path }

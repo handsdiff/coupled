@@ -3,12 +3,14 @@ import Foundation
 
 struct CompileCommand {
     let inputDirectory: URL
+    let sourceDirectory: URL?
     let outputDirectory: URL
     let conversionVersion: String
     let includeTimestampsInContext: Bool
 
     init(arguments: [String]) throws {
         var input: String?
+        var source: String?
         var output: String?
         var version = "phase1-causal-v13"
         var includeTimestamps = false
@@ -24,6 +26,7 @@ struct CompileCommand {
             }
             switch argument {
             case "--input": input = try value()
+            case "--source": source = try value()
             case "--output": output = try value()
             case "--conversion-version": version = try value()
             case "--include-timestamps-in-context": includeTimestamps = true
@@ -34,6 +37,7 @@ struct CompileCommand {
         guard let input else { throw CompileCommandError.missingRequired("--input") }
         guard let output else { throw CompileCommandError.missingRequired("--output") }
         inputDirectory = URL(fileURLWithPath: input).standardizedFileURL
+        sourceDirectory = source.map { URL(fileURLWithPath: $0).standardizedFileURL }
         outputDirectory = URL(fileURLWithPath: output).standardizedFileURL
         conversionVersion = version
         includeTimestampsInContext = includeTimestamps
@@ -46,6 +50,7 @@ struct CompileCommand {
         ))
         let result = try compiler.compile(
             inputDirectory: inputDirectory,
+            sourceDirectory: sourceDirectory,
             outputDirectory: outputDirectory
         )
         print("Phase 1 causal dataset compiled.")
