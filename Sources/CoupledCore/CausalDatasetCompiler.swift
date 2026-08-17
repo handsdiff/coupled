@@ -4,13 +4,21 @@ import Foundation
 public struct CausalDatasetCompilerConfiguration: Sendable {
     public let conversionVersion: String
     public let includeTimestampsInContext: Bool
+    public let minimumTrimmedAuthoredCharacters: Int
 
     public init(
-        conversionVersion: String = "phase1-causal-v13",
-        includeTimestampsInContext: Bool = false
+        conversionVersion: String = "phase1-causal-v14",
+        includeTimestampsInContext: Bool = false,
+        minimumTrimmedAuthoredCharacters: Int? = nil
     ) {
         self.conversionVersion = conversionVersion
         self.includeTimestampsInContext = includeTimestampsInContext
+        self.minimumTrimmedAuthoredCharacters = minimumTrimmedAuthoredCharacters
+            ?? (conversionVersion == "phase1-causal-v14" ? 4 : 0)
+        precondition(
+            self.minimumTrimmedAuthoredCharacters >= 0,
+            "minimum trimmed authored characters must be nonnegative"
+        )
     }
 }
 
@@ -383,6 +391,7 @@ public struct CausalDatasetCompiler {
                 event: target.object,
                 resolvedContent: content
             )
+            let authorshipSummary = targetSegments.map(targetAuthorshipSummary)
             let outcomeOffset = outcome.number("characterOffset")?.intValue
             let initialOffset = ((conditioningState["cursorContext"] as? [String: Any])?
                 .number("selectionStartCharacters"))?.intValue
@@ -400,6 +409,10 @@ public struct CausalDatasetCompiler {
                 targetExclusionReason = "empty_content"
             } else if targetSegments == nil {
                 targetExclusionReason = "unresolved_paste_authorship"
+            } else if authorshipSummary?.hasGroundedPasteAction == false,
+                      let trimmedCount = authorshipSummary?.trimmedAuthoredCharacterCount,
+                      trimmedCount < configuration.minimumTrimmedAuthoredCharacters {
+                targetExclusionReason = "authored_content_below_minimum_length"
             } else if usesRangeSemanticContext, !hasCompleteSemanticContext {
                 targetExclusionReason = "missing_semantic_cursor_context"
             } else if usesRangeSemanticContext {
@@ -428,7 +441,12 @@ public struct CausalDatasetCompiler {
                     content: content,
                     initialOffset: initialOffset,
                     outcomeOffset: outcomeOffset,
-                    conditioningState: conditioningState
+                    conditioningState: conditioningState,
+                    trimmedAuthoredCharacterCount: authorshipSummary?
+                        .trimmedAuthoredCharacterCount,
+                    minimumTrimmedAuthoredCharacters: configuration
+                        .minimumTrimmedAuthoredCharacters,
+                    hasGroundedPasteAction: authorshipSummary?.hasGroundedPasteAction
                 ))
                 continue
             }
@@ -539,9 +557,12 @@ public struct CausalDatasetCompiler {
             ],
             "eligibility": [
                 "contextKinds": ["read", "verified_write"],
-                "targetKinds": ["verified_write_with_nonempty_content_and_semantic_cursor_context", "legacy_verified_write_with_independently_aligned_numeric_cursor"],
+                "targetKinds": ["verified_write_with_eligible_authored_content_and_semantic_cursor_context", "grounded_paste_write_with_semantic_cursor_context", "legacy_verified_write_with_independently_aligned_numeric_cursor"],
+                "minimumTrimmedAuthoredCharactersForTextOnlyTarget": configuration.minimumTrimmedAuthoredCharacters,
+                "groundedPasteActionBypassesMinimumAuthoredLength": true,
                 "targetExclusionRules": [
                     "content.isEmpty",
+                    "without a grounded paste action, trimmed authored content must meet minimumTrimmedAuthoredCharactersForTextOnlyTarget",
                     "new sessions require range-native left, selected, and right semantic strings",
                     "legacy sessions require an initial numeric cursor",
                     "legacy sessions require an earliest observed mutation",
@@ -1385,6 +1406,21 @@ private func trainingTargetSegments(
     return target
 }
 
+private func targetAuthorshipSummary(
+    _ segments: [[String: Any]]
+) -> (hasGroundedPasteAction: Bool, trimmedAuthoredCharacterCount: Int) {
+    let authoredContent = segments.compactMap { segment -> String? in
+        guard segment.string("type") == "authored_text" else { return nil }
+        return segment.string("content")
+    }.joined()
+    return (
+        hasGroundedPasteAction: segments.contains { $0.string("type") == "paste" },
+        trimmedAuthoredCharacterCount: authoredContent
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .count
+    )
+}
+
 private func rangeSemanticConditioningState(
     event: [String: Any],
     attempt: [String: Any],
@@ -1541,7 +1577,10 @@ private func targetExclusion(
     content: String,
     initialOffset: Int?,
     outcomeOffset: Int?,
-    conditioningState: [String: Any]
+    conditioningState: [String: Any],
+    trimmedAuthoredCharacterCount: Int?,
+    minimumTrimmedAuthoredCharacters: Int,
+    hasGroundedPasteAction: Bool?
 ) -> [String: Any] {
     compactJSONObject([
         "schemaVersion": 1,
@@ -1550,6 +1589,9 @@ private func targetExclusion(
         "kind": target.kind,
         "reason": reason,
         "contentCharacterCount": content.count,
+        "trimmedAuthoredCharacterCount": trimmedAuthoredCharacterCount,
+        "minimumTrimmedAuthoredCharacters": minimumTrimmedAuthoredCharacters,
+        "hasGroundedPasteAction": hasGroundedPasteAction,
         "initialCursorOffset": initialOffset,
         "outcomeCharacterOffset": outcomeOffset,
         "conditioningState": conditioningState,

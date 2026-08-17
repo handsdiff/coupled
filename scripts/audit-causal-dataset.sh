@@ -47,6 +47,10 @@ jq -e -s --slurpfile manifest "$manifest" --slurpfile examples "$examples" --slu
   ($m.counts.examples == ($examples | length)) and
   ($m.counts.targetExclusions == ($exclusions | length)) and
   ($m.counts.contextExclusions == ($context_exclusions | length)) and
+  (if $m.conversionVersion == "phase1-causal-v14" then
+     ($m.eligibility.minimumTrimmedAuthoredCharactersForTextOnlyTarget == 4) and
+     ($m.eligibility.groundedPasteActionBypassesMinimumAuthoredLength == true)
+   else true end) and
   (($by_id | length) == ($events | length)) and
   (all($events[];
     . as $event |
@@ -92,6 +96,12 @@ jq -e -s --slurpfile manifest "$manifest" --slurpfile examples "$examples" --slu
     (.target.resolvedContent != "") and
     (.target.resolvedContent == (($by_id[$example.targetEventID].serialized | fromjson) | model_content)) and
     ((.target.segments | type) == "array") and
+    (if ($m.eligibility.minimumTrimmedAuthoredCharactersForTextOnlyTarget // 0) > 0
+          and (any(.target.segments[]; .type == "paste") | not) then
+       ([.target.segments[] | select(.type == "authored_text") | .content]
+         | join("") | gsub("^\\s+|\\s+$"; "") | length)
+         >= $m.eligibility.minimumTrimmedAuthoredCharactersForTextOnlyTarget
+     else true end) and
     ($query.kind == "write_conditioning_state") and
     (.conditioningState.captureSemantics == "synchronous_before_application_mutation") and
     (.targetMask.type == "authored_text_and_paste_actions_plus_eos") and
@@ -180,6 +190,11 @@ jq -e -s --slurpfile manifest "$manifest" --slurpfile examples "$examples" --slu
        (.cursorFidelity.status != "aligned")
      elif .reason == "unresolved_paste_authorship" then
        ($by_id[.sourceEventID].serialized | fromjson).authorshipResolution != "resolved"
+     elif .reason == "authored_content_below_minimum_length" then
+       (.hasGroundedPasteAction == false) and
+       (.minimumTrimmedAuthoredCharacters
+         == $m.eligibility.minimumTrimmedAuthoredCharactersForTextOnlyTarget) and
+       (.trimmedAuthoredCharacterCount < .minimumTrimmedAuthoredCharacters)
      else false end)
   )
 ' "$events" >/dev/null

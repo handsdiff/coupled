@@ -471,12 +471,12 @@ let excludedModelRead: [String: Any] = [
 let secondWrite = writeEvent(
     id: "write-2", sourceID: "attempt-2", sequence: 2,
     began: "2026-01-01T00:00:06.000Z", available: "2026-01-01T00:00:07.000Z",
-    before: "HELLO world", inserted: "world!", removed: "world", offset: 6
+    before: "HELLO world", inserted: "done", offset: 11
 )
 let cursorMovedWrite = writeEvent(
     id: "write-cursor-moved", sourceID: "attempt-cursor-moved", sequence: 3,
     began: "2026-01-01T00:00:08.000Z", available: "2026-01-01T00:00:09.000Z",
-    before: "abc", inserted: "X", offset: 0
+    before: "abc", inserted: "XXXX", offset: 0
 )
 let deletionWrite = writeEvent(
     id: "write-deletion", sourceID: "attempt-deletion", sequence: 4,
@@ -496,10 +496,15 @@ var revertedWrite = writeEvent(
 revertedWrite["fallbackReason"] = "terminal_matches_before"
 revertedWrite["derivationObservationSource"] = "post_input_checkpoint"
 revertedWrite["usedCheckpointID"] = "reverted-checkpoint"
+let shortWrite = writeEvent(
+    id: "write-short", sourceID: "attempt-short", sequence: 7,
+    began: "2026-01-01T00:00:18.000Z", available: "2026-01-01T00:00:19.000Z",
+    before: "", inserted: "for", offset: 0
+)
 writeFixtureJSONL(
     [
         readLate, firstWrite, readEarly, excludedModelRead, secondWrite,
-        cursorMovedWrite, deletionWrite, invalidWrite, revertedWrite,
+        cursorMovedWrite, deletionWrite, invalidWrite, revertedWrite, shortWrite,
     ],
     to: fixtureInput.appendingPathComponent("events.jsonl")
 )
@@ -513,12 +518,12 @@ writeFixtureJSONL([
     ),
     rawAttempt(
         id: "attempt-2", eventID: "write-2",
-        before: "HELLO world", after: "HELLO world!",
+        before: "HELLO world", after: "HELLO worlddone",
         timestamp: "2026-01-01T00:00:07.000Z"
     ),
     rawAttempt(
         id: "attempt-cursor-moved", eventID: "write-cursor-moved",
-        before: "abc", after: "Xabc",
+        before: "abc", after: "XXXXabc",
         timestamp: "2026-01-01T00:00:09.000Z",
         selectionLocation: 3,
         rangeCursor: ["left": "", "selected": "", "right": "abc"]
@@ -556,21 +561,39 @@ writeFixtureJSONL([
             "axErrors": [],
         ]],
     ],
+    rawAttempt(
+        id: "attempt-short", eventID: "write-short",
+        before: "", after: "for",
+        timestamp: "2026-01-01T00:00:19.000Z",
+        rangeCursor: ["left": "", "selected": "", "right": ""]
+    ),
 ], to: fixtureInput.appendingPathComponent("raw.jsonl"))
 
 let compilerResult = try! CausalDatasetCompiler().compile(
     inputDirectory: fixtureInput,
     outputDirectory: fixtureOutput
 )
-expect(compilerResult.sourceEventCount == 9, "compiler source count")
-expect(compilerResult.convertedEventCount == 5, "compiler excludes invalid and stale events")
+expect(compilerResult.sourceEventCount == 10, "compiler source count")
+expect(compilerResult.convertedEventCount == 6, "compiler excludes invalid and stale events")
 expect(compilerResult.exampleCount == 3, "compiler creates one example per verified write")
-expect(compilerResult.targetExcludedEventCount == 1, "compiler separates valid history from targets")
+expect(compilerResult.targetExcludedEventCount == 2, "compiler separates valid history from targets")
 expect(compilerResult.contextExcludedEventCount == 1, "compiler removes a read superseded by later keyboard input")
 expect(compilerResult.rejectedEventCount == 3, "compiler records exclusions and rejections")
 
 let examples = readFixtureJSONL(fixtureOutput.appendingPathComponent("examples.jsonl"))
 let compiledEvents = readFixtureJSONL(fixtureOutput.appendingPathComponent("events.jsonl"))
+let compiledManifest = try! JSONSerialization.jsonObject(
+    with: Data(contentsOf: fixtureOutput.appendingPathComponent("dataset.json"))
+) as! [String: Any]
+let compiledEligibility = compiledManifest["eligibility"] as! [String: Any]
+expect(
+    compiledManifest["conversionVersion"] as! String == "phase1-causal-v14"
+        && compiledEligibility["minimumTrimmedAuthoredCharactersForTextOnlyTarget"]
+            as! Int == 4
+        && compiledEligibility["groundedPasteActionBypassesMinimumAuthoredLength"]
+            as! Bool,
+    "v14 manifest freezes the text-only minimum and grounded-paste exception"
+)
 let compactRead = try! JSONSerialization.jsonObject(
     with: Data((compiledEvents[0]["serialized"] as! String).utf8)
 ) as! [String: Any]
@@ -636,7 +659,7 @@ let rangeCursor = rangeQuery["cursorContext"] as! [String: Any]
 expect(
     rangeCursor["leftContext"] as! String == ""
         && rangeCursor["rightContext"] as! String == "abc"
-        && ((examples[2]["target"] as! [String: Any])["resolvedContent"] as! String) == "X",
+        && ((examples[2]["target"] as! [String: Any])["resolvedContent"] as! String) == "XXXX",
     "range-native semantic context admits a target independently of numeric cursor mismatch"
 )
 
@@ -677,6 +700,17 @@ expect(
 expect(
     targetExclusions.contains { $0["reason"] as? String == "empty_content" },
     "pure deletion remains history but is excluded as a content target"
+)
+expect(
+    targetExclusions.contains {
+        $0["sourceEventID"] as? String == "write-short"
+            && $0["reason"] as? String == "authored_content_below_minimum_length"
+            && $0["trimmedAuthoredCharacterCount"] as? Int == 3
+            && $0["minimumTrimmedAuthoredCharacters"] as? Int == 4
+            && $0["hasGroundedPasteAction"] as? Bool == false
+    }
+        && compiledEvents.contains { $0["sourceEventID"] as? String == "write-short" },
+    "short authored text remains causal history but receives no target loss"
 )
 let rejections = readFixtureJSONL(fixtureOutput.appendingPathComponent("rejections.jsonl"))
 let contextExclusions = readFixtureJSONL(
@@ -719,7 +753,7 @@ try! jsonData([
 ], pretty: true).write(to: pasteFixtureInput.appendingPathComponent("session.json"))
 var pasteRaw = rawAttempt(
     id: "paste-attempt", eventID: "paste-write",
-    before: "", after: "please COPIED tomorrow",
+    before: "", after: "COPIED",
     timestamp: "2026-01-01T00:00:02.000Z",
     rangeCursor: ["left": "", "selected": "", "right": ""]
 )
@@ -747,17 +781,15 @@ let conditioning: [String: Any] = [
 pasteRaw["conditioningState"] = conditioning
 pasteRaw["authorshipResolution"] = "resolved"
 pasteRaw["authorshipSegments"] = [
-    ["type": "authored_text", "content": "please "],
     [
         "type": "paste", "content": "COPIED",
         "clipboardSnapshotID": "clipboard-1", "pasteCheckpointID": "paste-1",
     ],
-    ["type": "authored_text", "content": " tomorrow"],
 ]
 var pasteEvent = writeEvent(
     id: "paste-write", sourceID: "paste-attempt", sequence: 1,
     began: "2026-01-01T00:00:01.000Z", available: "2026-01-01T00:00:02.000Z",
-    before: "", inserted: "please COPIED tomorrow", offset: 0
+    before: "", inserted: "COPIED", offset: 0
 )
 pasteEvent["sessionID"] = "paste-session"
 pasteEvent["conditioningState"] = conditioning
@@ -766,7 +798,7 @@ pasteEvent["authorshipSegments"] = pasteRaw["authorshipSegments"]
 var laterEvent = writeEvent(
     id: "later-write", sourceID: "later-attempt", sequence: 2,
     began: "2026-01-01T00:00:03.000Z", available: "2026-01-01T00:00:04.000Z",
-    before: "please COPIED tomorrow", inserted: "!", offset: 22
+    before: "COPIED", inserted: "done", offset: 6
 )
 laterEvent["sessionID"] = "paste-session"
 writeFixtureJSONL([pasteEvent, laterEvent], to: pasteFixtureInput.appendingPathComponent("events.jsonl"))
@@ -774,7 +806,7 @@ writeFixtureJSONL([
     pasteRaw,
     rawAttempt(
         id: "later-attempt", eventID: "later-write",
-        before: "please COPIED tomorrow", after: "please COPIED tomorrow!",
+        before: "COPIED", after: "COPIEDdone",
         timestamp: "2026-01-01T00:00:04.000Z"
     ),
 ], to: pasteFixtureInput.appendingPathComponent("raw.jsonl"))
@@ -800,19 +832,20 @@ let compactDestination = compactPasteWrite["destination"] as! [String: Any]
 let compactPasteSegments = compactPasteWrite["authorshipSegments"] as! [[String: Any]]
 let auditPasteSegments = auditPasteWrite["authorshipSegments"] as! [[String: Any]]
 expect(
-    pasteTargetSegments[1]["type"] as! String == "paste"
-        && pasteTargetSegments[1]["content"] == nil,
-    "current target omits pasted payload and preserves a grounded paste action"
+    pasteTargetSegments.count == 1
+        && pasteTargetSegments[0]["type"] as! String == "paste"
+        && pasteTargetSegments[0]["content"] == nil,
+    "paste-only target bypasses authored-length minimum and omits its payload"
 )
 expect(
     compactDestination["application"] as! String == "Fixture"
         && compactPasteWrite["operation"] as! String == "insert"
         && compactPasteWrite["content"] == nil
-        && compactPasteSegments[1]["content"] as! String == "COPIED"
-        && compactPasteSegments[1]["clipboardSnapshotID"] == nil
+        && compactPasteSegments[0]["content"] as! String == "COPIED"
+        && compactPasteSegments[0]["clipboardSnapshotID"] == nil
         && compactPasteWrite["characterOffset"] == nil
-        && auditPasteSegments[1]["clipboardSnapshotID"] as! String == "clipboard-1"
-        && auditPasteWrite["content"] as! String == "please COPIED tomorrow"
+        && auditPasteSegments[0]["clipboardSnapshotID"] as! String == "clipboard-1"
+        && auditPasteWrite["content"] as! String == "COPIED"
         && auditPasteWrite["characterOffset"] != nil,
     "compact WRITE history preserves semantics while audit history retains reconstruction evidence"
 )
@@ -831,7 +864,7 @@ try! jsonData([
 ], pretty: true).write(to: opaquePasteInput.appendingPathComponent("session.json"))
 var opaqueRaw = rawAttempt(
     id: "opaque-paste-attempt", eventID: "opaque-paste-write",
-    before: "", after: " after",
+    before: "", after: " b",
     timestamp: "2026-01-01T00:00:02.000Z",
     rangeCursor: ["left": "", "selected": "", "right": ""]
 )
@@ -862,22 +895,22 @@ let opaqueConditioning: [String: Any] = [
     "sourceObservationID": opaqueBefore["observationID"] as! String,
 ]
 let opaqueSegments: [[String: Any]] = [
-    ["type": "authored_text", "content": "before "],
+    ["type": "authored_text", "content": "a"],
     [
         "type": "paste", "content": "COPIED",
         "clipboardSnapshotID": "opaque-clipboard",
         "pasteCheckpointID": "opaque-paste-checkpoint",
     ],
-    ["type": "authored_text", "content": " after"],
+    ["type": "authored_text", "content": " b"],
 ]
 opaqueRaw["conditioningState"] = opaqueConditioning
 opaqueRaw["authorshipResolution"] = "resolved"
 opaqueRaw["authorshipEvidence"] = "grounded_paste_ax_epoch_transition"
 opaqueRaw["authorshipSegments"] = opaqueSegments
-opaqueRaw["resolvedCompletion"] = "before COPIED after"
+opaqueRaw["resolvedCompletion"] = "aCOPIED b"
 opaqueRaw["stateContinuity"] = "segmented_at_grounded_paste"
 opaqueRaw["observedNetEdit"] = [
-    "operation": "insert", "content": " after",
+    "operation": "insert", "content": " b",
     "removedContent": "", "characterOffset": 0,
 ]
 opaqueRaw["pasteCheckpoints"] = [[
@@ -889,7 +922,7 @@ opaqueRaw["pasteCheckpoints"] = [[
     "prePasteAXErrors": [],
     "axErrors": [],
     "prePasteObservation": observation(
-        "before ", at: "2026-01-01T00:00:01.200Z", selectionLocation: 7
+        "a", at: "2026-01-01T00:00:01.200Z", selectionLocation: 1
     ),
     "observation": observation(
         "", at: "2026-01-01T00:00:01.300Z", selectionLocation: 0
@@ -898,14 +931,14 @@ opaqueRaw["pasteCheckpoints"] = [[
 var opaqueEvent = writeEvent(
     id: "opaque-paste-write", sourceID: "opaque-paste-attempt", sequence: 1,
     began: "2026-01-01T00:00:01.000Z", available: "2026-01-01T00:00:02.000Z",
-    before: "", inserted: " after", offset: 0
+    before: "", inserted: " b", offset: 0
 )
 opaqueEvent["sessionID"] = "opaque-paste-session"
 opaqueEvent["conditioningState"] = opaqueConditioning
 opaqueEvent["authorshipResolution"] = "resolved"
 opaqueEvent["authorshipEvidence"] = "grounded_paste_ax_epoch_transition"
 opaqueEvent["authorshipSegments"] = opaqueSegments
-opaqueEvent["resolvedCompletion"] = "before COPIED after"
+opaqueEvent["resolvedCompletion"] = "aCOPIED b"
 opaqueEvent["stateContinuity"] = "segmented_at_grounded_paste"
 opaqueEvent["observedNetEdit"] = opaqueRaw["observedNetEdit"]
 writeFixtureJSONL([opaqueEvent], to: opaquePasteInput.appendingPathComponent("events.jsonl"))
@@ -920,11 +953,15 @@ let opaquePasteExamples = readFixtureJSONL(
 let opaqueTarget = opaquePasteExamples[0]["target"] as! [String: Any]
 let opaqueTargetSegments = opaqueTarget["segments"] as! [[String: Any]]
 expect(
-    opaqueTarget["resolvedContent"] as! String == "before COPIED after"
+    opaqueTarget["resolvedContent"] as! String == "aCOPIED b"
         && opaqueTargetSegments.map { $0["type"] as! String }
             == ["authored_text", "paste", "authored_text"]
         && opaqueTargetSegments[1]["content"] == nil,
     "grounded AX epoch transition preserves authored prefix, paste action, and suffix"
+)
+expect(
+    opaquePasteExamples.count == 1,
+    "mixed authored and paste target remains eligible regardless of authored fragment length"
 )
 
 // Raw-first architecture: finalized semantics are deterministic and independent

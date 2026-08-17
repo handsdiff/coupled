@@ -93,8 +93,11 @@ def require_compiled_dataset(
         "phase1-causal-v11",
         "phase1-causal-v12",
         "phase1-causal-v13",
+        "phase1-causal-v14",
     }:
-        raise ValueError("packer requires conversionVersion phase1-causal-v11, v12, or v13")
+        raise ValueError(
+            "packer requires conversionVersion phase1-causal-v11, v12, v13, or v14"
+        )
     if manifest.get("serialization", {}).get("contextVersion") != 3:
         raise ValueError("packer requires model-facing contextVersion 3")
     if manifest.get("serialization", {}).get("targetFormat") != "structured_authorship_segments":
