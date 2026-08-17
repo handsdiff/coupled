@@ -1018,6 +1018,229 @@ expect(
     "causal compiler consumes a hash-verified finalized reduction"
 )
 
+let motivatingInput = fixtureRoot.appendingPathComponent("motivating-input")
+let motivatingReduction = fixtureRoot.appendingPathComponent("motivating-reduction")
+try! FileManager.default.createDirectory(at: motivatingInput, withIntermediateDirectories: true)
+try! jsonData([
+    "sessionID": "motivating-session",
+    "schemas": ["timingSemanticsVersion": 2, "rawActiveTapWrite": 15],
+], pretty: true).write(to: motivatingInput.appendingPathComponent("session.json"))
+
+func rawScreenFixture(
+    id: String, capturedAt: String, content: String
+) -> [String: Any] {
+    [
+        "schemaVersion": 6, "recordType": "screen_ocr_observation",
+        "recordID": id, "sessionID": "motivating-session",
+        "observedAt": capturedAt, "settledAt": capturedAt, "capturedAt": capturedAt,
+        "surfaceResolvedAt": capturedAt, "firstActivityAt": capturedAt,
+        "lastActivityAt": capturedAt, "readDelaySeconds": 3,
+        "triggerTypes": ["scroll"], "eventCount": 1,
+        "content": content,
+        "recognizedLineCount": content.split(separator: "\n").count,
+        "contentWasTruncated": false,
+        "viewportSideCropFraction": 0.1, "viewportTopCropFraction": 0.1,
+        "viewportBottomCropFraction": 0.35,
+        "windowBounds": ["x": 0, "y": 0, "width": 1000, "height": 800],
+        "captureBounds": ["x": 100, "y": 80, "width": 800, "height": 440],
+        "x": 500, "y": 400, "displayID": 1,
+        "displayBounds": ["x": 0, "y": 0, "width": 1000, "height": 800],
+        "windowID": 7, "windowTitle": "Fixture", "appName": "Fixture",
+        "bundleIdentifier": "fixture.app", "processIdentifier": 42,
+        "triggerSurface": [
+            "resolvedAt": capturedAt, "displayID": 1,
+            "displayBounds": ["x": 0, "y": 0, "width": 1000, "height": 800],
+            "windowID": 7, "windowTitle": "Fixture",
+            "windowBounds": ["x": 0, "y": 0, "width": 1000, "height": 800],
+            "appName": "Fixture", "bundleIdentifier": "fixture.app",
+            "processIdentifier": 42,
+        ],
+    ]
+}
+
+func schema15WriteFixture(
+    id: String,
+    beforeValue: String,
+    afterValue: String,
+    beganAt: String,
+    terminalAt: String,
+    inputHints: [String],
+    returnCheckpoints: [[String: Any]] = [],
+    pasteCheckpoints: [[String: Any]] = []
+) -> [String: Any] {
+    let before = observation(beforeValue, at: beganAt)
+    let after = observation(afterValue, at: terminalAt)
+    let conditioning: [String: Any] = [
+        "schemaVersion": 3,
+        "captureSemantics": "synchronous_before_application_mutation",
+        "inputInterceptedAt": beganAt, "capturedAt": beganAt,
+        "destination": [
+            "appName": "Fixture", "bundleIdentifier": "fixture.app",
+            "processIdentifier": 42, "windowTitle": "Fixture", "role": "AXTextArea",
+        ],
+        "cursorContext": [
+            "schemaVersion": 2, "source": "accessibility_string_for_range",
+            "captureStatus": "complete", "fieldState": "editable_text",
+            "leftContext": beforeValue, "selectedText": "", "rightContext": "",
+        ],
+        "sourceObservationID": before["observationID"] as! String,
+    ]
+    let inputEvents = inputHints.enumerated().map { index, hint in
+        [
+            "observedAt": beganAt,
+            "eventTimestampNanoseconds": index + 1,
+            "hint": hint,
+            "mutationCapable": true,
+        ] as [String: Any]
+    }
+    return [
+        "schemaVersion": 15, "recordType": "active_tap_write_attempt",
+        "recordID": id, "sessionID": "motivating-session",
+        "bundleIdentifier": "fixture.app", "observedAt": terminalAt,
+        "beganAt": beganAt, "lastInputAt": beganAt,
+        "terminalDecisionAt": terminalAt, "terminalSnapshotAt": terminalAt,
+        "configuredWriteDelaySeconds": 3,
+        "firstEventTimestampNanoseconds": 1,
+        "lastEventTimestampNanoseconds": inputHints.count,
+        "inputEventCount": inputHints.count, "inputHints": inputHints,
+        "inputEvents": inputEvents, "boundaryReason": "write_delay_elapsed",
+        "conditioningState": conditioning,
+        "targetIdentity": [
+            "bundleIdentifier": "fixture.app", "processIdentifier": 42,
+            "role": "AXTextArea", "windowTitle": "Fixture",
+        ],
+        "before": before, "after": after,
+        "returnCheckpoints": returnCheckpoints,
+        "pasteCheckpoints": pasteCheckpoints,
+        "mutationCheckpoints": [[
+            "checkpointID": "\(id)-mutation", "inputObservedAt": beganAt,
+            "eventTimestampNanoseconds": 1, "captureRequestedAt": beganAt,
+            "observation": after, "axErrors": [],
+        ]],
+        "beforeAXErrors": [], "afterAXErrors": [], "tapTimeoutCountDuringBurst": 0,
+    ]
+}
+
+let semanticTimeWrite = schema15WriteFixture(
+    id: "semantic-time-write", beforeValue: "", afterValue: "typed",
+    beganAt: "2026-01-01T00:00:02.000Z",
+    terminalAt: "2026-01-01T00:00:04.000Z", inputHints: ["typed"]
+)
+let geminiCheckpoint = observation(
+    "What should we build?", at: "2026-01-01T00:00:05.900Z", selectionLocation: 21
+)
+let geminiWrite = schema15WriteFixture(
+    id: "gemini-return-reset", beforeValue: "", afterValue: "Ask Gemini\n",
+    beganAt: "2026-01-01T00:00:05.000Z",
+    terminalAt: "2026-01-01T00:00:08.000Z", inputHints: ["typed", "return"],
+    returnCheckpoints: [[
+        "checkpointID": "gemini-return", "inputObservedAt": "2026-01-01T00:00:05.900Z",
+        "eventTimestampNanoseconds": 2, "observation": geminiCheckpoint, "axErrors": [],
+    ]]
+)
+let deleteOnlyWrite = schema15WriteFixture(
+    id: "impossible-delete", beforeValue: "small", afterValue: "generated document expansion",
+    beganAt: "2026-01-01T00:00:09.000Z",
+    terminalAt: "2026-01-01T00:00:12.000Z", inputHints: ["delete"]
+)
+let unresolvedPaste = schema15WriteFixture(
+    id: "missing-paste", beforeValue: "", afterValue: "COPIED",
+    beganAt: "2026-01-01T00:00:13.000Z",
+    terminalAt: "2026-01-01T00:00:16.000Z", inputHints: ["paste"]
+)
+
+// Deliberately append the READ captured at t=3 before the WRITE which began at
+// t=2 but settled at t=4. Raw-order overlap would incorrectly emit only gamma.
+writeFixtureJSONL([
+    rawScreenFixture(
+        id: "read-before-write", capturedAt: "2026-01-01T00:00:01.000Z",
+        content: "alpha\nbeta"
+    ),
+    rawScreenFixture(
+        id: "read-after-write-began", capturedAt: "2026-01-01T00:00:03.000Z",
+        content: "beta\ngamma"
+    ),
+    semanticTimeWrite, geminiWrite, deleteOnlyWrite, unresolvedPaste,
+], to: motivatingInput.appendingPathComponent("raw.jsonl"))
+
+_ = try! reducer.reduce(
+    sourceDirectory: motivatingInput,
+    outputDirectory: motivatingReduction
+)
+let motivatingEvents = readFixtureJSONL(
+    motivatingReduction.appendingPathComponent("events.jsonl")
+)
+let motivatingDispositions = readFixtureJSONL(
+    motivatingReduction.appendingPathComponent("unresolved.jsonl")
+)
+expect(
+    motivatingEvents.first { $0["eventID"] as? String != nil
+        && ($0["sourceRecordIDs"] as? [String]) == ["read-after-write-began"] }?["content"]
+        as? String == "beta\ngamma",
+    "READ overlap uses capturedAt plus WRITE beganAt rather than raw append order"
+)
+let recoveredGemini = motivatingEvents.first {
+    ($0["sourceRecordIDs"] as? [String]) == ["gemini-return-reset"]
+}
+expect(
+    recoveredGemini?["content"] as? String == "What should we build?"
+        && recoveredGemini?["derivationObservationSource"] as? String
+            == "pre_return_checkpoint",
+    "Return reset recovers exact pre-Return human content"
+)
+expect(
+    motivatingDispositions.contains {
+        ($0["sourceRecordIDs"] as? [String]) == ["impossible-delete"]
+            && $0["reason"] as? String == "delete_only_transition_inserted_content"
+    },
+    "delete-only impossible insertion is a non-event disposition"
+)
+expect(
+    motivatingDispositions.contains {
+        ($0["sourceRecordIDs"] as? [String]) == ["missing-paste"]
+            && $0["reason"] as? String == "paste_checkpoint_missing"
+    },
+    "paste without grounding remains an explicit non-event disposition"
+)
+
+let tamperedReduction = fixtureRoot.appendingPathComponent("tampered-reduction")
+let tamperedDataset = fixtureRoot.appendingPathComponent("tampered-dataset")
+try! FileManager.default.copyItem(at: rawFirstReductionA, to: tamperedReduction)
+try! Data("tampered\n".utf8).write(
+    to: tamperedReduction.appendingPathComponent("events.jsonl")
+)
+var tamperWasRejected = false
+do {
+    _ = try CausalDatasetCompiler().compile(
+        inputDirectory: tamperedReduction,
+        sourceDirectory: rawFirstInput,
+        outputDirectory: tamperedDataset
+    )
+} catch {
+    tamperWasRejected = true
+}
+expect(tamperWasRejected, "compiler rejects a reducer artifact digest mismatch")
+
+let schema15LegacyInput = fixtureRoot.appendingPathComponent("schema15-legacy-input")
+let schema15LegacyOutput = fixtureRoot.appendingPathComponent("schema15-legacy-output")
+try! FileManager.default.createDirectory(at: schema15LegacyInput, withIntermediateDirectories: true)
+try! jsonData([
+    "sessionID": "schema15-legacy",
+    "schemas": ["timingSemanticsVersion": 2, "rawActiveTapWrite": 15],
+], pretty: true).write(to: schema15LegacyInput.appendingPathComponent("session.json"))
+writeFixtureJSONL([], to: schema15LegacyInput.appendingPathComponent("events.jsonl"))
+writeFixtureJSONL([], to: schema15LegacyInput.appendingPathComponent("raw.jsonl"))
+var schema15LegacyWasRejected = false
+do {
+    _ = try CausalDatasetCompiler().compile(
+        inputDirectory: schema15LegacyInput,
+        outputDirectory: schema15LegacyOutput
+    )
+} catch {
+    schema15LegacyWasRejected = String(describing: error).contains("requires reduction.json")
+}
+expect(schema15LegacyWasRejected, "schema 15 cannot use the legacy compiler importer")
+
 try! FileManager.default.removeItem(at: fixtureRoot)
 
 print("CoupledCore checks passed")

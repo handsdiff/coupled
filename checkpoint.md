@@ -140,7 +140,7 @@ rectangular screenshot.
 ## Implemented semantic reduction and causal compilation
 
 Current compiler: `phase1-causal-v13`
-Current reducer: `phase1-semantic-v1`
+Current reducer: `phase1-semantic-v2`
 
 The reducer consumes only `session.json` and `raw.jsonl`; deleting or corrupting
 `events.preview.jsonl` produces byte-identical finalized events. Event IDs are
@@ -148,10 +148,11 @@ stable across reducer versions because they derive from session ID, ordered raw
 lineage, and output ordinal. `reduction.json` binds the session, raw stream,
 finalized events, and unresolved records by SHA-256.
 
-Against `ordinary-work-audit-3`, semantic v1 recovered both Gemini submissions
+Against `ordinary-work-audit-3`, semantic v2 recovered both Gemini submissions
 from synchronous pre-Return observations, rejected the impossible 3,263-character
 Obsidian expansion from a delete-only burst, produced 310 READs and 186 WRITEs,
-and left 85 records explicitly unresolved. Causal v13 then produced 101
+and recorded 85 non-event dispositions (both deliberate filters and unresolved
+evidence). Causal v13 then produced 101
 training examples, 85 target exclusions, eight context exclusions, and zero
 integrity rejections; the causal audit passed.
 
@@ -175,6 +176,8 @@ The raw-input semantic reducer:
 - rejects delete-only transitions which appear to insert content;
 - bridges AX observation epochs only across proven clipboard-matched Cmd-V evidence;
 - independently recomputes READ surface-race and Chrome auxiliary-window eligibility;
+- applies adjacent READ overlap in semantic time using READ `capturedAt` and
+  finalized WRITE `beganAt`, independent of asynchronous raw append order;
 - leaves ambiguous evidence unresolved instead of guessing.
 
 The compiler:
@@ -351,11 +354,11 @@ No ablation requires changing the collector schema. The principal missing layer 
 
 ### Before the next authoritative collection
 
-Treat `phase1-semantic-v1`, `phase1-causal-v13`, and the current three-second
+Treat `phase1-semantic-v2`, `phase1-causal-v13`, and the current three-second
 delays/crop configuration as the candidate baseline.
 
 1. Run normal work without changing collector rules mid-session.
-2. Reduce the raw session with `phase1-semantic-v1`; inspect finalized events and every unresolved reason.
+2. Reduce the raw session with `phase1-semantic-v2`; inspect finalized events and every non-event disposition.
 3. Compile the finalized reduction with `phase1-causal-v13`, supplying the raw session directory for hash and lineage verification.
 4. Manually sample the temporal trace against the actual work and record Phase 1's fidelity categories: missing events, temporal-ordering errors, incorrect content inclusion, authorship errors, write-boundary disagreement, destination ambiguity, and future leakage.
 5. Quantify reducer unresolved reasons plus target/context exclusions. Fix only recurrent material errors demonstrated by that trace; otherwise freeze the collector/reducer/compiler versions.

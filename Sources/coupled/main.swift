@@ -40,6 +40,7 @@ REDUCE / COMPILE OPTIONS
   --input PATH                 Session (reduce) or finalized reduction (compile)
   --source PATH                Raw session used by a finalized reduction (compile)
   --output PATH                Fresh directory for compiled dataset files
+  --reducer-version NAME       Semantic reducer name (default: phase1-semantic-v2)
   --conversion-version NAME    Frozen conversion name (default: phase1-causal-v13)
   --include-timestamps-in-context
                                Include availableAt in serialized context events
@@ -60,7 +61,7 @@ FILES
 
 REDUCED FILES
   events.jsonl                 Finalized versioned READ/WRITE projection
-  unresolved.jsonl             Ambiguous raw evidence excluded from events
+  unresolved.jsonl             Filters and unresolved evidence excluded from events
   reduction.json               Reducer version, rules, counts, and SHA-256 bindings
 
 COMPILED FILES

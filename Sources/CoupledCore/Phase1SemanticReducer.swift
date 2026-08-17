@@ -4,7 +4,7 @@ import Foundation
 public struct Phase1SemanticReducerConfiguration: Sendable {
     public let reducerVersion: String
 
-    public init(reducerVersion: String = "phase1-semantic-v1") {
+    public init(reducerVersion: String = "phase1-semantic-v2") {
         self.reducerVersion = reducerVersion
     }
 }
@@ -75,72 +75,79 @@ public struct Phase1SemanticReducer {
             }
         }
 
-        var events = [[String: Any]]()
-        var unresolved = [[String: Any]]()
-        var viewportDeduplicator = AdjacentViewportDeduplicator()
-        var sequence = 0
+        var candidates = [ReducerCandidate]()
+        var dispositions = [ReducerDisposition]()
         for record in raw {
             let object = record.object
             guard object["sessionID"] as? String == sessionID else {
-                unresolved.append(reducerUnresolved(
+                dispositions.append(ReducerDisposition(line: record.line, object: reducerUnresolved(
                     sessionID: sessionID, raw: object, line: record.line,
                     kind: "unknown", rule: "session_identity",
                     reason: "raw_session_id_mismatch"
-                ))
+                )))
                 continue
             }
             switch object["recordType"] as? String {
             case "screen_ocr_observation":
                 switch reduceRead(object, sessionID: sessionID) {
                 case .failure(let failure):
-                    unresolved.append(reducerUnresolved(
+                    dispositions.append(ReducerDisposition(line: record.line, object: reducerUnresolved(
                         sessionID: sessionID, raw: object, line: record.line,
                         kind: "read", rule: failure.rule, reason: failure.reason,
                         details: failure.details
-                    ))
-                case .success(var event):
-                    let context = "\(intValue(object["processIdentifier"]) ?? -1)|\(intValue(object["windowID"]) ?? -1)|\(intValue(object["displayID"]) ?? -1)"
-                    let original = stringValue(object["content"]) ?? ""
-                    guard let emitted = viewportDeduplicator.contentToEmit(
-                        contextIdentifier: context, viewportContent: original
-                    ) else {
-                        unresolved.append(reducerUnresolved(
+                    )))
+                case .success(let event):
+                    guard let capturedAt = stringValue(object["capturedAt"]) else {
+                        dispositions.append(ReducerDisposition(line: record.line, object: reducerUnresolved(
                             sessionID: sessionID, raw: object, line: record.line,
-                            kind: "read", rule: "adjacent_viewport_overlap_v1",
-                            reason: "adjacent_viewport_duplicate"
-                        ))
+                            kind: "read", rule: "semantic_time_overlap_v1",
+                            reason: "read_missing_captured_at"
+                        )))
                         continue
                     }
-                    sequence += 1
-                    event["sequence"] = sequence
-                    event["content"] = emitted
-                    let emittedLines = emitted.split(separator: "\n", omittingEmptySubsequences: true).count
-                    event["emittedLineCount"] = emittedLines
-                    event["overlapRemovedLineCount"] = max(
-                        (intValue(object["recognizedLineCount"]) ?? emittedLines) - emittedLines, 0
-                    )
-                    events.append(event)
+                    candidates.append(ReducerCandidate(
+                        rawLine: record.line, kind: "read",
+                        overlapBoundaryAt: capturedAt, raw: object, event: event
+                    ))
                 }
             case "active_tap_write_attempt":
                 switch reduceWrite(object, sessionID: sessionID) {
                 case .failure(let failure):
-                    unresolved.append(reducerUnresolved(
+                    dispositions.append(ReducerDisposition(line: record.line, object: reducerUnresolved(
                         sessionID: sessionID, raw: object, line: record.line,
                         kind: "write", rule: failure.rule, reason: failure.reason,
                         details: failure.details
+                    )))
+                case .success(let event):
+                    guard let beganAt = stringValue(object["beganAt"]) else {
+                        dispositions.append(ReducerDisposition(line: record.line, object: reducerUnresolved(
+                            sessionID: sessionID, raw: object, line: record.line,
+                            kind: "write", rule: "semantic_time_overlap_v1",
+                            reason: "write_missing_began_at"
+                        )))
+                        continue
+                    }
+                    candidates.append(ReducerCandidate(
+                        rawLine: record.line, kind: "write",
+                        overlapBoundaryAt: beganAt, raw: object, event: event
                     ))
-                case .success(var event):
-                    // Only a finalized semantic WRITE interrupts adjacent READ
-                    // overlap. An unresolved sensor attempt is not a history event.
-                    viewportDeduplicator.reset()
-                    sequence += 1
-                    event["sequence"] = sequence
-                    events.append(event)
                 }
             default:
                 continue
             }
         }
+
+        let overlapResult = applySemanticReadOverlap(
+            candidates: candidates, sessionID: sessionID
+        )
+        dispositions.append(contentsOf: overlapResult.dispositions)
+        var events = overlapResult.events.sorted { $0.rawLine < $1.rawLine }.map(\.event)
+        for index in events.indices { events[index]["sequence"] = index + 1 }
+        let unresolved = dispositions.sorted {
+            if $0.line != $1.line { return $0.line < $1.line }
+            return (stringValue($0.object["reason"]) ?? "")
+                < (stringValue($1.object["reason"]) ?? "")
+        }.map(\.object)
 
         try FileManager.default.createDirectory(
             at: output, withIntermediateDirectories: true,
@@ -174,6 +181,7 @@ public struct Phase1SemanticReducer {
                 "unresolved": unresolved.count,
             ],
             "eventIdentity": "sha256(sessionID + ordered raw lineage + output ordinal); reducer version excluded",
+            "readOverlapOrdering": "READ capturedAt with finalized WRITE beganAt boundaries; raw append order ignored",
             "previewAuthority": false,
         ]
         try reducerWriteJSON(reduction, to: output.appendingPathComponent("reduction.json"))
@@ -188,10 +196,92 @@ public struct Phase1SemanticReducer {
 }
 
 private struct ReducerLine { let line: Int; let object: [String: Any] }
+private struct ReducerCandidate {
+    let rawLine: Int
+    let kind: String
+    let overlapBoundaryAt: String
+    let raw: [String: Any]
+    var event: [String: Any]
+}
+private struct ReducerDisposition { let line: Int; let object: [String: Any] }
+private struct ReducerOverlapResult {
+    let events: [ReducerCandidate]
+    let dispositions: [ReducerDisposition]
+}
 private struct ReducerFailure: Error {
     let rule: String
     let reason: String
     let details: [String: Any]
+}
+
+/// Overlap is an interpretation of the semantic event timeline, not the order
+/// in which asynchronous OCR and delayed WRITE persistence happened to append.
+/// A finalized WRITE begins a new reading epoch at beganAt even though it only
+/// becomes causally available later at terminalDecisionAt.
+private func applySemanticReadOverlap(
+    candidates: [ReducerCandidate],
+    sessionID: String
+) -> ReducerOverlapResult {
+    let timeline = candidates.indices.sorted { lhs, rhs in
+        let left = candidates[lhs]
+        let right = candidates[rhs]
+        if left.overlapBoundaryAt != right.overlapBoundaryAt {
+            return left.overlapBoundaryAt < right.overlapBoundaryAt
+        }
+        if left.kind != right.kind {
+            return left.kind == "write"
+        }
+        return left.rawLine < right.rawLine
+    }
+    var deduplicator = AdjacentViewportDeduplicator()
+    var accepted = [ReducerCandidate]()
+    var dispositions = [ReducerDisposition]()
+    for index in timeline {
+        var candidate = candidates[index]
+        if candidate.kind == "write" {
+            deduplicator.reset()
+            accepted.append(candidate)
+            continue
+        }
+        let context = "\(intValue(candidate.raw["processIdentifier"]) ?? -1)|\(intValue(candidate.raw["windowID"]) ?? -1)|\(intValue(candidate.raw["displayID"]) ?? -1)"
+        let original = stringValue(candidate.raw["content"]) ?? ""
+        guard let emitted = deduplicator.contentToEmit(
+            contextIdentifier: context,
+            viewportContent: original
+        ) else {
+            dispositions.append(ReducerDisposition(
+                line: candidate.rawLine,
+                object: reducerUnresolved(
+                    sessionID: sessionID, raw: candidate.raw,
+                    line: candidate.rawLine, kind: "read",
+                    rule: "semantic_time_adjacent_viewport_overlap_v1",
+                    reason: "adjacent_viewport_duplicate",
+                    details: [
+                        "orderingTimestamp": candidate.overlapBoundaryAt,
+                        "orderingField": "capturedAt",
+                    ]
+                )
+            ))
+            continue
+        }
+        candidate.event["content"] = emitted
+        let emittedLines = emitted.split(
+            separator: "\n", omittingEmptySubsequences: true
+        ).count
+        candidate.event["emittedLineCount"] = emittedLines
+        candidate.event["overlapRemovedLineCount"] = max(
+            (intValue(candidate.raw["recognizedLineCount"]) ?? emittedLines)
+                - emittedLines,
+            0
+        )
+        if var reduction = candidate.event["reduction"] as? [String: Any] {
+            reduction["overlapOrderingField"] = "capturedAt"
+            reduction["overlapOrderingTimestamp"] = candidate.overlapBoundaryAt
+            candidate.event["reduction"] = reduction
+        }
+        accepted.append(candidate)
+    }
+    return ReducerOverlapResult(events: accepted, dispositions: dispositions)
 }
 private struct ReducerSelection {
     let observation: [String: Any]

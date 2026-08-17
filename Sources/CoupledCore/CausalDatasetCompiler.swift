@@ -166,6 +166,13 @@ public struct CausalDatasetCompiler {
             ) as? [String: Any], let legacySessionID = legacyManifest.string("sessionID") else {
                 throw CausalDatasetCompilerError.invalidManifest("legacy session is missing sessionID")
             }
+            let rawWriteSchema = ((legacyManifest["schemas"] as? [String: Any])?
+                .number("rawActiveTapWrite"))?.intValue
+            if let rawWriteSchema, rawWriteSchema >= 15 {
+                throw CausalDatasetCompilerError.invalidManifest(
+                    "rawActiveTapWrite schema \(rawWriteSchema) requires reduction.json; schema 15+ preview events are not authoritative"
+                )
+            }
             sessionID = legacySessionID
         }
         let manifestData = try Data(contentsOf: sessionURL)

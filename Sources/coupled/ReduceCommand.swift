@@ -9,7 +9,7 @@ struct ReduceCommand {
     init(arguments: [String]) throws {
         var input: String?
         var output: String?
-        var version = "phase1-semantic-v1"
+        var version = "phase1-semantic-v2"
         var index = 0
         while index < arguments.count {
             let argument = arguments[index]
@@ -43,7 +43,7 @@ struct ReduceCommand {
         print("Raw records:  \(result.rawRecordCount)")
         print("READ events:  \(result.readCount)")
         print("WRITE events: \(result.writeCount)")
-        print("Unresolved:   \(result.unresolvedCount)")
+        print("Non-events:   \(result.unresolvedCount)")
         print("Manifest:     \(outputDirectory.appendingPathComponent("reduction.json").path)")
         print("Events:       \(outputDirectory.appendingPathComponent("events.jsonl").path)")
     }
