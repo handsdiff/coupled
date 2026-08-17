@@ -83,6 +83,23 @@ def load_api_key(path: Path) -> tuple[str, str]:
     return key, "dotenv_assignment"
 
 
+def write_report(path: Path, report: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def sanitized_block_reason(status_code: int | None) -> str:
+    return {
+        401: "authentication_required",
+        402: "billing_required",
+        403: "project_permission_denied",
+        404: "project_not_found_or_inaccessible",
+    }.get(status_code, "tinker_api_error")
+
+
 def main() -> int:
     arguments = parse_arguments()
     output = arguments.output.expanduser().resolve()
@@ -108,50 +125,16 @@ def main() -> int:
 
     model_repository = dataset.manifest["tokenizer"]["repository"]
     project_id = arguments.dedicated_private_project_id
-    service_client = tinker.ServiceClient(
-        project_id=project_id,
-        user_metadata={
-            "purpose": "phase1-tokenizer-preflight",
-            "dataset_transmission": "none",
-        },
-    )
-    capabilities = service_client.get_server_capabilities()
-    supported = [
-        model
-        for model in capabilities.supported_models
-        if model.model_name == model_repository
-    ]
-    if len(supported) != 1:
-        raise TrainingContractError(
-            f"Tinker did not report exactly one supported {model_repository} model"
-        )
-    maximum_context = supported[0].max_context_length
-    if maximum_context is None or maximum_context < dataset.maximum_sequence_length:
-        raise TrainingContractError("Tinker model context is too short for the frozen pack")
-
-    sampling_client = service_client.create_sampling_client(
-        base_model=model_repository
-    )
-    reported_base_model = sampling_client.get_base_model()
-    remote_tokenizer = sampling_client.get_tokenizer()
-    comparison = compare_pack_tokenizers(
-        dataset, local_tokenizer, remote_tokenizer
-    )
-
     project_directory = Path(__file__).resolve().parent.parent
     implementation_files = [
         project_directory / "scripts" / "phase1_training_contract.py",
         Path(__file__).resolve(),
         project_directory / "scripts" / "tinker-requirements.txt",
     ]
-    remote_tokenizer_commit = getattr(remote_tokenizer, "init_kwargs", {}).get(
-        "_commit_hash"
-    )
-    report = {
+    base_report: dict[str, object] = {
         "schemaVersion": 1,
         "test": "phase1_tinker_remote_tokenizer_preflight",
         "scope": "authenticated_tokenizer_only_no_dataset",
-        "status": comparison["status"],
         "implementation": {
             "codeRevision": git_revision(project_directory),
             "workingTreeDirty": git_worktree_dirty(project_directory),
@@ -179,6 +162,120 @@ def main() -> int:
             "projectGrantsProgrammaticallyVerified": False,
             "defaultProjectAllowed": False,
         },
+    }
+    attempted_operations: list[str] = []
+    completed_operations: list[str] = []
+    service_client = tinker.ServiceClient(
+        project_id=project_id,
+        user_metadata={
+            "purpose": "phase1-tokenizer-preflight",
+            "dataset_transmission": "none",
+        },
+    )
+    try:
+        attempted_operations.append("get_server_capabilities")
+        capabilities = service_client.get_server_capabilities()
+        completed_operations.append("get_server_capabilities")
+    except tinker.TinkerError as error:
+        status_code = getattr(error, "status_code", None)
+        blocked_report = base_report | {
+            "status": "blocked",
+            "remoteBlock": {
+                "stage": "get_server_capabilities",
+                "reason": sanitized_block_reason(status_code),
+                "httpStatus": status_code,
+                "rawErrorPersisted": False,
+            },
+            "externalActions": {
+                "authenticated": True,
+                "apiKeySourceFormat": key_format,
+                "apiKeyPersistedInReport": False,
+                "attemptedOperations": attempted_operations,
+                "completedOperations": completed_operations,
+                "datumConstructed": False,
+                "packedTokensTransmitted": False,
+                "labelsTransmitted": False,
+                "humanContentTransmitted": False,
+                "samplingPerformed": False,
+                "trainingPerformed": False,
+                "checkpointCreated": False,
+                "nextAction": "resolve_remote_block_and_retry_tokenizer_only_preflight",
+            },
+        }
+        write_report(output, blocked_report)
+        raise TrainingContractError(
+            f"remote preflight blocked during capabilities; inspect {output}"
+        ) from error
+    supported = [
+        model
+        for model in capabilities.supported_models
+        if model.model_name == model_repository
+    ]
+    if len(supported) != 1:
+        raise TrainingContractError(
+            f"Tinker did not report exactly one supported {model_repository} model"
+        )
+    maximum_context = supported[0].max_context_length
+    if maximum_context is None or maximum_context < dataset.maximum_sequence_length:
+        raise TrainingContractError("Tinker model context is too short for the frozen pack")
+
+    try:
+        attempted_operations.append("create_base_model_sampling_client")
+        sampling_client = service_client.create_sampling_client(
+            base_model=model_repository
+        )
+        completed_operations.append("create_base_model_sampling_client")
+        attempted_operations.append("get_base_model")
+        reported_base_model = sampling_client.get_base_model()
+        completed_operations.append("get_base_model")
+        attempted_operations.append("get_tokenizer")
+        remote_tokenizer = sampling_client.get_tokenizer()
+        completed_operations.append("get_tokenizer")
+    except tinker.TinkerError as error:
+        status_code = getattr(error, "status_code", None)
+        blocked_report = base_report | {
+            "status": "blocked",
+            "tinkerModel": {
+                "requestedBaseModel": model_repository,
+                "maximumContextLength": maximum_context,
+                "serverModelRevision": None,
+                "serverModelRevisionStatus": "unverified_not_exposed_by_tinker_api",
+            },
+            "remoteBlock": {
+                "stage": attempted_operations[-1],
+                "reason": sanitized_block_reason(status_code),
+                "httpStatus": status_code,
+                "rawErrorPersisted": False,
+            },
+            "externalActions": {
+                "authenticated": True,
+                "apiKeySourceFormat": key_format,
+                "apiKeyPersistedInReport": False,
+                "attemptedOperations": attempted_operations,
+                "completedOperations": completed_operations,
+                "datumConstructed": False,
+                "packedTokensTransmitted": False,
+                "labelsTransmitted": False,
+                "humanContentTransmitted": False,
+                "samplingPerformed": False,
+                "trainingPerformed": False,
+                "checkpointCreated": False,
+                "nextAction": "resolve_remote_block_and_retry_tokenizer_only_preflight",
+            },
+        }
+        write_report(output, blocked_report)
+        raise TrainingContractError(
+            f"remote preflight blocked during {attempted_operations[-1]}; inspect {output}"
+        ) from error
+    comparison = compare_pack_tokenizers(
+        dataset, local_tokenizer, remote_tokenizer
+    )
+
+    remote_tokenizer_commit = getattr(remote_tokenizer, "init_kwargs", {}).get(
+        "_commit_hash"
+    )
+    report = base_report | {
+        "status": comparison["status"],
         "tinkerModel": {
             "requestedBaseModel": model_repository,
             "reportedBaseModel": reported_base_model,
@@ -193,13 +290,8 @@ def main() -> int:
             "authenticated": True,
             "apiKeySourceFormat": key_format,
             "apiKeyPersistedInReport": False,
-            "operations": [
-                "get_server_capabilities",
-                "create_project_scoped_session",
-                "create_base_model_sampling_client",
-                "get_base_model",
-                "get_tokenizer",
-            ],
+            "attemptedOperations": attempted_operations,
+            "completedOperations": completed_operations,
             "datumConstructed": False,
             "packedTokensTransmitted": False,
             "labelsTransmitted": False,
@@ -210,11 +302,7 @@ def main() -> int:
             "nextAction": "stop_for_review_before_data_bearing_overfit",
         },
     }
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(
-        json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    write_report(output, report)
     if not comparison["compatible"]:
         raise TrainingContractError(
             f"remote tokenizer differs from frozen pack; inspect {output}"

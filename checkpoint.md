@@ -387,6 +387,21 @@ private Tinker project rather than its default project, and then stop again
 before any personal data transfer. An authorized training smoke must save both
 sampler weights and full optimizer state and record actual usage and cost.
 
+The authenticated tokenizer-only gate is implemented with Tinker SDK 0.25.0.
+It requires an explicit dedicated-project UUID and confirmation flag, never
+constructs a training `Datum`, and compares the complete token-to-ID vocabulary
+plus every unique token ID and complete decoded sequence appearing in the
+frozen pack. Its report distinguishes the tokenizer revision fetched by the
+SDK from the server model-weight revision, which Tinker does not expose.
+
+The first authenticated attempt reached Tinker and confirmed the requested
+model through server capabilities, but creation of the tokenizer-bearing base
+model client was blocked with HTTP 402 because the organization had no usable
+billing balance. No packed tokens, labels, human content, sampling request, or
+training request were transmitted. The command must be retried after billing
+is enabled; the hardened retry records sanitized authentication, billing, and
+permission failures without persisting the API key or raw server error.
+
 ## Latest validation
 
 `read-boundary-test-1` confirmed:
@@ -562,7 +577,7 @@ delays/crop configuration as the candidate baseline.
 
 ## Next step
 
-Review the local Tinker preflight report. If separately authorized, implement
-and run only the authenticated remote-tokenizer preflight against the named
-Qwen revision in a dedicated private project without submitting Run 8. Pause
-again before implementing or executing the data-bearing overfit run.
+Enable a Tinker billing balance, then rerun only the authenticated
+remote-tokenizer preflight in the dedicated private project. Review its
+complete-vocabulary and frozen-pack token comparison, then pause again before
+implementing or executing the data-bearing overfit run.
