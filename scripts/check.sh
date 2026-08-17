@@ -39,6 +39,7 @@ python3 -m py_compile \
   "$project_dir/scripts/phase1_tinker_overfit_contract.py" \
   "$project_dir/scripts/prepare-phase1-tinker-smoke.py" \
   "$project_dir/scripts/prepare-phase1-tinker-overfit.py" \
+  "$project_dir/scripts/run-phase1-tinker-overfit.py" \
   "$project_dir/scripts/preflight-phase1-tinker-tokenizer.py" \
   "$project_dir/scripts/check-phase1-training-contract.py" \
   "$project_dir/scripts/check-phase1-tinker-overfit-contract.py"
