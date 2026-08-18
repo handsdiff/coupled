@@ -33,15 +33,15 @@ def main() -> int:
     directory = arguments.dataset.expanduser().resolve()
     manifest = json.loads((directory / "packing.json").read_text(encoding="utf-8"))
     if manifest.get("schemaVersion") != 4 or manifest.get("packerVersion") not in {
-        "phase1-token-pack-v4", "phase1-token-pack-v5"
+        "phase1-token-pack-v4", "phase1-token-pack-v5", "phase1-token-pack-v6"
     }:
-        raise ValueError("auditor requires phase1-token-pack-v4 or v5")
+        raise ValueError("auditor requires phase1-token-pack-v4, v5, or v6")
     packed_path = directory / "packed-examples.jsonl"
     expected = manifest["artifactDigestsSHA256"]["packed-examples.jsonl"]
     if sha256(packed_path) != expected:
         raise ValueError("packed-examples.jsonl digest does not match manifest")
     context_plans: dict[str, dict] = {}
-    if manifest["packerVersion"] == "phase1-token-pack-v5":
+    if manifest["packerVersion"] in {"phase1-token-pack-v5", "phase1-token-pack-v6"}:
         plans_path = directory / "context-plans.jsonl"
         expected_plans = manifest["artifactDigestsSHA256"].get("context-plans.jsonl")
         if not expected_plans or sha256(plans_path) != expected_plans:
@@ -77,9 +77,13 @@ def main() -> int:
         ):
             raise ValueError("truncation self-audit did not retain a bounded partial tail")
     sequence_contract = manifest.get("packing", {}).get("sequenceLengthContract", {})
+    expected_budget_scope = (
+        "task_instruction_plus_history_plus_conditioning_query"
+        if manifest["packerVersion"] == "phase1-token-pack-v6"
+        else "history_plus_conditioning_query_only"
+    )
     if not (
-        sequence_contract.get("inputBudgetAppliesTo")
-        == "history_plus_conditioning_query_only"
+        sequence_contract.get("inputBudgetAppliesTo") == expected_budget_scope
         and sequence_contract.get("targetAppendedOutsideInputBudget") is True
         and sequence_contract.get("targetTruncationAllowed") is False
     ):
@@ -113,6 +117,7 @@ def main() -> int:
             input_count = record["modelInputTokenCount"]
             query_count = record["rightEdgeQueryTokenCount"]
             history_count = record["historyTokenCount"]
+            instruction_count = record.get("taskInstructionTokenCount", 0)
             target = inputs[input_count:]
             if not inputs or not (len(inputs) == len(labels) == len(attention)):
                 raise ValueError(f"line {line_number}: inconsistent sequence arrays")
@@ -122,8 +127,16 @@ def main() -> int:
                 raise ValueError(f"line {line_number}: target labels disagree")
             if query_count > input_count:
                 raise ValueError(f"line {line_number}: right-edge query was truncated")
-            if history_count + query_count != input_count:
-                raise ValueError(f"line {line_number}: history/query token counts disagree")
+            if history_count + query_count + instruction_count != input_count:
+                raise ValueError(f"line {line_number}: instruction/history/query token counts disagree")
+            if manifest["packerVersion"] == "phase1-token-pack-v6":
+                instruction_ids = inputs[:instruction_count]
+                if (
+                    instruction_count <= 0
+                    or token_ids_sha256(instruction_ids)
+                    != record.get("taskInstructionTokenSHA256")
+                ):
+                    raise ValueError(f"line {line_number}: task instruction was not preserved")
             if not target:
                 raise ValueError(f"line {line_number}: target is empty")
             query_ids = inputs[input_count - query_count : input_count]

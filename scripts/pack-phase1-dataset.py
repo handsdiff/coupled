@@ -36,9 +36,13 @@ except ImportError as error:
     ) from error
 
 
-PACKER_VERSION = "phase1-token-pack-v5"
+PACKER_VERSION = "phase1-token-pack-v6"
 DEFAULT_TOKENIZER = "Qwen/Qwen3.5-9B-Base"
 DEFAULT_PASTE_MARKER = "<|paste|>"
+DEFAULT_TASK_INSTRUCTION = (
+    "Predict the exact next human WRITE completion from the causal READ/WRITE "
+    "history and current conditioning state. Output only the completion."
+)
 CONTEXT_TRUNCATION_MARKER = "[...older event content truncated...]"
 IGNORE_LABEL = -100
 TOKENIZER_FILES = (
@@ -319,16 +323,22 @@ def pack_model_input(
     events_by_id: dict[str, dict[str, Any]],
     tokenizer: Any,
     token_budget: int,
+    task_instruction: str,
 ) -> dict[str, Any]:
     query = example.get("query")
     context_event_ids = example.get("contextBlockIDs", example.get("contextEventIDs"))
     if not isinstance(query, str) or not isinstance(context_event_ids, list):
         raise ValueError(f"example {example.get('exampleID')} has invalid context lineage")
+    instruction_ids = encode_plain_text(tokenizer, task_instruction + "\n")
     query_ids = encode_plain_text(tokenizer, query)
+    if not instruction_ids:
+        raise ValueError("task instruction encodes to no tokens")
     if not query_ids:
         raise ValueError(f"example {example['exampleID']} has an empty conditioning query")
-    if len(query_ids) > token_budget:
-        raise ValueError(f"example {example['exampleID']} query exceeds input token budget")
+    if len(instruction_ids) + len(query_ids) > token_budget:
+        raise ValueError(
+            f"example {example['exampleID']} instruction plus query exceeds input token budget"
+        )
 
     blocks: list[dict[str, Any]] = []
     for event_id in context_event_ids:
@@ -350,8 +360,11 @@ def pack_model_input(
     if example.get("context") != expected_context or example.get("modelInput") != expected_model_input:
         raise ValueError(f"example {example['exampleID']} context lineage is inconsistent")
 
-    complete_token_count = len(query_ids) + sum(len(block["tokenIDs"]) for block in blocks)
-    remaining = token_budget - len(query_ids)
+    complete_token_count = (
+        len(instruction_ids) + len(query_ids)
+        + sum(len(block["tokenIDs"]) for block in blocks)
+    )
+    remaining = token_budget - len(instruction_ids) - len(query_ids)
     retained_reversed: list[dict[str, Any]] = []
     for block in reversed(blocks):
         block_ids = block["tokenIDs"]
@@ -393,9 +406,11 @@ def pack_model_input(
             span["truncation"] = block["truncation"]
         spans.append(span)
 
-    input_ids = history_ids + query_ids
+    input_ids = instruction_ids + history_ids + query_ids
     if len(input_ids) > token_budget:
         raise AssertionError("event-aware input exceeds token budget")
+    if input_ids[: len(instruction_ids)] != instruction_ids:
+        raise AssertionError("left-edge task instruction was not preserved")
     if input_ids[-len(query_ids) :] != query_ids:
         raise AssertionError("right-edge conditioning query was not preserved")
     retained_ids = [span["eventID"] for span in spans]
@@ -407,6 +422,7 @@ def pack_model_input(
 
     return {
         "inputIDs": input_ids,
+        "taskInstructionIDs": instruction_ids,
         "queryIDs": query_ids,
         "completeTokenCount": complete_token_count,
         "historyTokenCount": len(history_ids),
@@ -533,6 +549,7 @@ def main() -> int:
     parser.add_argument("--revision", default="main")
     parser.add_argument("--input-token-budget", type=int, default=32768)
     parser.add_argument("--paste-marker", default=DEFAULT_PASTE_MARKER)
+    parser.add_argument("--task-instruction", default=DEFAULT_TASK_INSTRUCTION)
     parser.add_argument("--local-files-only", action="store_true")
     arguments = parser.parse_args()
 
@@ -621,7 +638,8 @@ def main() -> int:
                 example, target_event
             )
             packed_input = pack_model_input(
-                example, events_by_id, reloaded_plain, arguments.input_token_budget
+                example, events_by_id, reloaded_plain, arguments.input_token_budget,
+                arguments.task_instruction,
             )
             input_ids = packed_input["inputIDs"]
             query_ids = packed_input["queryIDs"]
@@ -655,6 +673,10 @@ def main() -> int:
                 "modelInputTokenCount": len(input_ids),
                 "discardedModelInputTokenCount": discarded,
                 "historyTokenCount": packed_input["historyTokenCount"],
+                "taskInstructionTokenCount": len(packed_input["taskInstructionIDs"]),
+                "taskInstructionTokenSHA256": token_ids_sha256(
+                    packed_input["taskInstructionIDs"]
+                ),
                 "rightEdgeQueryTokenCount": len(query_ids),
                 "rightEdgeQueryTokenSHA256": token_ids_sha256(query_ids),
                 "unusedModelInputTokenBudget": packed_input["unusedTokenBudget"],
@@ -685,16 +707,18 @@ def main() -> int:
                     "contentTruncated": span["contentTruncated"],
                 })
             semantic_context = "\n".join(retained_serialized)
-            semantic_input = (
+            semantic_body = (
                 example["query"] if not semantic_context
                 else semantic_context + "\n" + example["query"]
             )
+            semantic_input = arguments.task_instruction + "\n" + semantic_body
             context_plans.append({
                 "schemaVersion": 1,
                 "packerVersion": PACKER_VERSION,
                 "exampleID": example["exampleID"],
                 "experimentBlockID": example.get("experimentBlockID"),
                 "targetEventID": example["targetEventID"],
+                "taskInstruction": arguments.task_instruction,
                 "retainedContextBlocks": retained_plan_blocks,
                 "rightEdgeQuerySHA256": hashlib.sha256(example["query"].encode()).hexdigest(),
                 "semanticModelInputSHA256": hashlib.sha256(semantic_input.encode()).hexdigest(),
@@ -773,14 +797,17 @@ def main() -> int:
             },
             "packing": {
                 "inputTokenBudget": arguments.input_token_budget,
+                "taskInstruction": arguments.task_instruction,
+                "taskInstructionPlacement": "preserved_left_edge_inside_input_budget",
                 "sequenceLengthContract": {
-                    "inputBudgetAppliesTo": "history_plus_conditioning_query_only",
+                    "inputBudgetAppliesTo": "task_instruction_plus_history_plus_conditioning_query",
                     "targetAppendedOutsideInputBudget": True,
                     "targetTruncationAllowed": False,
                     "requiredTrainerSequenceCapacity": maximum_sequence_tokens,
                 },
                 "inputTruncation": "newest_complete_event_blocks_then_explicit_oldest_event_tail",
                 "rightEdgeConditioningQueryPreserved": True,
+                "leftEdgeTaskInstructionPreserved": True,
                 "eventBlock": "one canonical context event followed by newline",
                 "eventAware": True,
                 "sharedSemanticContextPlan": "context-plans.jsonl",

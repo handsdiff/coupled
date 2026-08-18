@@ -732,9 +732,13 @@ versus gap-aware carryover is a later versioned ablation.
 The first assembled corpus contains Run 8 followed by the August 18 session:
 28 + 172 = 200 eligible examples, split into four chronological blocks of 50.
 It retains 837 semantic READ/WRITE events plus one structural `unknown` coverage
-gap. Repeated assembly is byte-identical. Packer v5 creates the common 32K
+gap. Repeated assembly is byte-identical. Packer v6 creates the common 32K
 semantic context plan and packs all 200 targets with 24 grounded paste actions;
-the corpus and packed audits pass.
+the corpus and packed audits pass. The shared plan preserves one identical
+left-edge task instruction—predict the exact next human WRITE completion and
+output only that completion—inside the 32K budget for every arm. This prevents
+the personalized model from being the only condition taught an otherwise
+unstated serialization convention.
 
 The `phase1-prequential-v1` mock backend rehearses 600 scores and four updates
 without a model, network, authentication, or cost. It proves each complete block
