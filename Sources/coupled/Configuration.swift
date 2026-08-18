@@ -27,8 +27,8 @@ struct Configuration {
         "md.obsidian",
     ]
     var excludedBundles: Set<String> = [
-        "com.niyant.coupled",
-        "com.niyant.coupled.logs",
+        "com.handsdiff.coupled",
+        "com.handsdiff.coupled.logs",
     ]
     var excludedAppNames = Set<String>()
     var pauseFile: String?

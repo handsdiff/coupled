@@ -133,8 +133,8 @@ Logs.app` is a separate, independently launchable process that follows the same
 compact provisional-event stream as `./scripts/coupled logs`. During a live run it
 also displays that run's immutable resolved `session.json` settings. It has no
 capture controls and retains only a bounded recent text buffer. Both
-`com.niyant.coupled` and `com.niyant.coupled.logs` are permanently excluded from
-READ and WRITE collection. The authoritative collection artifact is `raw.jsonl`;
+`com.handsdiff.coupled` and `com.handsdiff.coupled.logs` are permanently
+excluded from READ and WRITE collection. The authoritative collection artifact is `raw.jsonl`;
 the stdout mirror and `events.preview.jsonl` are debugging aids. The viewer must not overlap a captured work
 surface because semantic exclusion cannot remove pixels already covering a
 rectangular screenshot.

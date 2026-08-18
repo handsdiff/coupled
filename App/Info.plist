@@ -9,7 +9,7 @@
     <key>CFBundleExecutable</key>
     <string>coupled</string>
     <key>CFBundleIdentifier</key>
-    <string>com.niyant.coupled</string>
+    <string>com.handsdiff.coupled</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>

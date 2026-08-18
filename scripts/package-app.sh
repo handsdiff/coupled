@@ -24,13 +24,13 @@ chmod 755 "$logs_macos_dir/coupled-logs"
 codesign \
   --force \
   --sign - \
-  --identifier com.niyant.coupled \
+  --identifier com.handsdiff.coupled \
   "$app_dir"
 
 codesign \
   --force \
   --sign - \
-  --identifier com.niyant.coupled.logs \
+  --identifier com.handsdiff.coupled.logs \
   "$logs_app_dir"
 
 touch "$app_dir" "$logs_app_dir"

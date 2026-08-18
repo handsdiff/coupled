@@ -2,7 +2,7 @@ import AppKit
 import CoupledCore
 import Foundation
 
-private let collectorBundleIdentifier = "com.niyant.coupled"
+private let collectorBundleIdentifier = "com.handsdiff.coupled"
 
 @main
 struct CoupledLogsApplication {

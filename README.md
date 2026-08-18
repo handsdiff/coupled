@@ -487,14 +487,15 @@ No data leaves the machine. Raw key values are never recorded.
 ```
 
 Coupled is packaged as an application with the stable bundle identifier
-`com.niyant.coupled`; use this bundle for permission grants rather than the
+`com.handsdiff.coupled`; use this bundle for permission grants rather than the
 ephemeral `.build/debug/coupled` executable.
 
 For the experimental interpreted collector, in **System Settings → Privacy & Security**:
 
-1. Open **Accessibility**, click **+**, press **Command-Shift-G** in the file
-   chooser, paste `/Users/niyant/coupled/dist/Coupled.app`, choose **Open**, and
-   enable **Coupled**.
+1. From the repository root, run `realpath ./dist/Coupled.app` and copy the
+   printed path. Open **Accessibility**, click **+**, press
+   **Command-Shift-G** in the file chooser, paste that path, choose **Open**,
+   and enable **Coupled**.
 2. Open **Input Monitoring** and repeat the same **+** flow for `Coupled.app`.
 3. Quit any running Coupled process and start it again. If macOS asks you to
    restart the app, do so.
