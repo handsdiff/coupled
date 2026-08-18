@@ -32,12 +32,34 @@ def main() -> int:
     arguments = parser.parse_args()
     directory = arguments.dataset.expanduser().resolve()
     manifest = json.loads((directory / "packing.json").read_text(encoding="utf-8"))
-    if manifest.get("schemaVersion") != 4 or manifest.get("packerVersion") != "phase1-token-pack-v4":
-        raise ValueError("auditor requires phase1-token-pack-v4")
+    if manifest.get("schemaVersion") != 4 or manifest.get("packerVersion") not in {
+        "phase1-token-pack-v4", "phase1-token-pack-v5"
+    }:
+        raise ValueError("auditor requires phase1-token-pack-v4 or v5")
     packed_path = directory / "packed-examples.jsonl"
     expected = manifest["artifactDigestsSHA256"]["packed-examples.jsonl"]
     if sha256(packed_path) != expected:
         raise ValueError("packed-examples.jsonl digest does not match manifest")
+    context_plans: dict[str, dict] = {}
+    if manifest["packerVersion"] == "phase1-token-pack-v5":
+        plans_path = directory / "context-plans.jsonl"
+        expected_plans = manifest["artifactDigestsSHA256"].get("context-plans.jsonl")
+        if not expected_plans or sha256(plans_path) != expected_plans:
+            raise ValueError("context-plans.jsonl digest does not match manifest")
+        with plans_path.open(encoding="utf-8") as handle:
+            for line_number, line in enumerate(handle, 1):
+                if not line.strip():
+                    continue
+                plan = json.loads(line)
+                example_id = plan.get("exampleID")
+                if (
+                    plan.get("schemaVersion") != 1
+                    or plan.get("packerVersion") != manifest["packerVersion"]
+                    or not isinstance(example_id, str)
+                    or example_id in context_plans
+                ):
+                    raise ValueError(f"context plan line {line_number} is invalid")
+                context_plans[example_id] = plan
 
     paste_marker_ids = manifest["tokenizer"]["pasteMarkerTokenIDs"]
     eos_id = manifest["tokenizer"]["eosTokenID"]
@@ -108,6 +130,24 @@ def main() -> int:
             if token_ids_sha256(query_ids) != record["rightEdgeQueryTokenSHA256"]:
                 raise ValueError(f"line {line_number}: right-edge query digest disagrees")
             spans = record["contextEventTokenSpans"]
+            if context_plans:
+                plan = context_plans.get(record["exampleID"])
+                if plan is None:
+                    raise ValueError(f"line {line_number}: shared context plan is missing")
+                plan_blocks = plan.get("retainedContextBlocks")
+                if not isinstance(plan_blocks, list) or len(plan_blocks) != len(spans):
+                    raise ValueError(f"line {line_number}: shared context plan span count disagrees")
+                for span, plan_block in zip(spans, plan_blocks):
+                    if not (
+                        plan_block.get("contextBlockID")
+                        == span.get("contextBlockID", span.get("eventID"))
+                        and plan_block.get("serializedSHA256") == span.get("serializedSHA256")
+                        and plan_block.get("contentTruncated") == span.get("contentTruncated")
+                        and plan_block.get("serializedOverride") == span.get("packedSerialized")
+                    ):
+                        raise ValueError(f"line {line_number}: shared context plan disagrees")
+                if plan.get("qwenModelInputTokenCount") != input_count:
+                    raise ValueError(f"line {line_number}: context plan token count disagrees")
             cursor = 0
             truncated_spans = 0
             for span_index, span in enumerate(spans):
@@ -209,6 +249,8 @@ def main() -> int:
 
     if rows != manifest["counts"]["examples"]:
         raise ValueError("example count does not match manifest")
+    if context_plans and len(context_plans) != rows:
+        raise ValueError("shared context plan count does not match examples")
     if paste_actions != manifest["counts"]["pasteActions"]:
         raise ValueError("paste action count does not match manifest")
     expected_counts = {

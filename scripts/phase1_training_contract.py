@@ -17,7 +17,8 @@ from typing import Any
 
 
 IGNORE_LABEL = -100
-PACKER_VERSION = "phase1-token-pack-v4"
+PACKER_VERSION = "phase1-token-pack-v5"
+SUPPORTED_PACKER_VERSIONS = {"phase1-token-pack-v4", PACKER_VERSION}
 PACK_SCHEMA_VERSION = 4
 
 
@@ -135,10 +136,11 @@ def validate_packed_dataset(directory: Path) -> PackedDataset:
     manifest = load_json(manifest_path)
     if (
         manifest.get("schemaVersion") != PACK_SCHEMA_VERSION
-        or manifest.get("packerVersion") != PACKER_VERSION
+        or manifest.get("packerVersion") not in SUPPORTED_PACKER_VERSIONS
     ):
         raise TrainingContractError(
-            f"training contract requires {PACKER_VERSION} schema {PACK_SCHEMA_VERSION}"
+            "training contract requires phase1-token-pack-v4 or v5 "
+            f"schema {PACK_SCHEMA_VERSION}"
         )
     expected_digest = manifest.get("artifactDigestsSHA256", {}).get(
         "packed-examples.jsonl"
@@ -188,7 +190,7 @@ def validate_packed_dataset(directory: Path) -> PackedDataset:
         location = f"packed-examples.jsonl row {index + 1}"
         if (
             row.get("schemaVersion") != PACK_SCHEMA_VERSION
-            or row.get("packerVersion") != PACKER_VERSION
+            or row.get("packerVersion") != manifest.get("packerVersion")
         ):
             raise TrainingContractError(f"{location} has an incompatible schema")
         example_id = row.get("exampleID")

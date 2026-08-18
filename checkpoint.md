@@ -142,7 +142,7 @@ rectangular screenshot.
 ## Implemented semantic reduction and causal compilation
 
 Current compiler: `phase1-causal-v14`
-Current reducer: `phase1-semantic-v6`
+Current reducer: `phase1-semantic-v7`
 
 The reducer consumes only `session.json` and `raw.jsonl`; deleting or corrupting
 `events.preview.jsonl` produces byte-identical finalized events. Event IDs are
@@ -222,6 +222,16 @@ target exclusions, zero context exclusions, and zero rejections. Repeated
 causal compilation is byte-identical, the causal audit passes, and the Qwen
 pack contains the same six grounded paste actions with one loss-bearing EOS per
 target and zero discarded input tokens.
+
+Semantic v7 is the current reducer candidate. It adds checkpoint-grounded
+replacement reconstruction for complete initial selections and explicit
+unpopulated-prompt states; preserves renderer fast-start chains as exact later
+WRITE history while marking them target-ineligible because pre-first-mutation
+conditioning is unavailable; and rejects unobserved mid-burst shortcut changes
+rather than stitching uncertain semantic positions. Replayed from commit
+`fbe601a`, Run 8 remains at 28 eligible targets and the August 18 ordinary-work
+session produces 172 eligible targets. Both causal-v14 audits pass, yielding
+exactly 200 eligible examples without manual record edits.
 
 ### Canonical Run 8 semantic and training freeze record
 
@@ -680,19 +690,19 @@ chronological-block and cross-model scoring harness, not basic remote training:
 - **Checkpoint recency:** event chronology supports identical daily scoring, but immutable daily model lineage, replay, and `d`, `d-1`, `d-3`, `d-7` scoring are not implemented.
 - **Sliding window versus retrieval:** every causally available event remains addressable by ID, but BM25 query preprocessing, retrieval selection, and a frozen retrieval-plan artifact are not implemented.
 - **Direct versus private reasoning:** the same input and final target can be reused, but scratchpad generation, final-answer isolation, latency accounting, and scoring are not implemented.
-- **Continual Qwen versus closed ICL:** the Qwen LoRA path is mechanically implemented, but prequential updates, the frontier-model adapter, and matched per-example scoring are not implemented.
-- **Open- and closed-model scaling:** model-specific tokenization is supported in principle, but the current Qwen packer selects the retained suffix. Before cross-model comparison, materialize that canonical suffix once as a shared semantic context plan containing the exact event IDs, exact serialized text, any explicit oldest-event tail, and exact query. Every model receives that same semantic plan; if it does not fit one runtime, shorten it once for every condition and refreeze it before scoring.
+- **Continual Qwen versus closed ICL:** the Qwen LoRA path and provider-neutral prequential protocol rehearsal are mechanically implemented, but the paid personalized-Qwen block adapter and frontier-model adapter are not yet authorized or executed.
+- **Open- and closed-model scaling:** packer v5 freezes one shared semantic context plan containing the retained block IDs, any exact oldest-block rewrite, exact query digest, and full semantic-input digest. Every arm must reconstruct this same plan; no model tokenizer may select extra history.
 
 Every scored example must retain its individual pre-update NLL when exposed by the model interface. Block reports distinguish macro example-average NLL, in which every WRITE contributes equally, from micro target-token NLL, in which longer targets contribute more loss-bearing tokens. The completed Tinker overfit reports the latter as its headline aggregate; the two statistics must not be conflated.
 
-No ablation requires changing the collector schema. The principal missing layers for the foundational test are deterministic multi-session corpus assembly and an experiment harness that freezes chronological block boundaries, the shared semantic context plan, model lineage, decoding, target resolution, per-example scores and samples, latency, and cost. Daily boundaries, retrieval plans, and replay belong to later prospective or ablation work. Phase 2 will require a new conversion admitting displayed model proposals into the appropriate history; Phase 3 will additionally need stronger resource/world-state identity, which is not a Phase 1 collection blocker.
+No ablation requires changing the collector schema. Deterministic multi-session assembly, shared context plans, fixed block lineage, and a no-network three-arm score-before-update rehearsal are implemented. The remaining foundational layer is provider-backed scoring, sampling, cumulative Tinker updates, and immutable actual latency/cost/checkpoint results. Daily boundaries, retrieval plans, and replay belong to later prospective or ablation work. Phase 2 will require a new conversion admitting displayed model proposals into the appropriate history; Phase 3 will additionally need stronger resource/world-state identity, which is not a Phase 1 collection blocker.
 
 ## Multi-session corpus assembly
 
-The current causal compiler consumes one finalized reduction and verifies one
-session at a time. Experiment 1 requires a deterministic post-compile corpus
-assembler; concatenating `examples.jsonl` files without an explicit manifest is
-not sufficient.
+The causal compiler still verifies one finalized session at a time. The
+post-compile `phase1-corpus-v1` assembler combines compatible outputs without
+rewriting stable event or example IDs; concatenating `examples.jsonl` files is
+not treated as valid assembly.
 
 “Same type” means compatible under the same effective data and learning
 contract, not the same application mix, project, or subject matter. The corpus
@@ -719,15 +729,30 @@ than either pretending continuous coverage or automatically resetting history.
 The marker is serialization metadata, not a third semantic event. Hard reset
 versus gap-aware carryover is a later versioned ablation.
 
+The first assembled corpus contains Run 8 followed by the August 18 session:
+28 + 172 = 200 eligible examples, split into four chronological blocks of 50.
+It retains 837 semantic READ/WRITE events plus one structural `unknown` coverage
+gap. Repeated assembly is byte-identical. Packer v5 creates the common 32K
+semantic context plan and packs all 200 targets with 24 grounded paste actions;
+the corpus and packed audits pass.
+
+The `phase1-prequential-v1` mock backend rehearses 600 scores and four updates
+without a model, network, authentication, or cost. It proves each complete block
+is scored before update and records the chosen initial exposure policy explicitly:
+warm-start the prior checkpoint and train one epoch over the full cumulative
+corpus. For four 50-example blocks this means 2,782 loss-bearing target-token
+occurrences become 7,298 presentations across updates. This is an exposure
+choice recorded for later comparison, not additional unique human data.
+
 ## Remaining requirements
 
 ### Before the next authoritative collection
 
-Treat `phase1-semantic-v6`, `phase1-causal-v14`, and the current three-second
+Treat `phase1-semantic-v7`, `phase1-causal-v14`, and the current three-second
 delays/crop configuration as the candidate baseline.
 
 1. Run normal work without changing collector rules mid-session.
-2. Reduce the raw session with `phase1-semantic-v6`; inspect finalized events and every non-event disposition.
+2. Reduce the raw session with `phase1-semantic-v7`; inspect finalized events and every non-event disposition.
 3. Compile the finalized reduction with `phase1-causal-v14`, supplying the raw session directory for hash and lineage verification.
 4. Manually sample the temporal trace against the actual work and record Phase 1's fidelity categories: missing events, temporal-ordering errors, incorrect content inclusion, authorship errors, write-boundary disagreement, destination ambiguity, and future leakage.
 5. Quantify reducer unresolved reasons plus target/context exclusions. Fix only recurrent material errors demonstrated by that trace; otherwise freeze the collector/reducer/compiler versions.
@@ -739,12 +764,11 @@ and bounded Tinker LoRA overfit—including exact `<|paste|>`/EOS generation and
 sampler/optimizer-state reload—have passed. They remain mechanical gates rather
 than behavioral evidence.
 
-1. Pass the ordinary-work reconstruction audit above on substantially more interleaved sessions.
-2. Assemble compatible sessions through the immutable corpus manifest, preserving their lineage and explicit continuous/interrupted/unknown coverage boundaries.
-3. Freeze the corpus version, chronological block boundaries, eligible target set, and one shared semantic context plan—including structural gap markers—for every example.
-4. Implement the three-condition per-example scoring and sampling harness for frozen base Qwen3.5-9B, frozen `gpt-5.6-sol` at `xhigh`, and the current personalized Qwen checkpoint.
-5. Extend the validated Tinker LoRA path into the prequential runner: score the complete block first, train only afterward on cumulative eligible examples through that block, save sampler and optimizer state, and use the result only for the following block.
-6. Record individual predictions and available NLLs plus macro, micro, chronological, aggregate, cost, latency, and per-application results before considering the later prospective continual experiment.
+1. Freeze the canonical 200-example corpus and shared 32K semantic context plans from the two audited sessions.
+2. Preflight the exact Tinker and OpenAI operations, model identities, decoding, projected token use, privacy boundaries, and hard cost ceilings without transmitting data.
+3. After separate authorization, score each block with frozen base Qwen, frozen `gpt-5.6-sol` at `xhigh`, and the current personalized checkpoint using the same context plan.
+4. Train the personalized Qwen only after complete block scoring, save sampler and optimizer state, and use each result only for the following block.
+5. Record individual predictions and available NLLs plus macro, micro, chronological, aggregate, cost, latency, exposure, and per-application results before considering the later prospective continual experiment.
 
 ### Before live prediction
 
@@ -767,12 +791,13 @@ than behavioral evidence.
 
 ## Next step
 
-With the provider charge audited at `$14.37`, retain the now-passing mechanical
-harness and collect substantially more ordinary work through the frozen
-collector/reducer/compiler pipeline. Reduce and audit each session independently,
-then assemble compatible sessions into one immutable chronological corpus with
-explicit coverage-gap boundaries. Evaluate that corpus prequentially rather than
-with a random or permanently held-out train/validation/test split. For each
+With the prior mechanical provider charge audited at `$14.37`, retain that
+memorization result as a harness gate. The immediate next gate is a no-data-transfer
+provider preflight for the new 200-example, four-block corpus. It must calculate
+exact Tinker training/scoring positions and OpenAI input/output ceilings, pin
+model and project identities, and produce an immutable reviewed plan before any
+paid call. Evaluate the corpus prequentially rather than with a random or
+permanently held-out train/validation/test split. For each
 chronological block, use only the model trained through the preceding block to
 score every eligible example and preserve its pre-update loss and samples; only
 after the complete block has been scored may its examples enter the next model

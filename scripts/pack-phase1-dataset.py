@@ -36,7 +36,7 @@ except ImportError as error:
     ) from error
 
 
-PACKER_VERSION = "phase1-token-pack-v4"
+PACKER_VERSION = "phase1-token-pack-v5"
 DEFAULT_TOKENIZER = "Qwen/Qwen3.5-9B-Base"
 DEFAULT_PASTE_MARKER = "<|paste|>"
 CONTEXT_TRUNCATION_MARKER = "[...older event content truncated...]"
@@ -108,6 +108,23 @@ def require_compiled_dataset(
     events_by_id = {event["sourceEventID"]: event for event in events}
     if len(events_by_id) != len(events):
         raise ValueError("compiled events contain duplicate sourceEventID values")
+    context_blocks_path = source / "context-blocks.jsonl"
+    if context_blocks_path.is_file():
+        context_blocks = load_jsonl(context_blocks_path)
+        context_by_id = {
+            block["contextBlockID"]: block for block in context_blocks
+        }
+        if len(context_by_id) != len(context_blocks):
+            raise ValueError("corpus contains duplicate contextBlockID values")
+        if manifest.get("artifactType") != "phase1_multi_session_corpus":
+            raise ValueError("context-blocks.jsonl requires a multi-session corpus manifest")
+        for event_id, event in events_by_id.items():
+            block = context_by_id.get(event_id)
+            if block is None or block.get("serialized") != event.get("serialized"):
+                raise ValueError(f"semantic context block disagrees for {event_id}")
+        # Target lookup and context lookup share one namespace. Coverage-gap
+        # blocks can appear only in context and therefore need no audit form.
+        events_by_id = {**context_by_id, **events_by_id}
     return manifest, examples, events_by_id
 
 
@@ -304,7 +321,7 @@ def pack_model_input(
     token_budget: int,
 ) -> dict[str, Any]:
     query = example.get("query")
-    context_event_ids = example.get("contextEventIDs")
+    context_event_ids = example.get("contextBlockIDs", example.get("contextEventIDs"))
     if not isinstance(query, str) or not isinstance(context_event_ids, list):
         raise ValueError(f"example {example.get('exampleID')} has invalid context lineage")
     query_ids = encode_plain_text(tokenizer, query)
@@ -365,6 +382,7 @@ def pack_model_input(
         history_ids.extend(block["tokenIDs"])
         span = {
             "eventID": block["eventID"],
+            "contextBlockID": block["eventID"],
             "tokenStart": start,
             "tokenEnd": len(history_ids),
             "contentTruncated": block["contentTruncated"],
@@ -406,7 +424,8 @@ def verify_resolved_target_event(
     """Prove target paste payloads remain resolved in the historical WRITE."""
     serialized = json.loads(event["auditSerialized"])
     target = example["target"]
-    if serialized.get("content") != target.get("resolvedContent"):
+    historical_completion = serialized.get("resolvedCompletion", serialized.get("content"))
+    if historical_completion != target.get("resolvedContent"):
         raise ValueError(f"example {example['exampleID']} resolved content disagrees with WRITE")
     target_segments = target.get("segments", [])
     if not any(segment.get("type") == "paste" for segment in target_segments):
@@ -579,6 +598,7 @@ def main() -> int:
         truncation_self_audit = audit_truncation_implementations(reloaded_plain)
 
         packed_records: list[dict[str, Any]] = []
+        context_plans: list[dict[str, Any]] = []
         total_paste_actions = 0
         total_input_tokens = 0
         total_input_tokens_discarded = 0
@@ -627,6 +647,7 @@ def main() -> int:
                 "exampleID": example["exampleID"],
                 "sessionID": example["sessionID"],
                 "targetEventID": example["targetEventID"],
+                "experimentBlockID": example.get("experimentBlockID"),
                 "inputIDs": combined_ids,
                 "labels": labels,
                 "attentionMask": attention_mask,
@@ -649,6 +670,36 @@ def main() -> int:
                 "targetSegmentTokenSpans": segment_spans,
             }
             packed_records.append(record)
+            retained_plan_blocks = []
+            retained_serialized = []
+            for span in packed_input["contextEventSpans"]:
+                block_id = span["contextBlockID"]
+                serialized = span.get("packedSerialized")
+                if serialized is None:
+                    serialized = events_by_id[block_id]["serialized"]
+                retained_serialized.append(serialized)
+                retained_plan_blocks.append({
+                    "contextBlockID": block_id,
+                    "serializedOverride": span.get("packedSerialized"),
+                    "serializedSHA256": hashlib.sha256(serialized.encode()).hexdigest(),
+                    "contentTruncated": span["contentTruncated"],
+                })
+            semantic_context = "\n".join(retained_serialized)
+            semantic_input = (
+                example["query"] if not semantic_context
+                else semantic_context + "\n" + example["query"]
+            )
+            context_plans.append({
+                "schemaVersion": 1,
+                "packerVersion": PACKER_VERSION,
+                "exampleID": example["exampleID"],
+                "experimentBlockID": example.get("experimentBlockID"),
+                "targetEventID": example["targetEventID"],
+                "retainedContextBlocks": retained_plan_blocks,
+                "rightEdgeQuerySHA256": hashlib.sha256(example["query"].encode()).hexdigest(),
+                "semanticModelInputSHA256": hashlib.sha256(semantic_input.encode()).hexdigest(),
+                "qwenModelInputTokenCount": len(input_ids),
+            })
             total_paste_actions += paste_count
             total_input_tokens += len(input_ids)
             total_input_tokens_discarded += discarded
@@ -674,6 +725,8 @@ def main() -> int:
         )
         packed_path = temporary / "packed-examples.jsonl"
         write_jsonl(packed_path, packed_records)
+        context_plans_path = temporary / "context-plans.jsonl"
+        write_jsonl(context_plans_path, context_plans)
 
         tokenizer_digests = {
             str(path.relative_to(tokenizer_directory)): sha256(path)
@@ -730,6 +783,8 @@ def main() -> int:
                 "rightEdgeConditioningQueryPreserved": True,
                 "eventBlock": "one canonical context event followed by newline",
                 "eventAware": True,
+                "sharedSemanticContextPlan": "context-plans.jsonl",
+                "sharedPlanPolicy": "all comparison arms receive the identical retained ordered semantic blocks and right-edge query",
                 "partialJSONAllowed": False,
                 "oversizedOldestEventContent": "explicit_marker_plus_provenance_preserving_text_tail",
                 "contextTruncationMarker": CONTEXT_TRUNCATION_MARKER,
@@ -768,7 +823,8 @@ def main() -> int:
             },
         }
         manifest["artifactDigestsSHA256"] = {
-            "packed-examples.jsonl": sha256(packed_path)
+            "packed-examples.jsonl": sha256(packed_path),
+            "context-plans.jsonl": sha256(context_plans_path),
         }
         (temporary / "packing.json").write_bytes(json_bytes(manifest))
         os.replace(temporary, output)
