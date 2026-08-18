@@ -4,7 +4,7 @@ import Foundation
 public struct Phase1SemanticReducerConfiguration: Sendable {
     public let reducerVersion: String
 
-    public init(reducerVersion: String = "phase1-semantic-v6") {
+    public init(reducerVersion: String = "phase1-semantic-v7") {
         self.reducerVersion = reducerVersion
     }
 }
@@ -67,7 +67,7 @@ public struct Phase1SemanticReducer {
             throw Phase1SemanticReducerError.invalidManifest("missing sessionID")
         }
         let raw = try reducerReadJSONL(rawURL)
-        let fastStartContinuations = reducerFastStartContinuationRecordIDs(raw)
+        let fastStartChains = reducerFastStartChains(raw)
         let navigationChains = reducerNavigationChains(raw)
         let writeOverlapBoundaries = raw.compactMap { record -> ReducerWriteBoundary? in
             guard stringValue(record.object["recordType"]) == "active_tap_write_attempt",
@@ -130,43 +130,47 @@ public struct Phase1SemanticReducer {
                 let writeLine = chain?.rawLine ?? record.line
                 let writeLineage = chain?.lineage
                     ?? [stringValue(object["recordID"])].compactMap { $0 }
+                var effectiveWriteObject = writeObject
                 if let recordID = stringValue(object["recordID"]),
-                   fastStartContinuations.contains(recordID) {
-                    dispositions.append(ReducerDisposition(
-                        line: record.line,
-                        object: reducerUnresolved(
-                            sessionID: sessionID, raw: object, line: record.line,
-                            kind: "write", rule: "fast_start_conditioning_guard_v1",
-                            reason: "pre_first_mutation_conditioning_unavailable"
-                        )
-                    ))
-                    continue
+                   fastStartChains[recordID] != nil {
+                    effectiveWriteObject["semanticTargetIneligibilityReason"] =
+                        "pre_first_mutation_conditioning_unavailable"
+                    effectiveWriteObject["semanticFullFieldCompletion"] = true
+                    effectiveWriteObject["semanticComposition"] =
+                        "fast_start_history_only_completion"
+                }
+                let effectiveLineage: [String]
+                if let recordID = stringValue(object["recordID"]),
+                   let fastStart = fastStartChains[recordID] {
+                    effectiveLineage = fastStart + [recordID]
+                } else {
+                    effectiveLineage = writeLineage
                 }
                 switch reduceWrite(
-                    writeObject,
+                    effectiveWriteObject,
                     sessionID: sessionID,
-                    lineage: writeLineage
+                    lineage: effectiveLineage
                 ) {
                 case .failure(let failure):
                     dispositions.append(ReducerDisposition(line: writeLine, object: reducerUnresolved(
-                        sessionID: sessionID, raw: writeObject, line: writeLine,
+                        sessionID: sessionID, raw: effectiveWriteObject, line: writeLine,
                         kind: "write", rule: failure.rule, reason: failure.reason,
                         details: failure.details,
-                        sourceRecordIDs: writeLineage
+                        sourceRecordIDs: effectiveLineage
                     )))
                 case .success(let event):
-                    guard let beganAt = stringValue(writeObject["beganAt"]) else {
+                    guard let beganAt = stringValue(effectiveWriteObject["beganAt"]) else {
                         dispositions.append(ReducerDisposition(line: writeLine, object: reducerUnresolved(
                             sessionID: sessionID, raw: writeObject, line: writeLine,
                             kind: "write", rule: "semantic_time_overlap_v1",
                             reason: "write_missing_began_at",
-                            sourceRecordIDs: writeLineage
+                            sourceRecordIDs: effectiveLineage
                         )))
                         continue
                     }
                     candidates.append(ReducerCandidate(
                         rawLine: writeLine, kind: "write",
-                        overlapBoundaryAt: beganAt, raw: writeObject, event: event
+                        overlapBoundaryAt: beganAt, raw: effectiveWriteObject, event: event
                     ))
                 }
             default:
@@ -234,6 +238,8 @@ public struct Phase1SemanticReducer {
             "pasteObservationRule": "a premature post-paste checkpoint may use the earliest later same-attempt observation whose local transition contains the exact conditioned clipboard payload once and only structural surrounding characters",
             "ambiguousPasteHistoryRule": "a complete reconstructible paste-containing transition from BEFORE to the selected observation remains WRITE history with unresolved authorship and receives no target loss",
             "navigationContinuationRule": "selection-navigation attempts are one WRITE only when the same retained editable either proves an end-of-field application completion or proves that value, caret, and selection were unchanged within WRITE_DELAY",
+            "selectedReplacementRule": "an initial complete AX selection or explicit unpopulated-prompt state may expand a minimal diff to the exact replacement completion only when the replacement reconstructs the selected observation and the final ordered mutation checkpoint reaches that observation",
+            "fastStartRule": "adjacent target-changing attempts whose typed-input count exactly explains the later prefilled prefix remain history-only with explicit target ineligibility",
             "readOverlapOrdering": "READ capturedAt with finalized WRITE beganAt boundaries; raw append order ignored",
             "previewAuthority": false,
         ]
@@ -436,66 +442,110 @@ private func mergedNavigationAttempt(
     return merged
 }
 
-/// Some renderer-backed editors expose a non-editable container for the first
-/// key, then replace it with the real editable before the next key. The later
-/// BEFORE already contains that first mutation, so it is not a valid query for
-/// a focus-time next-content target. This narrow detector rejects only the
-/// immediately adjacent, one-character continuation demonstrated by the raw
-/// evidence; it does not attempt to invent the missing conditioning state.
-private func reducerFastStartContinuationRecordIDs(
+/// Renderer-backed fields can replace their AX element during the first few
+/// keystrokes. The surviving attempt then begins with those characters already
+/// in BEFORE. Preserve the eventual completion as later history, but never use
+/// that later query as supervision for the full action. A chain is recognized
+/// only when adjacent target-changing attempts contain typed input whose exact
+/// count explains the surviving prefix; no key payload is guessed.
+private func reducerFastStartChains(
     _ records: [ReducerLine]
-) -> Set<String> {
+) -> [String: [String]] {
     let attempts = records.filter {
         stringValue($0.object["recordType"]) == "active_tap_write_attempt"
     }
-    var result = Set<String>()
+    var result = [String: [String]]()
     for index in attempts.indices.dropFirst() {
-        let prior = attempts[attempts.index(before: index)].object
         let current = attempts[index].object
-        guard stringValue(prior["boundaryReason"]) == "target_changed",
-              intValue(prior["inputEventCount"]) == 1,
-              Set(stringArray(prior["inputHints"])) == ["typed"],
-              (prior["before"] as? [String: Any]) == nil,
-              !stringArray(prior["beforeAXErrors"]).isEmpty,
-              stringValue(prior["bundleIdentifier"])
-                == stringValue(current["bundleIdentifier"]),
-              intValue(prior["processIdentifier"])
-                == intValue(current["processIdentifier"]),
-              let priorAt = stringValue(prior["beganAt"]).flatMap(reducerTimestamp),
-              let currentAt = stringValue(current["beganAt"]).flatMap(reducerTimestamp),
-              currentAt >= priorAt,
-              currentAt.timeIntervalSince(priorAt) <= 0.5,
-              let before = current["before"] as? [String: Any],
+        guard let before = current["before"] as? [String: Any],
               stringArray(current["beforeAXErrors"]).isEmpty,
               before["valueWasTruncated"] as? Bool != true,
               let rawBefore = stringValue(before["value"]),
-              logicalEditableValue(
+              let recordID = stringValue(current["recordID"]),
+              let currentAt = stringValue(current["beganAt"]).flatMap(reducerTimestamp) else {
+            continue
+        }
+        let beforeValue = logicalEditableValue(
                 rawBefore,
                 placeholderValue: stringValue(before["placeholderValue"])
-              ).count == 1,
-              let firstCheckpoint = (current["mutationCheckpoints"] as? [[String: Any]])?.first,
+              )
+        guard !beforeValue.isEmpty,
+              intValue(before["selectedRangeLength"]) == 0,
+              intValue(before["selectedRangeLocation"]) == beforeValue.utf16.count,
+              let firstCheckpoint =
+                (current["mutationCheckpoints"] as? [[String: Any]])?.first,
               stringArray(firstCheckpoint["axErrors"]).isEmpty,
               let observation = firstCheckpoint["observation"] as? [String: Any],
               observation["valueWasTruncated"] as? Bool != true,
-              let rawCheckpoint = stringValue(observation["value"]),
-              let recordID = stringValue(current["recordID"]) else { continue }
-        let beforeValue = logicalEditableValue(
-            rawBefore, placeholderValue: stringValue(before["placeholderValue"])
-        )
+              let rawCheckpoint = stringValue(observation["value"]) else { continue }
         let checkpointValue = logicalEditableValue(
             rawCheckpoint,
             placeholderValue: stringValue(observation["placeholderValue"])
         )
         guard checkpointValue.hasPrefix(beforeValue),
               checkpointValue.count > beforeValue.count else { continue }
-        result.insert(recordID)
+
+        var lineage = [String]()
+        var explainedInputCount = 0
+        var cursor = attempts.index(before: index)
+        while true {
+            let prior = attempts[cursor].object
+            guard stringValue(prior["boundaryReason"]) == "target_changed",
+                  Set(stringArray(prior["inputHints"])).isSubset(of: ["typed"]),
+                  (intValue(prior["inputEventCount"]) ?? 0) > 0,
+                  stringValue(prior["bundleIdentifier"])
+                    == stringValue(current["bundleIdentifier"]),
+                  intValue(prior["processIdentifier"])
+                    == intValue(current["processIdentifier"]),
+                  let priorAt = stringValue(prior["beganAt"]).flatMap(reducerTimestamp),
+                  currentAt >= priorAt,
+                  currentAt.timeIntervalSince(priorAt) <= 1.0,
+                  let priorID = stringValue(prior["recordID"]) else { break }
+            let priorWindow = stringValue(
+                (prior["targetIdentity"] as? [String: Any])?["windowTitle"]
+            )
+            let currentWindow = stringValue(
+                (current["targetIdentity"] as? [String: Any])?["windowTitle"]
+            )
+            if let priorWindow, let currentWindow, priorWindow != currentWindow {
+                break
+            }
+            lineage.insert(priorID, at: 0)
+            explainedInputCount += intValue(prior["inputEventCount"]) ?? 0
+            if explainedInputCount >= beforeValue.count || cursor == attempts.startIndex {
+                break
+            }
+            cursor = attempts.index(before: cursor)
+        }
+        guard explainedInputCount == beforeValue.count, !lineage.isEmpty else { continue }
+        result[recordID] = lineage
     }
     return result
+}
+
+/// A generic raw shortcut hint does not reveal whether the user selected,
+/// moved, or transformed text. If typing continues afterward and AX did not
+/// produce a boundary observation for that shortcut, the final content cannot
+/// be assigned to the initial cursor query without guessing. Shortcuts at the
+/// end of a burst remain harmless boundaries.
+private func hasUnobservedMidBurstShortcut(_ raw: [String: Any]) -> Bool {
+    let events = raw["inputEvents"] as? [[String: Any]] ?? []
+    for index in events.indices where stringValue(events[index]["hint"]) == "shortcut" {
+        let hasMutationBefore = events[..<index].contains {
+            ($0["mutationCapable"] as? Bool) == true
+        }
+        let hasMutationAfter = events[events.index(after: index)...].contains {
+            ($0["mutationCapable"] as? Bool) == true
+        }
+        if hasMutationBefore && hasMutationAfter { return true }
+    }
+    return false
 }
 
 private struct CheckpointGroundedEdit {
     let edit: TextEdit
     let observationCount: Int
+    let rule: String
 }
 
 private struct TaggedReducerCharacter {
@@ -624,7 +674,114 @@ private func checkpointGroundedEquivalentEdit(
           ),
           applying(edit, to: beforeValue) == afterValue else { return nil }
     return CheckpointGroundedEdit(
-        edit: edit, observationCount: usedObservationCount
+        edit: edit, observationCount: usedObservationCount,
+        rule: "checkpoint_grounded_equivalent_diff_v1"
+    )
+}
+
+/// A minimal document diff is not always the human completion. If selected
+/// text and its replacement share a prefix or suffix, a minimal diff omits the
+/// shared characters even though the person typed (or accepted autocomplete
+/// for) the complete replacement. The initial AX selection supplies the exact
+/// replacement boundary. An explicit unpopulated-prompt query supplies the
+/// equivalent empty logical field boundary when AX exposes prompt scaffolding
+/// as value text.
+///
+/// This rule never concatenates keystrokes or temporary checkpoints. It uses
+/// only the final selected observation, and accepts the expanded edit only when
+/// it reconstructs that observation exactly and the final ordered mutation
+/// checkpoint independently reaches the same value.
+private func checkpointGroundedReplacementEdit(
+    raw: [String: Any],
+    beforeValue: String,
+    afterValue: String,
+    usedObservation: [String: Any],
+    canonicalEdit: TextEdit
+) -> CheckpointGroundedEdit? {
+    let hints = Set(stringArray(raw["inputHints"]))
+    guard hints.contains("typed"),
+          hints.isDisjoint(with: ["paste", "cut", "undo_redo"]),
+          !(raw["mutationCheckpoints"] as? [[String: Any]] ?? []).isEmpty else {
+        return nil
+    }
+    let selectedAt = reducerTimestamp(
+        stringValue(usedObservation["observedAt"])
+            ?? stringValue(raw["terminalSnapshotAt"])
+            ?? stringValue(raw["terminalDecisionAt"])
+            ?? ""
+    )
+    let observations = (raw["mutationCheckpoints"] as? [[String: Any]] ?? [])
+        .compactMap { checkpoint -> (Date, UInt64, String)? in
+            guard stringArray(checkpoint["axErrors"]).isEmpty,
+                  let observation = checkpoint["observation"] as? [String: Any],
+                  observation["valueWasTruncated"] as? Bool != true,
+                  let rawValue = stringValue(observation["value"]),
+                  let capturedText = stringValue(observation["observedAt"]),
+                  let capturedAt = reducerTimestamp(capturedText),
+                  selectedAt == nil || capturedAt <= selectedAt! else { return nil }
+            return (
+                capturedAt,
+                uint64Value(checkpoint["eventTimestampNanoseconds"]) ?? 0,
+                logicalEditableValue(
+                    rawValue,
+                    placeholderValue: stringValue(observation["placeholderValue"])
+                )
+            )
+        }
+        .sorted {
+            if $0.0 != $1.0 { return $0.0 < $1.0 }
+            return $0.1 < $1.1
+        }
+    guard let final = observations.last, final.2 == afterValue else { return nil }
+
+    let candidate: TextEdit?
+    if let before = raw["before"] as? [String: Any],
+       let startUTF16 = intValue(before["selectedRangeLocation"]),
+       let lengthUTF16 = intValue(before["selectedRangeLength"]),
+       lengthUTF16 > 0,
+       let start = characterOffset(in: beforeValue, utf16Offset: startUTF16),
+       let end = characterOffset(
+        in: beforeValue, utf16Offset: startUTF16 + lengthUTF16
+       ), end >= start {
+        let old = Array(beforeValue)
+        let new = Array(afterValue)
+        let prefix = Array(old[..<start])
+        let suffix = Array(old[end...])
+        guard new.count >= prefix.count + suffix.count,
+              Array(new.prefix(prefix.count)) == prefix,
+              Array(new.suffix(suffix.count)) == suffix else { return nil }
+        let insertedEnd = new.count - suffix.count
+        let inserted = String(new[prefix.count..<insertedEnd])
+        let removed = String(old[start..<end])
+        candidate = TextEdit(
+            operation: inserted.isEmpty ? .delete : .replace,
+            characterOffset: start,
+            removed: removed,
+            inserted: inserted
+        )
+    } else if let conditioning = raw["conditioningState"] as? [String: Any],
+              let cursor = conditioning["cursorContext"] as? [String: Any],
+              stringValue(cursor["fieldState"]) == "unpopulated_prompt",
+              stringValue(cursor["leftContext"]) == "",
+              stringValue(cursor["selectedText"]) == "",
+              stringValue(cursor["rightContext"]) == "" {
+        candidate = TextEdit(
+            operation: beforeValue.isEmpty ? .insert : .replace,
+            characterOffset: 0,
+            removed: beforeValue,
+            inserted: afterValue
+        )
+    } else {
+        candidate = nil
+    }
+    guard let candidate,
+          candidate != canonicalEdit,
+          !candidate.inserted.isEmpty,
+          applying(candidate, to: beforeValue) == afterValue else { return nil }
+    return CheckpointGroundedEdit(
+        edit: candidate,
+        observationCount: observations.count,
+        rule: "checkpoint_grounded_selected_replacement_v1"
     )
 }
 
@@ -1048,6 +1205,12 @@ private func reduceWrite(
     guard (raw["tapTimeoutCountDuringBurst"] as? NSNumber)?.uint64Value ?? 0 == 0 else {
         return fail("tap_timeout")
     }
+    if hasUnobservedMidBurstShortcut(raw) {
+        return fail(
+            "shortcut_changed_semantic_position_without_observation",
+            rule: "unobserved_mid_burst_shortcut_guard_v1"
+        )
+    }
     if let category = sensitiveWriteFieldCategory(raw) {
         return fail(
             "sensitive_input_field",
@@ -1103,17 +1266,24 @@ private func reduceWrite(
         )
     }
 
-    let checkpointGrounding = checkpointGroundedEquivalentEdit(
-        raw: raw,
-        beforeValue: beforeValue,
-        afterValue: afterValue,
-        usedObservation: selection.observation,
-        canonicalEdit: observedEdit
+    let checkpointGrounding = checkpointGroundedReplacementEdit(
+        raw: raw, beforeValue: beforeValue, afterValue: afterValue,
+        usedObservation: selection.observation, canonicalEdit: observedEdit
+    ) ?? checkpointGroundedEquivalentEdit(
+        raw: raw, beforeValue: beforeValue, afterValue: afterValue,
+        usedObservation: selection.observation, canonicalEdit: observedEdit
     )
     let resolvedEdit = checkpointGrounding?.edit ?? observedEdit
-    guard applying(resolvedEdit, to: beforeValue) == afterValue,
-          resolvedEdit.removed.count == observedEdit.removed.count,
-          resolvedEdit.inserted.count == observedEdit.inserted.count else {
+    guard applying(resolvedEdit, to: beforeValue) == afterValue else {
+        return fail(
+            "checkpoint_alignment_does_not_reconstruct_observation",
+            rule: checkpointGrounding?.rule
+                ?? "checkpoint_grounded_equivalent_diff_v1"
+        )
+    }
+    if checkpointGrounding?.rule == "checkpoint_grounded_equivalent_diff_v1",
+       (resolvedEdit.removed.count != observedEdit.removed.count
+        || resolvedEdit.inserted.count != observedEdit.inserted.count) {
         return fail(
             "checkpoint_alignment_is_not_equivalent",
             rule: "checkpoint_grounded_equivalent_diff_v1"
@@ -1132,6 +1302,7 @@ private func reduceWrite(
         )
     }
 
+    let historyOnlyFullField = raw["semanticFullFieldCompletion"] as? Bool == true
     let interpretedAuthorship = cutOnly
         ? ReducerAuthorship(
             segments: [],
@@ -1140,6 +1311,16 @@ private func reduceWrite(
             stateContinuity: "single_ax_epoch",
             evidence: "cut_only_no_authored_content",
             evidenceObservationID: nil,
+            semanticEdit: nil
+        )
+        : historyOnlyFullField
+        ? ReducerAuthorship(
+            segments: afterValue.isEmpty ? [] : [.authored(afterValue)],
+            resolution: "resolved",
+            resolvedCompletion: afterValue,
+            stateContinuity: "incomplete_pre_mutation_conditioning",
+            evidence: "fast_start_full_field_history_only",
+            evidenceObservationID: stringValue(selection.observation["observationID"]),
             semanticEdit: nil
         )
         : reduceAuthorship(
@@ -1279,14 +1460,19 @@ private func reduceWrite(
                 : selection.reason),
             "selectedObservationID": stringValue(selection.observation["observationID"]) ?? "",
             "selectedObservationSource": selection.source,
-            "alignmentRule": checkpointGrounding == nil
-                ? "canonical_minimal_diff"
-                : "checkpoint_grounded_equivalent_diff_v1",
+            "alignmentRule": checkpointGrounding?.rule
+                ?? "canonical_minimal_diff",
             "alignmentObservationCount": checkpointGrounding?.observationCount ?? 0,
             "rawLineage": sourceRecordIDs,
             "outputOrdinal": 0,
         ],
     ]
+    if let reason = stringValue(raw["semanticTargetIneligibilityReason"]) {
+        event["phase1TargetEligibility"] = [
+            "eligible": false,
+            "reason": reason,
+        ]
+    }
     // JSONSerialization cannot encode Swift optionals hidden in Any.
     event = removeNullOptionals(event)
     return .success(event)

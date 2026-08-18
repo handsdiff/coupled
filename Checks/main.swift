@@ -1278,14 +1278,24 @@ let fastStartWarmup: [String: Any] = [
     "terminalDecisionAt": "2026-01-01T00:00:29.100Z",
     "configuredWriteDelaySeconds": 3,
     "firstEventTimestampNanoseconds": 1,
-    "lastEventTimestampNanoseconds": 1,
-    "inputEventCount": 1, "inputHints": ["typed"],
+    "lastEventTimestampNanoseconds": 2,
+    "inputEventCount": 2, "inputHints": ["typed"],
     "inputEvents": [[
         "observedAt": "2026-01-01T00:00:29.000Z",
         "eventTimestampNanoseconds": 1,
         "hint": "typed", "mutationCapable": true,
+    ], [
+        "observedAt": "2026-01-01T00:00:29.050Z",
+        "eventTimestampNanoseconds": 2,
+        "hint": "typed", "mutationCapable": true,
     ]],
     "boundaryReason": "target_changed",
+    "targetIdentity": [
+        "bundleIdentifier": "fixture.app", "processIdentifier": 42,
+        "role": "AXGroup", "windowTitle": "Fixture",
+        "fieldDescription": "Fixture editor", "fieldLabel": "",
+        "elementHash": 12344,
+    ],
     "beforeAXErrors": ["focused_element:unsupported_role:AXGroup"],
     "afterAXErrors": ["target:unavailable"],
     "returnCheckpoints": [], "pasteCheckpoints": [],
@@ -1300,7 +1310,7 @@ let fastStartWarmup: [String: Any] = [
 ]
 let fastStartContinuation = schema15WriteFixture(
     id: "fast-start-continuation",
-    beforeValue: "i", afterValue: "is it possible",
+    beforeValue: "is", afterValue: "is it possible",
     beganAt: "2026-01-01T00:00:29.100Z",
     terminalAt: "2026-01-01T00:00:32.100Z",
     inputHints: ["typed"],
@@ -1309,7 +1319,7 @@ let fastStartContinuation = schema15WriteFixture(
         "inputObservedAt": "2026-01-01T00:00:29.100Z",
         "eventTimestampNanoseconds": 1,
         "captureRequestedAt": "2026-01-01T00:00:29.150Z",
-        "observation": observation("is", at: "2026-01-01T00:00:29.160Z"),
+        "observation": observation("is ", at: "2026-01-01T00:00:29.160Z"),
         "axErrors": [],
     ]]
 )
@@ -1508,6 +1518,61 @@ var cursorMoveTwoBefore = cursorMoveTwo["before"] as! [String: Any]
 cursorMoveTwoBefore["selectedRangeLocation"] = 2
 cursorMoveTwo["before"] = cursorMoveTwoBefore
 
+var selectedReplacementWrite = schema15WriteFixture(
+    id: "selected-replacement",
+    beforeValue: "compare with this",
+    afterValue: "consider with this",
+    beganAt: "2026-01-01T00:00:48.000Z",
+    terminalAt: "2026-01-01T00:00:51.000Z",
+    inputHints: Array(repeating: "typed", count: 8)
+)
+var selectedReplacementBefore = selectedReplacementWrite["before"] as! [String: Any]
+selectedReplacementBefore["selectedRangeLocation"] = 0
+selectedReplacementBefore["selectedRangeLength"] = 7
+selectedReplacementWrite["before"] = selectedReplacementBefore
+var selectedReplacementConditioning =
+    selectedReplacementWrite["conditioningState"] as! [String: Any]
+selectedReplacementConditioning["cursorContext"] = [
+    "schemaVersion": 2, "source": "accessibility_string_for_range",
+    "captureStatus": "complete", "fieldState": "editable_text",
+    "leftContext": "", "selectedText": "compare", "rightContext": " with this",
+]
+selectedReplacementWrite["conditioningState"] = selectedReplacementConditioning
+
+var unpopulatedPromptWrite = schema15WriteFixture(
+    id: "unpopulated-prompt-replacement",
+    beforeValue: "\nDo anything",
+    afterValue: "does checkpoint need updating",
+    beganAt: "2026-01-01T00:00:52.000Z",
+    terminalAt: "2026-01-01T00:00:55.000Z",
+    inputHints: Array(repeating: "typed", count: 29)
+)
+var unpopulatedConditioning =
+    unpopulatedPromptWrite["conditioningState"] as! [String: Any]
+unpopulatedConditioning["cursorContext"] = [
+    "schemaVersion": 2, "source": "accessibility_string_for_range",
+    "captureStatus": "complete", "fieldState": "unpopulated_prompt",
+    "leftContext": "", "selectedText": "", "rightContext": "",
+    "surfacePrompt": "Do anything",
+]
+unpopulatedPromptWrite["conditioningState"] = unpopulatedConditioning
+
+var ambiguousShortcutWrite = schema15WriteFixture(
+    id: "mid-burst-shortcut",
+    beforeValue: "old", afterValue: "oldnewreplacement",
+    beganAt: "2026-01-01T00:00:56.000Z",
+    terminalAt: "2026-01-01T00:00:59.000Z",
+    inputHints: ["typed", "shortcut", "typed"]
+)
+ambiguousShortcutWrite["inputEvents"] = [
+    ["observedAt": "2026-01-01T00:00:56.000Z", "eventTimestampNanoseconds": 1,
+     "hint": "typed", "mutationCapable": true],
+    ["observedAt": "2026-01-01T00:00:56.100Z", "eventTimestampNanoseconds": 2,
+     "hint": "shortcut", "mutationCapable": false],
+    ["observedAt": "2026-01-01T00:00:56.200Z", "eventTimestampNanoseconds": 3,
+     "hint": "typed", "mutationCapable": true],
+]
+
 // Deliberately append the READ captured at t=3 before the WRITE which began at
 // t=2 but settled at t=4. Raw-order overlap would incorrectly emit only gamma.
 writeFixtureJSONL([
@@ -1536,6 +1601,7 @@ writeFixtureJSONL([
     autocompleteOne, autocompleteTwo, autocompleteThree,
     autocompleteFour, autocompleteFive,
     cursorMoveOne, cursorMoveTwo,
+    selectedReplacementWrite, unpopulatedPromptWrite, ambiguousShortcutWrite,
 ], to: motivatingInput.appendingPathComponent("raw.jsonl"))
 
 _ = try! reducer.reduce(
@@ -1627,15 +1693,49 @@ expect(
     },
     "noncontiguous editor formatting cannot become authored supervision"
 )
+let fastStartHistory = motivatingEvents.first {
+    ($0["sourceRecordIDs"] as? [String])
+        == ["fast-start-warmup", "fast-start-continuation"]
+}
+expect(
+    fastStartHistory?["resolvedCompletion"] as? String == "is it possible"
+        && ((fastStartHistory?["phase1TargetEligibility"] as? [String: Any])?["eligible"]
+            as? Bool) == false
+        && ((fastStartHistory?["phase1TargetEligibility"] as? [String: Any])?["reason"]
+            as? String) == "pre_first_mutation_conditioning_unavailable",
+    "fast-start continuation remains exact history but cannot become a target"
+)
+let selectedReplacementEvent = motivatingEvents.first {
+    ($0["sourceRecordIDs"] as? [String]) == ["selected-replacement"]
+}
+expect(
+    selectedReplacementEvent?["content"] as? String == "consider"
+        && selectedReplacementEvent?["removedContent"] as? String == "compare"
+        && (selectedReplacementEvent?["observedNetEdit"] as? [String: Any])?["content"]
+            as? String == "nsider"
+        && (selectedReplacementEvent?["reduction"] as? [String: Any])?["alignmentRule"]
+            as? String == "checkpoint_grounded_selected_replacement_v1",
+    "complete initial selection restores shared authored replacement characters"
+)
+let unpopulatedPromptEvent = motivatingEvents.first {
+    ($0["sourceRecordIDs"] as? [String]) == ["unpopulated-prompt-replacement"]
+}
+expect(
+    unpopulatedPromptEvent?["content"] as? String == "does checkpoint need updating"
+        && unpopulatedPromptEvent?["removedContent"] as? String == "\nDo anything"
+        && (unpopulatedPromptEvent?["observedNetEdit"] as? [String: Any])?["content"]
+            as? String == "does checkpoint need updat"
+        && (unpopulatedPromptEvent?["reduction"] as? [String: Any])?["alignmentRule"]
+            as? String == "checkpoint_grounded_selected_replacement_v1",
+    "explicit unpopulated prompt state prevents scaffolding from truncating authorship"
+)
 expect(
     motivatingDispositions.contains {
-        ($0["sourceRecordIDs"] as? [String]) == ["fast-start-continuation"]
+        ($0["sourceRecordIDs"] as? [String]) == ["mid-burst-shortcut"]
             && $0["reason"] as? String
-                == "pre_first_mutation_conditioning_unavailable"
-    } && !motivatingEvents.contains {
-        ($0["sourceRecordIDs"] as? [String]) == ["fast-start-continuation"]
+                == "shortcut_changed_semantic_position_without_observation"
     },
-    "fast-start continuation with the first character already in BEFORE is ineligible"
+    "unobserved shortcut between mutations remains unresolved"
 )
 expect(
     motivatingDispositions.contains {
@@ -1744,6 +1844,12 @@ expect(
         $0["targetEventID"] as? String == cutOnlyEvent?["eventID"] as? String
     },
     "cut-only WRITE is retained in history but excluded as a target"
+)
+expect(
+    !motivatingExamples.contains {
+        $0["targetEventID"] as? String == fastStartHistory?["eventID"] as? String
+    },
+    "reducer target-ineligibility is enforced by the causal compiler"
 )
 expect(
     motivatingExamples.contains {

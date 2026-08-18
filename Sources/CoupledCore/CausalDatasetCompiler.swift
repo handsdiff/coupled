@@ -375,7 +375,11 @@ public struct CausalDatasetCompiler {
                 $0.object.stringArray("sourceRecordIDs")
             }
             let targetSourceRecordIDs = target.object.stringArray("sourceRecordIDs")
-            let attempt = attempts[targetSourceRecordIDs[0]]!
+            let conditioningSourceID = target.object.string("stateContinuity")
+                == "incomplete_pre_mutation_conditioning"
+                ? targetSourceRecordIDs.last!
+                : targetSourceRecordIDs[0]
+            let attempt = attempts[conditioningSourceID]!
             let conditioningState = try writeConditioningState(
                 event: target.object,
                 attempt: attempt
@@ -404,8 +408,13 @@ public struct CausalDatasetCompiler {
             let hasCompleteSemanticContext = cursorContext?.string("leftContext") != nil
                 && cursorContext?.string("selectedText") != nil
                 && cursorContext?.string("rightContext") != nil
+            let reducerEligibility = target.object["phase1TargetEligibility"]
+                as? [String: Any]
             let targetExclusionReason: String?
-            if content.isEmpty {
+            if reducerEligibility?.boolean("eligible") == false {
+                targetExclusionReason = reducerEligibility?.string("reason")
+                    ?? "reducer_marked_target_ineligible"
+            } else if content.isEmpty {
                 targetExclusionReason = "empty_content"
             } else if targetSegments == nil {
                 targetExclusionReason = "unresolved_paste_authorship"
@@ -748,8 +757,12 @@ private func verifyReducedWrite(
        }) {
         return .failure("authorship_observation_missing_from_raw_lineage")
     }
+    let conditioningAttempt = event.string("stateContinuity")
+        == "incomplete_pre_mutation_conditioning"
+        ? sourceAttempts.last!
+        : firstAttempt
     guard let eventConditioning = event["conditioningState"] as? [String: Any],
-          let rawConditioning = firstAttempt["conditioningState"] as? [String: Any],
+          let rawConditioning = conditioningAttempt["conditioningState"] as? [String: Any],
           (try? canonicalJSONString(eventConditioning))
             == (try? canonicalJSONString(rawConditioning)) else {
         return .failure("conditioning_state_does_not_match_raw_evidence")
