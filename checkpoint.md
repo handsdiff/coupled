@@ -503,6 +503,7 @@ At the reverified frozen rates, logical operations cost an estimated
 uncached-prefill upper bound, and `$0.000441` sampling. Tinker's hourly billing
 feed had not yet posted the session when the run completed, so provider-billed
 usage remains a follow-up audit rather than being falsely reported as final.
+The user subsequently verified the final provider charge as `$14.37`.
 
 This result proves the packed artifact, causal shift, masks, EOS behavior,
 literal five-token paste marker, Tinker adapter, optimizer, checkpoints,
