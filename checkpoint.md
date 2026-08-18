@@ -819,6 +819,15 @@ training starts a new versioned lineage rather than retroactively turning
 already observed data into a prospective result. Run 8's memorization remains a
 mechanical result, not a behavioral one.
 
+The local provider plan calculates 14,583,176 cumulative Tinker training
+positions, 24,410,468 Qwen scoring/generation prefill tokens, and a `$38.854671`
+Tinker projection including a `$1` checkpoint reserve. The `gpt-5.6-sol` arm has
+6,101,226 Qwen-token proxy input tokens and a `$33.578130` proxy projection;
+because that is not OpenAI billing tokenization, the tokenizer-independent UTF-8
+byte ceiling is `$127.757200`. No credential was read and no provider or personal
+data was contacted. A hard combined ceiling remains intentionally unfrozen until
+an authenticated metadata/token-count preflight and explicit review.
+
 Keep the initial task content-only given causal history plus known destination,
 semantic cursor context, and clipboard state. Idle-triggered sampling,
 destination or cursor-location prediction, and learned proactivity are deferred

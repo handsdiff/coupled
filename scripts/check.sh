@@ -42,6 +42,7 @@ python3 -m py_compile \
   "$project_dir/scripts/phase1_experiment.py" \
   "$project_dir/scripts/run-phase1-experiment.py" \
   "$project_dir/scripts/audit-phase1-experiment.py" \
+  "$project_dir/scripts/prepare-phase1-experiment.py" \
   "$project_dir/scripts/plot-phase1-tinker-loss.py" \
   "$project_dir/scripts/phase1_training_contract.py" \
   "$project_dir/scripts/phase1_tinker_overfit_contract.py" \
