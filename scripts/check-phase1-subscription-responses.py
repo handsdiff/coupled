@@ -8,6 +8,7 @@ from phase1_subscription_responses import (
     FORBIDDEN_REQUEST_FIELDS,
     MODEL,
     SubscriptionResponseError,
+    decode_response,
     request_completion,
     require_loopback_url,
 )
@@ -51,10 +52,20 @@ def main() -> int:
         raise AssertionError("mocked subscription output was not parsed")
     if received.get("model") != MODEL:
         raise AssertionError("subscription model route changed")
+    if received.get("input") != [{
+        "role": "user",
+        "content": [{"type": "input_text", "text": "public fixture"}],
+    }]:
+        raise AssertionError("subscription Responses input shape changed")
     if received.get("reasoning") != {"effort": "xhigh"}:
         raise AssertionError("subscription reasoning effort changed")
     if FORBIDDEN_REQUEST_FIELDS & set(received):
         raise AssertionError("subscription request contains a rejected field")
+    if received.get("stream") is not True:
+        raise AssertionError("subscription request is not explicitly streamed")
+    sse = b'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"O"}\n\nevent: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"K"}\n\ndata: [DONE]\n\n'
+    if decode_response(sse).get("output_text") != "OK":
+        raise AssertionError("subscription SSE output was not parsed")
     try:
         require_loopback_url("https://example.com/v1/responses")
     except SubscriptionResponseError:

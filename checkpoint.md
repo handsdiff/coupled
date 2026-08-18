@@ -833,13 +833,15 @@ loopback LiteLLM proxy using the ChatGPT-subscription route
 This route draws from the ChatGPT/Codex subscription usage pool rather than API
 token billing. LiteLLM documents that subscription requests strip token-limit
 fields, so the former 8,192-token API ceiling is not enforceable on this
-transport. LiteLLM 1.97.0 is installed in an ignored repository-local virtual
-environment. The loopback-only request contract and mocked response parser pass;
-the client sends no token-limit field or metadata and cannot target a nonlocal
-URL. No OAuth flow has started, provider has been contacted, or personal data
-has been transmitted. The next authorized gate is a non-personal `OK` preflight
-proving model access and reasoning support before one privacy-filtered paste
-example is sent.
+transport. LiteLLM 1.97.0 and the compatible FastAPI 0.137.2 are installed in an
+ignored repository-local virtual environment. The loopback-only request contract
+and mocked JSON/SSE response parser pass; the client sends no token-limit field
+or metadata and cannot target a nonlocal URL. The ChatGPT OAuth flow and a
+non-personal authenticated preflight passed: `chatgpt/gpt-5.6-sol` at requested
+`xhigh` returned model `gpt-5.6-sol` and exact output `OK`, using 1,642 input and
+5 output tokens. It used no OpenAI API key and transmitted no collected data.
+The next separately authorized gate is one privacy-filtered paste example before
+any complete-corpus scoring.
 
 Keep the initial task content-only given causal history plus known destination,
 semantic cursor context, and clipboard state. Idle-triggered sampling,

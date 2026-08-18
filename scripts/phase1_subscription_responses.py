@@ -41,9 +41,12 @@ def build_request(model_input: str) -> dict[str, Any]:
         raise SubscriptionResponseError("model input must be nonempty text")
     request = {
         "model": MODEL,
-        "input": model_input,
+        "input": [{
+            "role": "user",
+            "content": [{"type": "input_text", "text": model_input}],
+        }],
         "reasoning": {"effort": REASONING_EFFORT},
-        "stream": False,
+        "stream": True,
         "tools": [],
     }
     if FORBIDDEN_REQUEST_FIELDS & set(request):
@@ -71,6 +74,44 @@ def extract_output_text(response: dict[str, Any]) -> str:
     return result
 
 
+def decode_response(body: bytes) -> dict[str, Any]:
+    try:
+        value = json.loads(body)
+    except json.JSONDecodeError:
+        value = None
+    if isinstance(value, dict):
+        return value
+    deltas: list[str] = []
+    completed: dict[str, Any] | None = None
+    for raw_line in body.decode(errors="replace").splitlines():
+        if not raw_line.startswith("data:"):
+            continue
+        payload = raw_line.removeprefix("data:").strip()
+        if not payload or payload == "[DONE]":
+            continue
+        try:
+            event = json.loads(payload)
+        except json.JSONDecodeError as error:
+            raise SubscriptionResponseError("LiteLLM returned malformed SSE JSON") from error
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") == "response.output_text.delta" and isinstance(
+            event.get("delta"), str
+        ):
+            deltas.append(event["delta"])
+        if event.get("type") == "response.completed" and isinstance(
+            event.get("response"), dict
+        ):
+            completed = event["response"]
+    if completed is not None:
+        if deltas and not isinstance(completed.get("output_text"), str):
+            completed = {**completed, "output_text": "".join(deltas)}
+        return completed
+    if deltas:
+        return {"output_text": "".join(deltas)}
+    raise SubscriptionResponseError("LiteLLM response is neither JSON nor recognized SSE")
+
+
 def request_completion(
     endpoint: str,
     model_input: str,
@@ -91,8 +132,8 @@ def request_completion(
     )
     try:
         with urlopen(request, timeout=timeout_seconds) as response:
-            body = json.loads(response.read())
-    except (urllib.error.URLError, json.JSONDecodeError) as error:
+            body = decode_response(response.read())
+    except urllib.error.URLError as error:
         raise SubscriptionResponseError(f"LiteLLM request failed: {error}") from error
     if not isinstance(body, dict):
         raise SubscriptionResponseError("LiteLLM response is not an object")
