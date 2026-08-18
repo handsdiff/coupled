@@ -45,6 +45,7 @@ python3 -m py_compile \
   "$project_dir/scripts/prepare-phase1-experiment.py" \
   "$project_dir/scripts/phase1_subscription_responses.py" \
   "$project_dir/scripts/preflight-phase1-subscription.py" \
+  "$project_dir/scripts/preflight-phase1-paste-example.py" \
   "$project_dir/scripts/check-phase1-subscription-responses.py" \
   "$project_dir/scripts/plot-phase1-tinker-loss.py" \
   "$project_dir/scripts/phase1_training_contract.py" \

@@ -840,8 +840,18 @@ or metadata and cannot target a nonlocal URL. The ChatGPT OAuth flow and a
 non-personal authenticated preflight passed: `chatgpt/gpt-5.6-sol` at requested
 `xhigh` returned model `gpt-5.6-sol` and exact output `OK`, using 1,642 input and
 5 output tokens. It used no OpenAI API key and transmitted no collected data.
-The next separately authorized gate is one privacy-filtered paste example before
-any complete-corpus scoring.
+The separately authorized single-example data gate also passed. The earliest
+eligible grounded-paste example was reconstructed from the frozen privacy-filtered
+semantic context plan, its input digest and private-event redactions were verified
+locally, and only its 11,592-byte model input was transmitted; its held-out target
+was not sent. `gpt-5.6-sol` at requested `xhigh` returned the exact expected
+`<|paste|>` completion in 3.53 seconds, using 4,150 input tokens and 85 output
+tokens, of which 74 were reasoning tokens. The authenticated report is
+`coupled-data/phase1-experiment-1-paste-preflight-authenticated-v1.json` with
+SHA-256 `448dcc399d4cc3dc58873deebbd1864607ce69616ecfd8ac083bd87a274e27df`.
+This proves the shared paste instruction is understood on one real example; it
+is a transport/serialization gate, not behavioral evidence. Complete-corpus
+scoring remains a separate explicitly authorized operation.
 
 Keep the initial task content-only given causal history plus known destination,
 semantic cursor context, and clipboard state. Idle-triggered sampling,
