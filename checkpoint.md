@@ -505,6 +505,42 @@ feed had not yet posted the session when the run completed, so provider-billed
 usage remains a follow-up audit rather than being falsely reported as final.
 The user subsequently verified the final provider charge as `$14.37`.
 
+### Mechanical smoke scaling record
+
+The size of this experiment must be reported with separate context-compute and
+supervision denominators:
+
+- base model: `Qwen/Qwen3.5-9B-Base`, nominally 9 billion parameters;
+- adaptation: rank-32 LoRA over attention, MLP, and unembedding;
+- trainable adapter parameters: exactly `94,584,832` under Tinker's published
+  model-specific counting utility, or approximately `1.05%` of the nominal 9B
+  base model; the base weights remained frozen;
+- examples: 28;
+- one packed pass: 482,281 sequence tokens before the causal shift and 482,253
+  submitted positions after shifting one position from each example;
+- unique loss-bearing positions per pass: 203, comprising authored text,
+  paste-marker tokens, and one EOS per target; the remaining 482,050 submitted
+  positions had zero direct loss but supplied causal context for those targets;
+- training exposure: 20 passes, totaling 9,645,060 submitted positions and
+  4,060 loss-bearing target-position presentations;
+- optimizer work: 560 batch-size-one steps;
+- provider-verified total charge: `$14.37`.
+
+For scaling-law comparisons, `482,253` is the distinct packed compute exposure
+per pass, `9,645,060` is the repeated compute exposure over the whole run, and
+`203` is the distinct supervised target-token count. These quantities must not
+be collapsed into one ambiguous "training tokens" figure. The corresponding
+whole-run ratios are approximately `0.102` submitted positions per trainable
+parameter and `0.0000429` loss-bearing presentations per trainable parameter.
+Because the same 28 examples were replayed 20 times, these figures describe a
+memorization smoke test rather than an independent-data scaling point.
+
+The adapter count comes from Tinker's `get_lora_param_count` table: for this
+model, the published per-rank counts are 1,572,864 MLP, 1,130,496 attention,
+and 252,416 unembedding parameters; their sum multiplied by rank 32 is
+94,584,832. The count was documented after the immutable run report was
+created, so the canonical JSON report and its digest remain unchanged.
+
 This result proves the packed artifact, causal shift, masks, EOS behavior,
 literal five-token paste marker, Tinker adapter, optimizer, checkpoints,
 reload, and generation path work together. It is deliberately not evidence
