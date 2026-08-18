@@ -640,9 +640,10 @@ Rules:
 
 ### Automatic formatting and generated text
 
-The collector faithfully records app-generated document transitions such as Obsidian list markers. It remains undecided whether those characters should:
+The collector faithfully records app-generated document transitions such as Obsidian list markers. The current `phase1-causal-v14` baseline assigns no separate formatting provenance: formatting characters inside an otherwise verified eligible WRITE remain in resolved content and receive content loss. This is a deliberately simple initial policy, not a claim that every such character was consciously authored by the user.
 
-- receive content loss;
+Later ablations may instead:
+
 - become application-action markers;
 - be normalized during compilation; or
 - make the target ineligible.
@@ -667,20 +668,56 @@ The authoritative compiled examples remain tokenizer-independent. They retain th
 Ready from the current data and packer:
 
 - **Time data:** compile the same frozen source with or without `--include-timestamps-in-context`; timestamps remain outside target loss. The comparison must reuse a common semantic event suffix so timestamp tokens do not indirectly remove more history from only one arm.
-- **Qwen context scaling:** repack the same compiled examples at 8K, 16K, 32K, and 64K with `--input-token-budget`; event-aware truncation keeps the query and valid event records intact.
+- **Qwen context scaling:** repack the same compiled examples at 8K, 16K, 32K, and—where total runtime capacity leaves room for the complete target—64K with `--input-token-budget`; event-aware truncation keeps the query and valid event records intact. The authenticated Tinker runtime currently exposes 65,536 total tokens, so a nominal 64K history-plus-query plan must be reduced or run elsewhere when its untruncated target would exceed that limit.
 - **Behavioral-cloning target:** current labels implement authored text, grounded paste markers, and EOS only.
 
-The substrate and local token/label validator are ready, but the remote
-training runner and broader experiment harness are still required:
+The substrate, local token/label validator, authenticated Tinker tokenizer
+comparison, LoRA training path, exact-generation audit, and checkpoint/reload
+path are mechanically validated. The missing layer is the prequential
+chronological-block and cross-model scoring harness, not basic remote training:
 
 - **Learning objective:** `resolvedContent`, structured paste actions, and target lineage support either token NLL or a resolved-content semantic reward, but GRPO/RLOO and reward execution are not implemented.
 - **Checkpoint recency:** event chronology supports identical daily scoring, but immutable daily model lineage, replay, and `d`, `d-1`, `d-3`, `d-7` scoring are not implemented.
 - **Sliding window versus retrieval:** every causally available event remains addressable by ID, but BM25 query preprocessing, retrieval selection, and a frozen retrieval-plan artifact are not implemented.
 - **Direct versus private reasoning:** the same input and final target can be reused, but scratchpad generation, final-answer isolation, latency accounting, and scoring are not implemented.
-- **Continual Qwen versus closed ICL:** source examples are reusable, but training, provider adapters, and matched scoring are not implemented.
-- **Open- and closed-model scaling:** model-specific tokenization is supported in principle, but the present packer selects the retained event suffix under each tokenizer. Before cross-model comparison, freeze a tokenizer-independent context plan containing the exact event IDs and serialized text so every model receives the same information.
+- **Continual Qwen versus closed ICL:** the Qwen LoRA path is mechanically implemented, but prequential updates, the frontier-model adapter, and matched per-example scoring are not implemented.
+- **Open- and closed-model scaling:** model-specific tokenization is supported in principle, but the current Qwen packer selects the retained suffix. Before cross-model comparison, materialize that canonical suffix once as a shared semantic context plan containing the exact event IDs, exact serialized text, any explicit oldest-event tail, and exact query. Every model receives that same semantic plan; if it does not fit one runtime, shorten it once for every condition and refreeze it before scoring.
 
-No ablation requires changing the collector schema. The principal missing layer is a prospective experiment harness that freezes day boundaries, context/retrieval plans, model lineage, decoding, target resolution, scores, latency, and cost. Phase 2 will require a new conversion admitting displayed model proposals into the appropriate history; Phase 3 will additionally need stronger resource/world-state identity, which is not a Phase 1 collection blocker.
+Every scored example must retain its individual pre-update NLL when exposed by the model interface. Block reports distinguish macro example-average NLL, in which every WRITE contributes equally, from micro target-token NLL, in which longer targets contribute more loss-bearing tokens. The completed Tinker overfit reports the latter as its headline aggregate; the two statistics must not be conflated.
+
+No ablation requires changing the collector schema. The principal missing layers for the foundational test are deterministic multi-session corpus assembly and an experiment harness that freezes chronological block boundaries, the shared semantic context plan, model lineage, decoding, target resolution, per-example scores and samples, latency, and cost. Daily boundaries, retrieval plans, and replay belong to later prospective or ablation work. Phase 2 will require a new conversion admitting displayed model proposals into the appropriate history; Phase 3 will additionally need stronger resource/world-state identity, which is not a Phase 1 collection blocker.
+
+## Multi-session corpus assembly
+
+The current causal compiler consumes one finalized reduction and verifies one
+session at a time. Experiment 1 requires a deterministic post-compile corpus
+assembler; concatenating `examples.jsonl` files without an explicit manifest is
+not sufficient.
+
+“Same type” means compatible under the same effective data and learning
+contract, not the same application mix, project, or subject matter. The corpus
+compatibility record separates:
+
+- collection/semantic compatibility: collector semantics and configuration,
+  raw schema, completeness bounds, delays, crops, relevant allowlists and
+  exclusions, reducer version, and causal compiler/eligibility version;
+- experiment compatibility: history serializer, conditioning-query schema,
+  target/authorship contract, context-gap policy, tokenizer/packing contract,
+  and loss-mask contract.
+
+The immutable corpus manifest records ordered session IDs, source and artifact
+hashes, start/end times, compatibility fingerprints, chronological block
+boundaries, reducer/compiler/context-plan versions, and every boundary's
+coverage status: `continuous`, `interrupted`, or `unknown`. Original event IDs
+and per-session lineage remain unchanged.
+
+All preceding compatible sessions may enter cumulative training after their
+blocks have been scored. An unobserved gap makes context incomplete but does not
+make earlier events causally invalid. The initial context policy therefore
+retains earlier eligible events behind an explicit structural gap marker rather
+than either pretending continuous coverage or automatically resetting history.
+The marker is serialization metadata, not a third semantic event. Hard reset
+versus gap-aware carryover is a later versioned ablation.
 
 ## Remaining requirements
 
@@ -695,20 +732,28 @@ delays/crop configuration as the candidate baseline.
 4. Manually sample the temporal trace against the actual work and record Phase 1's fidelity categories: missing events, temporal-ordering errors, incorrect content inclusion, authorship errors, write-boundary disagreement, destination ambiguity, and future leakage.
 5. Quantify reducer unresolved reasons plus target/context exclusions. Fix only recurrent material errors demonstrated by that trace; otherwise freeze the collector/reducer/compiler versions.
 
-### Before initial offline training
+### Before the foundational behavioral experiment
 
-1. Pass the ordinary-work reconstruction audit above and freeze an immutable dataset version.
-2. Retain the now-passing exhaustive causal-shift check, then separately verify the authenticated server tokenizer against the frozen local tokenizer without submitting the dataset.
-3. With explicit authorization, run a mechanical overfit of the immutable pack in a dedicated private project, saving sampler and optimizer-state checkpoints and checking loss, reload, exact `<|paste|>` generation, and EOS token termination.
-4. Run the initial Phase 1 experiment on eligible writes from the combined Obsidian, Chrome/browser, Codex, and VS Code stream, reporting aggregate and per-application results before the longer prospective continual experiment.
+The exhaustive causal-shift check, authenticated server-tokenizer comparison,
+and bounded Tinker LoRA overfit—including exact `<|paste|>`/EOS generation and
+sampler/optimizer-state reload—have passed. They remain mechanical gates rather
+than behavioral evidence.
+
+1. Pass the ordinary-work reconstruction audit above on substantially more interleaved sessions.
+2. Assemble compatible sessions through the immutable corpus manifest, preserving their lineage and explicit continuous/interrupted/unknown coverage boundaries.
+3. Freeze the corpus version, chronological block boundaries, eligible target set, and one shared semantic context plan—including structural gap markers—for every example.
+4. Implement the three-condition per-example scoring and sampling harness for frozen base Qwen3.5-9B, frozen `gpt-5.6-sol` at `xhigh`, and the current personalized Qwen checkpoint.
+5. Extend the validated Tinker LoRA path into the prequential runner: score the complete block first, train only afterward on cumulative eligible examples through that block, save sampler and optimizer state, and use the result only for the following block.
+6. Record individual predictions and available NLLs plus macro, micro, chronological, aggregate, cost, latency, and per-application results before considering the later prospective continual experiment.
 
 ### Before live prediction
 
 1. Capture destination, cursor context, and clipboard state when focus arrives.
 2. Refresh that query when cursor or selection changes.
 3. Measure drift between focus-time state and pre-mutation training state.
-4. Render action markers such as `<|paste|>` as UI actions rather than literal text.
-5. Preserve displayed model predictions as raw, Phase 1-excluded events.
+4. Preserve the exact focus-time context plan and model input used for each displayed prediction; evaluate it against the later eligible write without substituting the pre-mutation query.
+5. Render action markers such as `<|paste|>` as UI actions rather than literal text.
+6. Preserve displayed model predictions as raw, Phase 1-excluded events.
 
 ## Important non-blocking fidelity improvements
 
@@ -722,10 +767,33 @@ delays/crop configuration as the candidate baseline.
 
 ## Next step
 
-After the delayed provider-billing audit, retain the now-passing mechanical
+With the provider charge audited at `$14.37`, retain the now-passing mechanical
 harness and collect substantially more ordinary work through the frozen
-collector/reducer/compiler pipeline. Reserve later chronological sessions as
-validation data, score them before training on them, and then run the initial
-Phase 1 comparison between the base model, the trained full-history model, and
-the matched reduced/no-history control. Do not tune the data conversion on the
-held-out sessions or interpret Run 8's memorization as a behavioral result.
+collector/reducer/compiler pipeline. Reduce and audit each session independently,
+then assemble compatible sessions into one immutable chronological corpus with
+explicit coverage-gap boundaries. Evaluate that corpus prequentially rather than
+with a random or permanently held-out train/validation/test split. For each
+chronological block, use only the model trained through the preceding block to
+score every eligible example and preserve its pre-update loss and samples; only
+after the complete block has been scored may its examples enter the next model
+update. The initial implementation uses full cumulative eligible examples;
+replay begins only when that becomes impractical.
+
+The initial capacity check runs frozen base Qwen3.5-9B, frozen
+`gpt-5.6-sol` at `xhigh` using ICL, and the current personalized Qwen3.5-9B over
+the same shared semantic context plan. Record every prediction and available
+per-example NLL, macro example-average and micro target-token aggregates, the
+chronological trace, latency, cost, and per-application results. Reduced-history,
+no-history, and broader ablation controls follow only after this three-condition
+result is interpretable. Any change to conversion, context construction, or
+training starts a new versioned lineage rather than retroactively turning
+already observed data into a prospective result. Run 8's memorization remains a
+mechanical result, not a behavioral one.
+
+Keep the initial task content-only given causal history plus known destination,
+semantic cursor context, and clipboard state. Idle-triggered sampling,
+destination or cursor-location prediction, and learned proactivity are deferred
+until the content predictor has been evaluated and focus-triggered use supplies
+evidence that those additional capabilities are necessary. Before live
+prediction, complete the focus-time capture and drift measurements listed
+above; they do not block the offline capacity comparison.
