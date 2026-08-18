@@ -42,11 +42,16 @@ def main() -> int:
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--tinker-project-id", required=True)
     parser.add_argument("--epochs-per-update", type=int, default=1)
-    parser.add_argument("--generation-token-ceiling", type=int, default=512)
+    parser.add_argument("--qwen-generation-token-ceiling", type=int, default=512)
+    parser.add_argument("--openai-max-output-tokens", type=int, default=8192)
     arguments = parser.parse_args()
     if arguments.output.exists():
         raise TrainingContractError(f"output already exists: {arguments.output}")
-    if arguments.epochs_per_update <= 0 or arguments.generation_token_ceiling <= 0:
+    if (
+        arguments.epochs_per_update <= 0
+        or arguments.qwen_generation_token_ceiling <= 0
+        or arguments.openai_max_output_tokens <= 0
+    ):
         raise TrainingContractError("epochs and generation ceiling must be positive")
 
     corpus_path = arguments.corpus.expanduser().resolve()
@@ -91,7 +96,7 @@ def main() -> int:
     tinker_generation_prefill = 2 * qwen_model_input_tokens
     tinker_prefill = tinker_nll_prefill + tinker_generation_prefill
     tinker_sample_ceiling = (
-        2 * len(examples) * arguments.generation_token_ceiling
+        2 * len(examples) * arguments.qwen_generation_token_ceiling
     )
     tinker_cost = {
         "trainingUSD": money(total_training_positions, TINKER_TRAIN_PER_MILLION),
@@ -129,7 +134,7 @@ def main() -> int:
         semantic_utf8_bytes += len(semantic_input.encode())
         semantic_characters += len(semantic_input)
 
-    openai_output_ceiling = len(examples) * arguments.generation_token_ceiling
+    openai_output_ceiling = len(examples) * arguments.openai_max_output_tokens
     openai_proxy_input_tokens = qwen_model_input_tokens
     openai_proxy_cost = money(openai_proxy_input_tokens, OPENAI_INPUT_PER_MILLION)
     openai_output_cost = money(openai_output_ceiling, OPENAI_OUTPUT_PER_MILLION)
@@ -154,7 +159,12 @@ def main() -> int:
             "blocks": len(block_rows),
             "arms": ["frozen_qwen", "frozen_gpt_5.6_sol_xhigh", "personalized_qwen"],
             "taskInstruction": packed.manifest["packing"]["taskInstruction"],
-            "generationTokenCeilingPerExample": arguments.generation_token_ceiling,
+            "qwenGenerationTokenCeilingPerExample": (
+                arguments.qwen_generation_token_ceiling
+            ),
+            "openAIMaxOutputTokensPerExampleIncludingReasoning": (
+                arguments.openai_max_output_tokens
+            ),
             "scoreCompleteBlockBeforeUpdate": True,
             "personalizedUpdatePolicy": "warm_start_then_train_full_cumulative_corpus",
             "updates": update_plans,
