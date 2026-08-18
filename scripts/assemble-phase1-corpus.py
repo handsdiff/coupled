@@ -14,8 +14,14 @@ def main() -> int:
     parser.add_argument("--input", action="append", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--block-size", type=int, default=50)
+    parser.add_argument("--privacy-policy", type=Path)
     arguments = parser.parse_args()
-    manifest = assemble(arguments.input, arguments.output.expanduser().resolve(), arguments.block_size)
+    manifest = assemble(
+        arguments.input,
+        arguments.output.expanduser().resolve(),
+        arguments.block_size,
+        arguments.privacy_policy,
+    )
     print(
         f"Assembled {manifest['counts']['examples']} examples from "
         f"{manifest['counts']['sessions']} sessions into {arguments.output}"

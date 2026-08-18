@@ -691,7 +691,7 @@ chronological-block and cross-model scoring harness, not basic remote training:
 - **Sliding window versus retrieval:** every causally available event remains addressable by ID, but BM25 query preprocessing, retrieval selection, and a frozen retrieval-plan artifact are not implemented.
 - **Direct versus private reasoning:** the same input and final target can be reused, but scratchpad generation, final-answer isolation, latency accounting, and scoring are not implemented.
 - **Continual Qwen versus closed ICL:** the Qwen LoRA path and provider-neutral prequential protocol rehearsal are mechanically implemented, but the paid personalized-Qwen block adapter and frontier-model adapter are not yet authorized or executed.
-- **Open- and closed-model scaling:** packer v5 freezes one shared semantic context plan containing the retained block IDs, any exact oldest-block rewrite, exact query digest, and full semantic-input digest. Every arm must reconstruct this same plan; no model tokenizer may select extra history.
+- **Open- and closed-model scaling:** packer v7 freezes one shared semantic context plan containing the retained block IDs, any exact oldest-block rewrite, exact query digest, full semantic-input digest, paste-action instruction, and privacy-redacted context blocks. Every arm must reconstruct this same plan; no model tokenizer may select extra history.
 
 Every scored example must retain its individual pre-update NLL when exposed by the model interface. Block reports distinguish macro example-average NLL, in which every WRITE contributes equally, from micro target-token NLL, in which longer targets contribute more loss-bearing tokens. The completed Tinker overfit reports the latter as its headline aggregate; the two statistics must not be conflated.
 
@@ -700,7 +700,7 @@ No ablation requires changing the collector schema. Deterministic multi-session 
 ## Multi-session corpus assembly
 
 The causal compiler still verifies one finalized session at a time. The
-post-compile `phase1-corpus-v1` assembler combines compatible outputs without
+post-compile `phase1-corpus-v2` assembler combines compatible outputs without
 rewriting stable event or example IDs; concatenating `examples.jsonl` files is
 not treated as valid assembly.
 
@@ -729,23 +729,28 @@ than either pretending continuous coverage or automatically resetting history.
 The marker is serialization metadata, not a third semantic event. Hard reset
 versus gap-aware carryover is a later versioned ablation.
 
-The first assembled corpus contains Run 8 followed by the August 18 session:
-28 + 172 = 200 eligible examples, split into four chronological blocks of 50.
-It retains 837 semantic READ/WRITE events plus one structural `unknown` coverage
-gap. Repeated assembly is byte-identical. Packer v6 creates the common 32K
-semantic context plan and packs all 200 targets with 24 grounded paste actions;
-the corpus and packed audits pass. The shared plan preserves one identical
-left-edge task instruction—predict the exact next human WRITE completion and
-output only that completion—inside the 32K budget for every arm. This prevents
-the personalized model from being the only condition taught an otherwise
-unstated serialization convention.
+The first assembled corpus contains Run 8 followed by the August 18 session.
+Before privacy filtering it has 28 + 172 = 200 eligible examples. Three private
+form fields span five WRITE bursts; a versioned privacy policy excludes those
+five targets and replaces their later model-facing history with an explicit
+redacted WRITE marker while leaving local semantic evidence unchanged. The
+result is 195 examples in chronological blocks of 50, 50, 50, and 45. It retains
+837 semantic READ/WRITE events plus one structural `unknown` coverage gap.
+Repeated assembly is byte-identical. Packer v7 creates the common 32K semantic
+context plan and packs all 195 targets with 23 grounded paste actions; the
+corpus and packed audits pass. The shared plan preserves one identical left-edge
+task instruction—predict the exact next human WRITE completion, represent every
+paste action as literal `<|paste|>` rather than its payload, and output only that
+completion—inside the 32K budget for every arm. This prevents the personalized
+model from being the only condition taught an otherwise unstated serialization
+convention.
 
-The `phase1-prequential-v1` mock backend rehearses 600 scores and four updates
+The `phase1-prequential-v1` mock backend rehearses 585 scores and four updates
 without a model, network, authentication, or cost. It proves each complete block
 is scored before update and records the chosen initial exposure policy explicitly:
 warm-start the prior checkpoint and train one epoch over the full cumulative
-corpus. For four 50-example blocks this means 2,782 loss-bearing target-token
-occurrences become 7,298 presentations across updates. This is an exposure
+corpus. Across the four blocks, 2,748 loss-bearing target-token occurrences
+become 7,264 presentations across updates. This is an exposure
 choice recorded for later comparison, not additional unique human data.
 
 ## Remaining requirements
@@ -768,8 +773,8 @@ and bounded Tinker LoRA overfit—including exact `<|paste|>`/EOS generation and
 sampler/optimizer-state reload—have passed. They remain mechanical gates rather
 than behavioral evidence.
 
-1. Freeze the canonical 200-example corpus and shared 32K semantic context plans from the two audited sessions.
-2. Preflight the exact Tinker and OpenAI operations, model identities, decoding, projected token use, privacy boundaries, and hard cost ceilings without transmitting data.
+1. Freeze the canonical 195-example privacy-filtered corpus and shared 32K semantic context plans from the two audited sessions.
+2. Preflight the exact Tinker and subscription-backed LiteLLM Responses operations, model identities, decoding, projected token use, privacy boundaries, and hard cost ceilings without transmitting personal data.
 3. After separate authorization, score each block with frozen base Qwen, frozen `gpt-5.6-sol` at `xhigh`, and the current personalized checkpoint using the same context plan.
 4. Train the personalized Qwen only after complete block scoring, save sampler and optimizer state, and use each result only for the following block.
 5. Record individual predictions and available NLLs plus macro, micro, chronological, aggregate, cost, latency, exposure, and per-application results before considering the later prospective continual experiment.
@@ -797,8 +802,9 @@ than behavioral evidence.
 
 With the prior mechanical provider charge audited at `$14.37`, retain that
 memorization result as a harness gate. The immediate next gate is a no-data-transfer
-provider preflight for the new 200-example, four-block corpus. It must calculate
-exact Tinker training/scoring positions and OpenAI input/output ceilings, pin
+provider preflight for the new 195-example, four-block corpus. It must calculate
+exact Tinker training/scoring positions and verify the subscription-backed
+LiteLLM route, pin
 model and project identities, and produce an immutable reviewed plan before any
 paid call. Evaluate the corpus prequentially rather than with a random or
 permanently held-out train/validation/test split. For each
@@ -819,15 +825,21 @@ training starts a new versioned lineage rather than retroactively turning
 already observed data into a prospective result. Run 8's memorization remains a
 mechanical result, not a behavioral one.
 
-The local provider plan calculates 14,583,176 cumulative Tinker training
-positions, 24,410,468 Qwen scoring/generation prefill tokens, and a `$38.854671`
-Tinker projection including a `$1` checkpoint reserve. The `gpt-5.6-sol` arm has
-6,101,226 Qwen-token proxy input tokens. With an 8,192-token per-example output
-ceiling that includes `xhigh` reasoning, its proxy projection is `$79.658130`;
-because that is not OpenAI billing tokenization, the tokenizer-independent UTF-8
-byte ceiling is `$173.837200`. No credential was read and no provider or personal
-data was contacted. A hard combined ceiling remains intentionally unfrozen until
-an authenticated metadata/token-count preflight and explicit review.
+The local provider plan calculates 14,423,310 cumulative Tinker training
+positions and a `$38.180924` Tinker projection including a `$1` checkpoint
+reserve. The frontier arm is configured as a direct Responses request through a
+loopback LiteLLM proxy using the ChatGPT-subscription route
+`chatgpt/gpt-5.6-sol` at `xhigh`; it must never fall back to an OpenAI API key.
+This route draws from the ChatGPT/Codex subscription usage pool rather than API
+token billing. LiteLLM documents that subscription requests strip token-limit
+fields, so the former 8,192-token API ceiling is not enforceable on this
+transport. LiteLLM 1.97.0 is installed in an ignored repository-local virtual
+environment. The loopback-only request contract and mocked response parser pass;
+the client sends no token-limit field or metadata and cannot target a nonlocal
+URL. No OAuth flow has started, provider has been contacted, or personal data
+has been transmitted. The next authorized gate is a non-personal `OK` preflight
+proving model access and reasoning support before one privacy-filtered paste
+example is sent.
 
 Keep the initial task content-only given causal history plus known destination,
 semantic cursor context, and clipboard state. Idle-triggered sampling,

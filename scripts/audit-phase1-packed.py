@@ -33,15 +33,18 @@ def main() -> int:
     directory = arguments.dataset.expanduser().resolve()
     manifest = json.loads((directory / "packing.json").read_text(encoding="utf-8"))
     if manifest.get("schemaVersion") != 4 or manifest.get("packerVersion") not in {
-        "phase1-token-pack-v4", "phase1-token-pack-v5", "phase1-token-pack-v6"
+        "phase1-token-pack-v4", "phase1-token-pack-v5", "phase1-token-pack-v6",
+        "phase1-token-pack-v7",
     }:
-        raise ValueError("auditor requires phase1-token-pack-v4, v5, or v6")
+        raise ValueError("auditor requires phase1-token-pack-v4, v5, v6, or v7")
     packed_path = directory / "packed-examples.jsonl"
     expected = manifest["artifactDigestsSHA256"]["packed-examples.jsonl"]
     if sha256(packed_path) != expected:
         raise ValueError("packed-examples.jsonl digest does not match manifest")
     context_plans: dict[str, dict] = {}
-    if manifest["packerVersion"] in {"phase1-token-pack-v5", "phase1-token-pack-v6"}:
+    if manifest["packerVersion"] in {
+        "phase1-token-pack-v5", "phase1-token-pack-v6", "phase1-token-pack-v7"
+    }:
         plans_path = directory / "context-plans.jsonl"
         expected_plans = manifest["artifactDigestsSHA256"].get("context-plans.jsonl")
         if not expected_plans or sha256(plans_path) != expected_plans:
@@ -79,7 +82,7 @@ def main() -> int:
     sequence_contract = manifest.get("packing", {}).get("sequenceLengthContract", {})
     expected_budget_scope = (
         "task_instruction_plus_history_plus_conditioning_query"
-        if manifest["packerVersion"] == "phase1-token-pack-v6"
+        if manifest["packerVersion"] in {"phase1-token-pack-v6", "phase1-token-pack-v7"}
         else "history_plus_conditioning_query_only"
     )
     if not (
@@ -129,7 +132,7 @@ def main() -> int:
                 raise ValueError(f"line {line_number}: right-edge query was truncated")
             if history_count + query_count + instruction_count != input_count:
                 raise ValueError(f"line {line_number}: instruction/history/query token counts disagree")
-            if manifest["packerVersion"] == "phase1-token-pack-v6":
+            if manifest["packerVersion"] in {"phase1-token-pack-v6", "phase1-token-pack-v7"}:
                 instruction_ids = inputs[:instruction_count]
                 if (
                     instruction_count <= 0

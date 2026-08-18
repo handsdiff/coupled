@@ -13,7 +13,7 @@ from phase1_experiment import validate_inputs
 from phase1_training_contract import TrainingContractError, sha256
 
 
-PLAN_VERSION = "phase1-provider-plan-v1"
+PLAN_VERSION = "phase1-provider-plan-v2"
 QWEN_MODEL = "Qwen/Qwen3.5-9B-Base"
 OPENAI_MODEL = "gpt-5.6-sol"
 OPENAI_REASONING_EFFORT = "xhigh"
@@ -44,6 +44,11 @@ def main() -> int:
     parser.add_argument("--epochs-per-update", type=int, default=1)
     parser.add_argument("--qwen-generation-token-ceiling", type=int, default=512)
     parser.add_argument("--openai-max-output-tokens", type=int, default=8192)
+    parser.add_argument(
+        "--frontier-transport",
+        choices=("responses_api", "litellm_chatgpt_subscription"),
+        default="responses_api",
+    )
     arguments = parser.parse_args()
     if arguments.output.exists():
         raise TrainingContractError(f"output already exists: {arguments.output}")
@@ -142,6 +147,66 @@ def main() -> int:
     # for ordinary text tokenization. It is a safety ceiling, not an estimate.
     openai_byte_bound_cost = money(semantic_utf8_bytes, OPENAI_INPUT_PER_MILLION)
 
+    frontier_arm = (
+        "litellm_chatgpt_subscription_gpt_5.6_sol_xhigh"
+        if arguments.frontier_transport == "litellm_chatgpt_subscription"
+        else "responses_api_gpt_5.6_sol_xhigh"
+    )
+    openai_plan = {
+        "model": OPENAI_MODEL,
+        "reasoningEffort": OPENAI_REASONING_EFFORT,
+        "transport": arguments.frontier_transport,
+        "operations": {
+            "responseCalls": len(examples),
+            "semanticInputCharacters": semantic_characters,
+            "semanticInputUTF8Bytes": semantic_utf8_bytes,
+            "qwenTokenCountProxyNotBillingAuthority": openai_proxy_input_tokens,
+            "comparableTargetNLLAvailable": False,
+        },
+        "unverifiedUntilAuthenticatedPreflight": [
+            "account model access",
+            "resolved model snapshot if exposed",
+            "actual usage-limit consumption",
+        ],
+    }
+    if arguments.frontier_transport == "responses_api":
+        openai_plan.update({
+            "billing": "separate_openai_api_billing",
+            "pricingAsOf": "2026-08-18",
+            "pricingSource": OPENAI_MODEL_URL,
+            "pricesPerMillionUSD": {
+                "input": str(OPENAI_INPUT_PER_MILLION),
+                "output": str(OPENAI_OUTPUT_PER_MILLION),
+            },
+            "projectedCostUSD": {
+                "inputUsingQwenTokenProxy": decimal_string(openai_proxy_cost),
+                "maximumOutput": decimal_string(openai_output_cost),
+                "proxyTotal": decimal_string(openai_proxy_cost + openai_output_cost),
+                "tokenizerIndependentUTF8ByteInputBound": decimal_string(openai_byte_bound_cost),
+                "byteBoundTotal": decimal_string(openai_byte_bound_cost + openai_output_cost),
+            },
+        })
+        openai_plan["operations"]["maximumOutputTokensIncludingReasoning"] = (
+            openai_output_ceiling
+        )
+    else:
+        openai_plan.update({
+            "billing": "chatgpt_subscription_shared_codex_usage_pool",
+            "providerModelRoute": "chatgpt/gpt-5.6-sol",
+            "localEndpoint": "http://127.0.0.1:4000/v1/responses",
+            "marginalAPIChargeProjectedUSD": None,
+            "transportDocumentation": "https://docs.litellm.ai/docs/providers/chatgpt",
+            "usageLimitSource": "https://help.openai.com/en/articles/11369540/",
+            "experimentalQualification": (
+                "Direct subscription-backed Responses request through a local LiteLLM proxy; "
+                "not OpenAI Platform API billing"
+            ),
+            "outputTokenCeilingEnforceableByTransport": False,
+            "tokenLimitFieldsStrippedByProvider": True,
+            "openAIAPIKeyFallbackAllowed": False,
+            "requiresNoAdditionalCreditAuthorization": True,
+        })
+
     plan = {
         "schemaVersion": 1,
         "planVersion": PLAN_VERSION,
@@ -157,7 +222,7 @@ def main() -> int:
         "protocol": {
             "examples": len(examples),
             "blocks": len(block_rows),
-            "arms": ["frozen_qwen", "frozen_gpt_5.6_sol_xhigh", "personalized_qwen"],
+            "arms": ["frozen_qwen", frontier_arm, "personalized_qwen"],
             "taskInstruction": packed.manifest["packing"]["taskInstruction"],
             "qwenGenerationTokenCeilingPerExample": (
                 arguments.qwen_generation_token_ceiling
@@ -196,37 +261,7 @@ def main() -> int:
                 "totalIncludingReserve": decimal_string(tinker_total),
             },
         },
-        "openai": {
-            "model": OPENAI_MODEL,
-            "reasoningEffort": OPENAI_REASONING_EFFORT,
-            "pricingAsOf": "2026-08-18",
-            "pricingSource": OPENAI_MODEL_URL,
-            "pricesPerMillionUSD": {
-                "input": str(OPENAI_INPUT_PER_MILLION),
-                "output": str(OPENAI_OUTPUT_PER_MILLION),
-            },
-            "operations": {
-                "responseCalls": len(examples),
-                "semanticInputCharacters": semantic_characters,
-                "semanticInputUTF8Bytes": semantic_utf8_bytes,
-                "qwenTokenCountProxyNotBillingAuthority": openai_proxy_input_tokens,
-                "maximumOutputTokensIncludingReasoning": openai_output_ceiling,
-                "comparableTargetNLLAvailable": False,
-            },
-            "projectedCostUSD": {
-                "inputUsingQwenTokenProxy": decimal_string(openai_proxy_cost),
-                "maximumOutput": decimal_string(openai_output_cost),
-                "proxyTotal": decimal_string(openai_proxy_cost + openai_output_cost),
-                "tokenizerIndependentUTF8ByteInputBound": decimal_string(openai_byte_bound_cost),
-                "byteBoundTotal": decimal_string(openai_byte_bound_cost + openai_output_cost),
-            },
-            "unverifiedUntilAuthenticatedPreflight": [
-                "account model access",
-                "exact server input token count",
-                "resolved model snapshot if exposed",
-                "actual cache behavior",
-            ],
-        },
+        "openai": openai_plan,
         "authorizationBoundary": {
             "thisCommandReadsCredentials": False,
             "thisCommandContactsProviders": False,
@@ -234,6 +269,7 @@ def main() -> int:
             "separateApprovalRequiredForAuthenticatedMetadataCalls": True,
             "separateApprovalRequiredForAnyDataBearingCall": True,
             "hardCostCeilingFrozen": False,
+            "chatGPTSubscriptionCannotFundResponsesAPI": True,
         },
     }
     arguments.output.parent.mkdir(parents=True, exist_ok=True)
@@ -243,11 +279,17 @@ def main() -> int:
     )
     print(f"Wrote local provider plan to {arguments.output}")
     print(f"Tinker projected total including reserve: ${decimal_string(tinker_total)}")
-    print(
-        "OpenAI proxy / byte-bound totals: "
-        f"${decimal_string(openai_proxy_cost + openai_output_cost)} / "
-        f"${decimal_string(openai_byte_bound_cost + openai_output_cost)}"
-    )
+    if arguments.frontier_transport == "responses_api":
+        print(
+            "OpenAI proxy / byte-bound totals: "
+            f"${decimal_string(openai_proxy_cost + openai_output_cost)} / "
+            f"${decimal_string(openai_byte_bound_cost + openai_output_cost)}"
+        )
+    else:
+        print(
+            "OpenAI frontier transport: ChatGPT-subscription LiteLLM Responses; "
+            "no Responses API charge is projected."
+        )
     print("No authentication, provider call, or personal-data transfer occurred.")
     return 0
 

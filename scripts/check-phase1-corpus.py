@@ -95,7 +95,8 @@ def main() -> int:
         audit(output_a)
         for name in (
             "corpus.json", "dataset.json", "events.jsonl", "context-blocks.jsonl",
-            "examples.jsonl", "gaps.jsonl", "target-exclusions.jsonl",
+            "examples.jsonl", "gaps.jsonl", "privacy-policy.json",
+            "target-exclusions.jsonl",
             "context-exclusions.jsonl", "rejections.jsonl",
         ):
             if sha256(output_a / name) != sha256(output_b / name):
@@ -117,6 +118,40 @@ def main() -> int:
                 raise
         else:
             raise AssertionError("corpus audit accepted a tampered artifact")
+
+        privacy_policy = root / "privacy.json"
+        write_json(privacy_policy, {
+            "schemaVersion": 1,
+            "policyVersion": "phase1-context-privacy-v1",
+            "events": [{
+                "sourceEventID": "event-1",
+                "reason": "private_form_response",
+                "groupID": "fixture-form",
+            }],
+        })
+        private_output = root / "corpus-private"
+        assemble(
+            [first, second], private_output, block_size=1,
+            privacy_policy_path=privacy_policy,
+        )
+        private_manifest = audit(private_output)
+        private_events = [
+            json.loads(line)
+            for line in (private_output / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+        private_context = (private_output / "context-blocks.jsonl").read_text(encoding="utf-8")
+        private_examples = (private_output / "examples.jsonl").read_text(encoding="utf-8")
+        private_source = next(
+            event for event in private_events if event["sourceEventID"] == "event-1"
+        )
+        if json.loads(private_source["serialized"])["authorshipSegments"][0]["content"] != "w1":
+            raise AssertionError("privacy policy modified semantic evidence")
+        if '"content":"w1"' in private_context or '"content":"w1"' in private_examples:
+            raise AssertionError("private content survived in model-facing artifacts")
+        if "sensitive_content_redacted" not in private_context:
+            raise AssertionError("private context lacks an explicit redaction marker")
+        if private_manifest["counts"]["examples"] != 1:
+            raise AssertionError("private target remained eligible")
     print("Phase 1 corpus checks passed")
     return 0
 

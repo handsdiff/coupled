@@ -1,0 +1,8 @@
+model_list:
+  - model_name: chatgpt/gpt-5.6-sol
+    model_info:
+      mode: responses
+    litellm_params:
+      model: chatgpt/gpt-5.6-sol
+# No fallback is configured. Provider failure must stop the experiment rather
+# than silently spend OpenAI API credits or switch models.

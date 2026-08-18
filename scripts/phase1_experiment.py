@@ -154,6 +154,13 @@ def validate_inputs(
         "dataset.json": sha256(corpus_directory / "dataset.json"),
         "examples.jsonl": sha256(corpus_directory / "examples.jsonl"),
         "events.jsonl": sha256(corpus_directory / "events.jsonl"),
+        **(
+            {
+                "context-blocks.jsonl": sha256(corpus_directory / "context-blocks.jsonl"),
+                "privacy-policy.json": sha256(corpus_directory / "privacy-policy.json"),
+            }
+            if packed.manifest.get("packerVersion") == "phase1-token-pack-v7" else {}
+        ),
     }
     if source_digests != expected_source:
         raise TrainingContractError("packed source digests do not match the corpus")

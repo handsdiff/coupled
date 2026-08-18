@@ -17,9 +17,10 @@ from typing import Any
 
 
 IGNORE_LABEL = -100
-PACKER_VERSION = "phase1-token-pack-v6"
+PACKER_VERSION = "phase1-token-pack-v7"
 SUPPORTED_PACKER_VERSIONS = {
-    "phase1-token-pack-v4", "phase1-token-pack-v5", PACKER_VERSION
+    "phase1-token-pack-v4", "phase1-token-pack-v5", "phase1-token-pack-v6",
+    PACKER_VERSION,
 }
 PACK_SCHEMA_VERSION = 4
 
@@ -141,7 +142,7 @@ def validate_packed_dataset(directory: Path) -> PackedDataset:
         or manifest.get("packerVersion") not in SUPPORTED_PACKER_VERSIONS
     ):
         raise TrainingContractError(
-            "training contract requires phase1-token-pack-v4, v5, or v6 "
+            "training contract requires phase1-token-pack-v4, v5, v6, or v7 "
             f"schema {PACK_SCHEMA_VERSION}"
         )
     expected_digest = manifest.get("artifactDigestsSHA256", {}).get(

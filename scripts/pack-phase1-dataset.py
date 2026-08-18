@@ -36,12 +36,14 @@ except ImportError as error:
     ) from error
 
 
-PACKER_VERSION = "phase1-token-pack-v6"
+PACKER_VERSION = "phase1-token-pack-v7"
 DEFAULT_TOKENIZER = "Qwen/Qwen3.5-9B-Base"
 DEFAULT_PASTE_MARKER = "<|paste|>"
 DEFAULT_TASK_INSTRUCTION = (
     "Predict the exact next human WRITE completion from the causal READ/WRITE "
-    "history and current conditioning state. Output only the completion."
+    "history and current conditioning state. Represent every paste action with "
+    "the literal string <|paste|> instead of reproducing the pasted payload. "
+    "Output only the completion."
 )
 CONTEXT_TRUNCATION_MARKER = "[...older event content truncated...]"
 IGNORE_LABEL = -100
@@ -124,11 +126,29 @@ def require_compiled_dataset(
             raise ValueError("context-blocks.jsonl requires a multi-session corpus manifest")
         for event_id, event in events_by_id.items():
             block = context_by_id.get(event_id)
-            if block is None or block.get("serialized") != event.get("serialized"):
-                raise ValueError(f"semantic context block disagrees for {event_id}")
+            if block is None:
+                raise ValueError(f"semantic context block is missing for {event_id}")
+            privacy = block.get("privacyRedaction")
+            if privacy is None:
+                if block.get("serialized") != event.get("serialized"):
+                    raise ValueError(f"semantic context block disagrees for {event_id}")
+            elif not (
+                block.get("serialized")
+                == '{"kind":"write","privacy":"sensitive_content_redacted"}'
+                and isinstance(privacy.get("sourceSerializedSHA256"), str)
+                and hashlib.sha256(event["serialized"].encode()).hexdigest()
+                == privacy["sourceSerializedSHA256"]
+            ):
+                raise ValueError(f"semantic privacy redaction disagrees for {event_id}")
         # Target lookup and context lookup share one namespace. Coverage-gap
         # blocks can appear only in context and therefore need no audit form.
-        events_by_id = {**context_by_id, **events_by_id}
+        events_by_id = {
+            **context_by_id,
+            **{
+                event_id: {**event, "serialized": context_by_id[event_id]["serialized"]}
+                for event_id, event in events_by_id.items()
+            },
+        }
     return manifest, examples, events_by_id
 
 
@@ -771,6 +791,13 @@ def main() -> int:
                     "dataset.json": sha256(source / "dataset.json"),
                     "examples.jsonl": sha256(source / "examples.jsonl"),
                     "events.jsonl": sha256(source / "events.jsonl"),
+                    **(
+                        {
+                            "context-blocks.jsonl": sha256(source / "context-blocks.jsonl"),
+                            "privacy-policy.json": sha256(source / "privacy-policy.json"),
+                        }
+                        if (source / "context-blocks.jsonl").is_file() else {}
+                    ),
                 },
             },
             "tokenizer": {

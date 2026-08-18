@@ -12,7 +12,8 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-ASSEMBLER_VERSION = "phase1-corpus-v1"
+ASSEMBLER_VERSION = "phase1-corpus-v2"
+PRIVACY_POLICY_VERSION = "phase1-context-privacy-v1"
 
 
 def json_bytes(value: Any) -> bytes:
@@ -21,6 +22,12 @@ def json_bytes(value: Any) -> bytes:
 
 def canonical_json(value: dict[str, Any]) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+PRIVACY_REDACTION_SERIALIZED = canonical_json({
+    "kind": "write",
+    "privacy": "sensitive_content_redacted",
+})
 
 
 def sha256(path: Path) -> str:
@@ -144,7 +151,43 @@ def load_session(path: Path) -> dict[str, Any]:
     }
 
 
-def assemble(input_paths: list[Path], output: Path, block_size: int = 50) -> dict[str, Any]:
+def load_privacy_policy(path: Path | None) -> dict[str, dict[str, str]]:
+    if path is None:
+        return {}
+    value = load_json(path.expanduser().resolve())
+    if not (
+        value.get("schemaVersion") == 1
+        and value.get("policyVersion") == PRIVACY_POLICY_VERSION
+        and isinstance(value.get("events"), list)
+    ):
+        raise ValueError(f"{path}: unsupported privacy policy")
+    result: dict[str, dict[str, str]] = {}
+    for ordinal, entry in enumerate(value["events"]):
+        if not isinstance(entry, dict):
+            raise ValueError(f"{path}: privacy event {ordinal} is not an object")
+        event_id = entry.get("sourceEventID")
+        reason = entry.get("reason")
+        group_id = entry.get("groupID")
+        if not (
+            isinstance(event_id, str) and event_id
+            and isinstance(reason, str) and reason
+            and (group_id is None or isinstance(group_id, str))
+            and event_id not in result
+        ):
+            raise ValueError(f"{path}: privacy event {ordinal} is invalid or duplicated")
+        result[event_id] = {
+            "reason": reason,
+            **({"groupID": group_id} if group_id is not None else {}),
+        }
+    return result
+
+
+def assemble(
+    input_paths: list[Path],
+    output: Path,
+    block_size: int = 50,
+    privacy_policy_path: Path | None = None,
+) -> dict[str, Any]:
     if len(input_paths) < 1:
         raise ValueError("at least one --input is required")
     if block_size <= 0:
@@ -152,6 +195,7 @@ def assemble(input_paths: list[Path], output: Path, block_size: int = 50) -> dic
     if output.exists():
         raise ValueError(f"output already exists: {output}; use a fresh directory")
 
+    privacy_policy = load_privacy_policy(privacy_policy_path)
     sessions = [load_session(path.expanduser().resolve()) for path in input_paths]
     session_ids = [session["sessionID"] for session in sessions]
     if len(set(session_ids)) != len(session_ids):
@@ -180,7 +224,11 @@ def assemble(input_paths: list[Path], output: Path, block_size: int = 50) -> dic
     ]
     corpus_id = stable_id(
         "corpus_",
-        {"assemblerVersion": ASSEMBLER_VERSION, "sources": corpus_sources},
+        {
+            "assemblerVersion": ASSEMBLER_VERSION,
+            "sources": corpus_sources,
+            "privacyPolicy": privacy_policy,
+        },
     )
 
     semantic_events: list[dict[str, Any]] = []
@@ -199,14 +247,30 @@ def assemble(input_paths: list[Path], output: Path, block_size: int = 50) -> dic
             seen_event_ids.add(event_id)
             corpus_event = {**event, "corpusID": corpus_id, "sourceSessionOrdinal": index}
             semantic_events.append(corpus_event)
+            privacy = privacy_policy.get(event_id)
             block = {
                 "contextBlockID": event_id,
                 "contextBlockType": "semantic_event",
                 "sessionID": session["sessionID"],
                 "availableAt": event.get("availableAt"),
-                "serialized": event["serialized"],
+                "serialized": (
+                    PRIVACY_REDACTION_SERIALIZED if privacy is not None
+                    else event["serialized"]
+                ),
                 "sourceEventID": event_id,
             }
+            if privacy is not None:
+                block["privacyRedaction"] = {
+                    "policyVersion": PRIVACY_POLICY_VERSION,
+                    "reason": privacy["reason"],
+                    **(
+                        {"groupID": privacy["groupID"]}
+                        if "groupID" in privacy else {}
+                    ),
+                    "sourceSerializedSHA256": hashlib.sha256(
+                        event["serialized"].encode()
+                    ).hexdigest(),
+                }
             context_blocks.append(block)
             context_by_id[event_id] = block
             preceding_block_ids.append(event_id)
@@ -242,11 +306,37 @@ def assemble(input_paths: list[Path], output: Path, block_size: int = 50) -> dic
             context_by_id[gap_id] = gap
             preceding_block_ids.append(gap_id)
 
+    unknown_private_ids = set(privacy_policy) - seen_event_ids
+    if unknown_private_ids:
+        raise ValueError(
+            "privacy policy references unknown event IDs: "
+            + ", ".join(sorted(unknown_private_ids))
+        )
+    eligible_target_ids = {
+        example["targetEventID"]
+        for session in sessions
+        for example in session["examples"]
+    }
+    private_target_ids = set(privacy_policy) & eligible_target_ids
+    privacy_policy_artifact = {
+        "schemaVersion": 1,
+        "policyVersion": PRIVACY_POLICY_VERSION,
+        "events": [
+            {
+                "sourceEventID": event_id,
+                **privacy_policy[event_id],
+            }
+            for event_id in sorted(privacy_policy)
+        ],
+    }
+
     assembled_examples: list[dict[str, Any]] = []
     seen_example_ids: set[str] = set()
     for session_index, session in enumerate(sessions):
         prefix = source_prefixes[session_index]
         for source_example in session["examples"]:
+            if source_example.get("targetEventID") in privacy_policy:
+                continue
             example_id = source_example.get("exampleID")
             if not isinstance(example_id, str) or example_id in seen_example_ids:
                 raise ValueError(f"invalid or duplicate example ID: {example_id}")
@@ -307,11 +397,32 @@ def assemble(input_paths: list[Path], output: Path, block_size: int = 50) -> dic
         write_jsonl(temporary / "context-blocks.jsonl", context_blocks)
         write_jsonl(temporary / "examples.jsonl", assembled_examples)
         write_jsonl(temporary / "gaps.jsonl", gaps)
+        (temporary / "privacy-policy.json").write_bytes(
+            json_bytes(privacy_policy_artifact)
+        )
         for name in ("target-exclusions.jsonl", "context-exclusions.jsonl", "rejections.jsonl"):
             rows = []
             for ordinal, session in enumerate(sessions):
                 for row in load_jsonl(session["path"] / name):
                     rows.append({**row, "sourceSessionOrdinal": ordinal})
+            if name == "target-exclusions.jsonl":
+                event_ordinal = {
+                    event["sourceEventID"]: event["sourceSessionOrdinal"]
+                    for event in semantic_events
+                }
+                for event_id in sorted(private_target_ids):
+                    privacy = privacy_policy[event_id]
+                    rows.append({
+                        "schemaVersion": 1,
+                        "reason": "privacy_policy_excluded_target",
+                        "sourceEventID": event_id,
+                        "sourceSessionOrdinal": event_ordinal[event_id],
+                        "privacyReason": privacy["reason"],
+                        **(
+                            {"privacyGroupID": privacy["groupID"]}
+                            if "groupID" in privacy else {}
+                        ),
+                    })
             write_jsonl(temporary / name, rows)
 
         manifest = {
@@ -328,6 +439,15 @@ def assemble(input_paths: list[Path], output: Path, block_size: int = 50) -> dic
                 "betweenSessionPolicy": "explicit_unknown_coverage_gap",
                 "gapCount": len(gaps),
             },
+            "privacy": {
+                "policyVersion": PRIVACY_POLICY_VERSION,
+                "policyArtifact": "privacy-policy.json",
+                "modelFacingPolicy": "redact_context_and_exclude_target",
+                "redactionSerialized": PRIVACY_REDACTION_SERIALIZED,
+                "redactedEventCount": len(privacy_policy),
+                "excludedTargetCount": len(private_target_ids),
+                "rawAndSemanticEvidenceModified": False,
+            },
             "blocking": {
                 "policy": "fixed_chronological_example_count",
                 "blockSize": block_size,
@@ -341,7 +461,7 @@ def assemble(input_paths: list[Path], output: Path, block_size: int = 50) -> dic
                 "contextBlocks": len(context_blocks),
                 "coverageGaps": len(gaps),
                 "examples": len(assembled_examples),
-                "targetExclusions": sum(
+                "targetExclusions": len(private_target_ids) + sum(
                     session["manifest"].get("counts", {}).get("targetExclusions", 0)
                     for session in sessions
                 ),
@@ -359,6 +479,7 @@ def assemble(input_paths: list[Path], output: Path, block_size: int = 50) -> dic
             name: sha256(temporary / name)
             for name in (
                 "events.jsonl", "context-blocks.jsonl", "examples.jsonl", "gaps.jsonl",
+                "privacy-policy.json",
                 "target-exclusions.jsonl", "context-exclusions.jsonl", "rejections.jsonl",
             )
         }
@@ -378,7 +499,7 @@ def audit(directory: Path) -> dict[str, Any]:
     manifest = load_json(directory / "corpus.json")
     if not (
         manifest.get("artifactType") == "phase1_multi_session_corpus"
-        and manifest.get("assemblerVersion") == ASSEMBLER_VERSION
+        and manifest.get("assemblerVersion") in {"phase1-corpus-v1", ASSEMBLER_VERSION}
         and manifest.get("conversionVersion") == "phase1-causal-v14"
     ):
         raise ValueError("unsupported Phase 1 corpus manifest")
@@ -391,6 +512,10 @@ def audit(directory: Path) -> dict[str, Any]:
     blocks = load_jsonl(directory / "context-blocks.jsonl")
     gaps = load_jsonl(directory / "gaps.jsonl")
     examples = load_jsonl(directory / "examples.jsonl")
+    privacy_policy_artifact = (
+        load_json(directory / "privacy-policy.json")
+        if manifest.get("assemblerVersion") == ASSEMBLER_VERSION else None
+    )
     event_by_id = {event.get("sourceEventID"): event for event in events}
     block_by_id = {block.get("contextBlockID"): block for block in blocks}
     if len(event_by_id) != len(events) or None in event_by_id:
@@ -409,9 +534,23 @@ def audit(directory: Path) -> dict[str, Any]:
     }
     if set(semantic_blocks) != set(event_by_id):
         raise ValueError("semantic events and context blocks disagree")
+    redacted_count = 0
     for event_id, event in event_by_id.items():
-        if semantic_blocks[event_id].get("serialized") != event.get("serialized"):
-            raise ValueError(f"semantic serialization disagrees: {event_id}")
+        block = semantic_blocks[event_id]
+        privacy = block.get("privacyRedaction")
+        if privacy is None:
+            if block.get("serialized") != event.get("serialized"):
+                raise ValueError(f"semantic serialization disagrees: {event_id}")
+            continue
+        redacted_count += 1
+        if not (
+            block.get("serialized") == PRIVACY_REDACTION_SERIALIZED
+            and privacy.get("policyVersion") == PRIVACY_POLICY_VERSION
+            and isinstance(privacy.get("reason"), str)
+            and privacy.get("sourceSerializedSHA256")
+            == hashlib.sha256(event["serialized"].encode()).hexdigest()
+        ):
+            raise ValueError(f"privacy redaction disagrees: {event_id}")
     if {gap.get("contextBlockID") for gap in gaps} != set(gap_blocks):
         raise ValueError("coverage gaps and context blocks disagree")
 
@@ -465,4 +604,29 @@ def audit(directory: Path) -> dict[str, Any]:
     for key, value in expected_counts.items():
         if counts.get(key) != value:
             raise ValueError(f"manifest count disagrees: {key}")
+    if manifest.get("assemblerVersion") == ASSEMBLER_VERSION:
+        declared_private = {
+            entry.get("sourceEventID"): entry
+            for entry in privacy_policy_artifact.get("events", [])
+        }
+        if not (
+            manifest.get("privacy", {}).get("policyVersion") == PRIVACY_POLICY_VERSION
+            and manifest.get("privacy", {}).get("redactedEventCount") == redacted_count
+            and manifest.get("privacy", {}).get("policyArtifact") == "privacy-policy.json"
+            and set(declared_private)
+            == {
+                event_id for event_id, block in semantic_blocks.items()
+                if block.get("privacyRedaction") is not None
+            }
+        ):
+            raise ValueError("privacy manifest disagrees")
+        for event_id, entry in declared_private.items():
+            redaction = semantic_blocks[event_id]["privacyRedaction"]
+            if not (
+                entry.get("reason") == redaction.get("reason")
+                and entry.get("groupID") == redaction.get("groupID")
+            ):
+                raise ValueError(f"privacy policy lineage disagrees: {event_id}")
+    elif redacted_count:
+        raise ValueError("legacy corpus contains privacy redactions")
     return manifest
