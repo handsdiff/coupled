@@ -1402,10 +1402,37 @@ masking, 40-character/six-word eligibility, and the two user-supplied blind
 reconstructions around `2026-08-19T12:43:16.708Z` and
 `2026-08-19T19:05:05.004Z`. A second construction was byte-identical.
 
+The canonical candidate artifacts are:
+
+```text
+coupled-data/phase1-closed-episode-corpus-v2-candidate-20260819
+coupled-data/phase1-closed-episode-pack-v2-candidate-20260819
+coupled-data/phase1-closed-episode-smoke-corpus-v2-candidate-20260819
+coupled-data/phase1-closed-episode-smoke-pack-v2-candidate-20260819
+```
+
 The complete 115-example pack passes the ordinary token audit. It contains
 4,780 loss-bearing target tokens and seven grounded paste actions; EOS is added
-once by the tokenizer-specific loader. A three-example local smoke subset
-(multi-WRITE, grounded paste, and longest ordinary episode) also passes packing,
-causal-shift, mask, paste-marker, and EOS checks. A new paid Qwen smoke remains
-the final mechanical gate before rerunning the three-arm experiment; the prior
-v1 paid smoke remains useful evidence about the harness but not this v2 corpus.
+once by the tokenizer-specific loader. A three-example smoke subset contains a
+multi-WRITE episode, grounded paste, and longest ordinary episode. Its local
+packing, causal-shift, mask, paste-marker, and EOS checks pass.
+
+The paid private-project Qwen smoke also passes. Over 20 bounded epochs and 60
+optimizer steps, weighted NLL fell from `3.573993` to `0.000011` (ratio
+`0.000003105`). Exact greedy generation, EOS termination, the grounded paste
+marker, sampler checkpoint, optimizer-state reload, reload NLL parity, reload
+generation parity, and operation ceilings all passed for 3/3 examples. The
+logical provider-operation estimate is `$2.885108` before checkpoint storage;
+the billing API was still in its documented usage-lag state at report close.
+
+Smoke artifacts:
+
+```text
+coupled-data/phase1-closed-episode-smoke-tinker-tokenizer-preflight-v2.json
+coupled-data/phase1-closed-episode-smoke-tinker-plan-v2.json
+coupled-data/phase1-closed-episode-smoke-tinker-run-v2.json
+```
+
+This closes the mechanical gate for episode v2. The next paid model operation
+should be the regenerated three-arm score-before-update experiment, not another
+memorization smoke.

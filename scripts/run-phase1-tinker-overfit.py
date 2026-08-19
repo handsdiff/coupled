@@ -629,7 +629,10 @@ def run() -> int:
     }
     journal.stage("authenticated_capability_gate", "passed")
 
-    print("Computing base-model weighted NLL for 28 examples...", flush=True)
+    print(
+        f"Computing base-model weighted NLL for {len(dataset.rows)} examples...",
+        flush=True,
+    )
     base_sampler = service_client.create_sampling_client(base_model=BASE_MODEL)
     baseline = evaluate_nll(base_sampler, dataset.rows, budget, tinker)
     report["evaluations"]["baseline"] = baseline
@@ -747,7 +750,10 @@ def run() -> int:
         flush=True,
     )
 
-    print("Running exact greedy generation on all 28 targets...", flush=True)
+    print(
+        f"Running exact greedy generation on all {len(dataset.rows)} targets...",
+        flush=True,
+    )
     trained_generation = evaluate_generation(
         trained_sampler,
         dataset.rows,
