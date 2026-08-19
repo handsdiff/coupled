@@ -81,7 +81,7 @@ Use a new output directory for every session:
 ```sh
 ./scripts/coupled events \
   --output ./coupled-data/my-first-session \
-  --read-delay 3 \
+  --read-delay 1 \
   --write-delay 3 \
   --pause-file ./.coupled-pause
 ```
@@ -297,7 +297,7 @@ and application-generated text that should not receive loss.
 ## Common options
 
 ```text
---read-delay 3
+--read-delay 1
     Quiet period before a READ candidate settles.
 
 --write-delay 3

@@ -5,7 +5,7 @@ struct Configuration {
     let sessionStartedAt: String
     var command = "collect"
     var outputDirectory: String
-    var readDelay: TimeInterval = 3.0
+    var readDelay: TimeInterval = 1.0
     var writeDelay: TimeInterval = 3.0
     var viewportSideCropFraction = 0.1
     var viewportTopCropFraction = 0.1

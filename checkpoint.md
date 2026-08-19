@@ -107,6 +107,14 @@ This state is captured immediately before the first mutation and is sufficient f
 
 READs are triggered by pointer movement, click, scroll, or detected application activation.
 
+The default `READ_DELAY` is now one second. The transition began at the clean
+session boundary between `phase1-ordinary-work-2026-08-19-1` (three seconds)
+and `phase1-ordinary-work-2026-08-19-2-read-delay-1` (one second). Historical
+three-second observations remain immutable and retain their actual configured
+delay and capture timestamp; they must not be backdated or relabeled as
+one-second observations. They can remain explicitly identified lower-recall
+history, while delay-homogeneous comparisons should use separate cohorts.
+
 A derived READ requires:
 
 1. a complete `READ_DELAY` interval;

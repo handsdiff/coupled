@@ -20,7 +20,7 @@ OPTIONS
   --output PATH                Output directory (default: ./coupled-data/<timestamp>)
   --pause-file PATH            Pause all capture while PATH exists
   --write-delay SECONDS        Idle time before settling a write (default: 3)
-  --read-delay SECONDS         Idle time before emitting a read candidate (default: 3)
+  --read-delay SECONDS         Idle time before emitting a read candidate (default: 1)
   --viewport-side-crop NUMBER  Fraction removed from each side for OCR (default: 0.1)
   --viewport-top-crop NUMBER   Fraction removed from the top for OCR (default: 0.1)
   --viewport-bottom-crop NUM   Fraction removed from the bottom for OCR (default: 0.35)
