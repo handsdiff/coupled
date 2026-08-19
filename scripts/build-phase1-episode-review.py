@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 
-BUILDER_VERSION = "phase1-episode-v0-shadow"
+BUILDER_VERSION = "phase1-episode-v0-shadow-r2"
 SEMANTIC_ANCHOR_MINIMUM_CHARACTERS = 32
 
 
@@ -236,30 +236,64 @@ def observation_projection(observation: Any) -> dict[str, Any] | None:
     }
 
 
-def terminal_observation(record: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
-    after = record.get("after")
-    if isinstance(after, dict) and isinstance(after.get("value"), str):
-        return "terminal_after", after
-    candidates: list[tuple[str, dict[str, Any]]] = []
-    for field, label in (
-        ("returnCheckpoints", "return_checkpoint"),
-        ("pasteCheckpoints", "paste_checkpoint"),
-        ("mutationCheckpoints", "mutation_checkpoint"),
+def raw_observations(
+    record: dict[str, Any],
+) -> list[tuple[str, dict[str, Any], str | None]]:
+    result: list[tuple[str, dict[str, Any], str | None]] = []
+    for field, source in (("before", "before"), ("after", "terminal_after")):
+        observation = record.get(field)
+        if isinstance(observation, dict):
+            result.append((source, observation, None))
+    for field, source in (
+        ("returnCheckpoints", "pre_return_checkpoint"),
+        ("pasteCheckpoints", "post_paste_checkpoint"),
+        ("mutationCheckpoints", "post_input_checkpoint"),
     ):
         for checkpoint in record.get(field, []):
             if not isinstance(checkpoint, dict):
                 continue
             observation = checkpoint.get("observation")
-            if isinstance(observation, dict) and isinstance(
-                observation.get("value"), str
-            ):
-                candidates.append((label, observation))
-    if not candidates:
-        return None
-    return max(
-        candidates,
-        key=lambda item: item[1].get("observedAt") or "",
-    )
+            if isinstance(observation, dict):
+                result.append((source, observation, checkpoint.get("checkpointID")))
+            if field == "pasteCheckpoints":
+                pre_paste = checkpoint.get("prePasteObservation")
+                if isinstance(pre_paste, dict):
+                    result.append(
+                        (
+                            "pre_paste_checkpoint",
+                            pre_paste,
+                            checkpoint.get("checkpointID"),
+                        )
+                    )
+    return result
+
+
+def reducer_selected_observation(
+    record: dict[str, Any], semantic_event: dict[str, Any]
+) -> tuple[str, dict[str, Any], str | None]:
+    reduction = semantic_event.get("reduction")
+    if not isinstance(reduction, dict):
+        raise ReviewError("semantic WRITE lacks reduction provenance")
+    selected_id = reduction.get("selectedObservationID")
+    selected_source = reduction.get("selectedObservationSource")
+    matches = [
+        item
+        for item in raw_observations(record)
+        if item[1].get("observationID") == selected_id
+    ]
+    if len(matches) != 1:
+        raise ReviewError(
+            f"selected observation {selected_id!r} occurs {len(matches)} times in raw record"
+        )
+    source, observation, checkpoint_id = matches[0]
+    if selected_source != source:
+        raise ReviewError(
+            f"selected observation source mismatch: reducer={selected_source!r} raw={source!r}"
+        )
+    reduced_checkpoint = semantic_event.get("usedCheckpointID")
+    if reduced_checkpoint is not None and reduced_checkpoint != checkpoint_id:
+        raise ReviewError("selected checkpoint does not match reducer provenance")
+    return source, observation, checkpoint_id
 
 
 def logical_initial_value(
@@ -271,9 +305,24 @@ def logical_initial_value(
     value = observation.get("value")
     if not isinstance(value, str):
         raise ReviewError("initial raw observation has no string value")
-    if observation.get("valueRepresentedPlaceholder") is True:
+    if value != "" and logical_observation_value(observation) == "":
         return "", "accessibility_value_represented_placeholder"
     return value, "raw_before_value"
+
+
+def logical_observation_value(observation: Any) -> str | None:
+    if not isinstance(observation, dict):
+        return None
+    value = observation.get("value")
+    if not isinstance(value, str):
+        return None
+    placeholder = observation.get("placeholderValue")
+    represents_placeholder = observation.get("valueRepresentedPlaceholder") is True
+    if isinstance(placeholder, str):
+        represents_placeholder = represents_placeholder or bool(placeholder.strip()) and (
+            value.strip() == placeholder.strip()
+        )
+    return "" if represents_placeholder else value
 
 
 def identity_projection(record: dict[str, Any]) -> dict[str, Any]:
@@ -340,6 +389,80 @@ def discover_raw_sessions(
     return result
 
 
+def matching_hashed_artifacts(
+    project: Path, filename: str, expected_sha256: str
+) -> list[Path]:
+    matches = [
+        path
+        for path in (project / "coupled-data").glob(f"**/{filename}")
+        if path.is_file() and sha256(path) == expected_sha256
+    ]
+    return sorted(matches, key=lambda value: str(value))
+
+
+def discover_semantic_sessions(
+    project: Path,
+    corpus_manifest: dict[str, Any],
+    session_ids: set[str],
+) -> tuple[dict[str, dict[str, dict[str, Any]]], dict[str, dict[str, Any]]]:
+    """Resolve the exact semantic artifacts bound into the frozen corpus."""
+    events_by_session: dict[str, dict[str, dict[str, Any]]] = {}
+    sources: dict[str, dict[str, Any]] = {}
+    source_manifests = {
+        source.get("sessionID"): source
+        for source in corpus_manifest.get("sources", [])
+        if source.get("sessionID") in session_ids
+    }
+    missing_sources = sorted(session_ids - set(source_manifests))
+    if missing_sources:
+        raise ReviewError(f"corpus does not identify sessions: {missing_sources}")
+    for session_id in sorted(session_ids):
+        corpus_source = source_manifests[session_id]
+        dataset_digest = corpus_source.get("digestsSHA256", {}).get("dataset.json")
+        if not isinstance(dataset_digest, str):
+            raise ReviewError(f"corpus source lacks dataset digest: {session_id}")
+        dataset_paths = matching_hashed_artifacts(project, "dataset.json", dataset_digest)
+        if not dataset_paths:
+            raise ReviewError(f"cannot find causal dataset artifact for {session_id}")
+        dataset = load_json(dataset_paths[0])
+        if dataset.get("sessionID") != session_id:
+            raise ReviewError(f"causal dataset session mismatch: {session_id}")
+        source_digests = dataset.get("source", {}).get("digestsSHA256", {})
+        reduction_digest = source_digests.get("reduction.json")
+        events_digest = source_digests.get("events.jsonl")
+        if not isinstance(reduction_digest, str) or not isinstance(events_digest, str):
+            raise ReviewError(f"causal dataset lacks semantic lineage: {session_id}")
+        reduction_paths = matching_hashed_artifacts(
+            project, "reduction.json", reduction_digest
+        )
+        semantic_path = next(
+            (
+                path.parent / "events.jsonl"
+                for path in reduction_paths
+                if (path.parent / "events.jsonl").is_file()
+                and sha256(path.parent / "events.jsonl") == events_digest
+            ),
+            None,
+        )
+        if semantic_path is None:
+            raise ReviewError(f"cannot find bound semantic events for {session_id}")
+        semantic_rows = load_jsonl(semantic_path)
+        by_id = {row.get("eventID"): row for row in semantic_rows}
+        if len(by_id) != len(semantic_rows) or None in by_id:
+            raise ReviewError(f"invalid semantic event IDs for {session_id}")
+        events_by_session[session_id] = by_id
+        sources[session_id] = {
+            "causalDatasetPath": str(dataset_paths[0].relative_to(project)),
+            "causalDatasetSHA256": dataset_digest,
+            "semanticEventsPath": str(semantic_path.relative_to(project)),
+            "semanticEventsSHA256": events_digest,
+            "reductionPath": str(semantic_path.parent.joinpath("reduction.json").relative_to(project)),
+            "reductionSHA256": reduction_digest,
+            "reducerVersion": dataset.get("source", {}).get("reducerVersion"),
+        }
+    return events_by_session, sources
+
+
 def load_raw_records(
     raw_sessions: dict[str, tuple[Path, str]], needed_ids: set[str]
 ) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
@@ -384,15 +507,32 @@ def stable_destination(identity: dict[str, Any]) -> tuple[Any, ...]:
     )
 
 
+def logical_member_before(
+    record: dict[str, Any], semantic_event: dict[str, Any]
+) -> str | None:
+    field_state = (
+        semantic_event.get("conditioningState", {})
+        .get("cursorContext", {})
+        .get("fieldState")
+    )
+    if field_state == "unpopulated_prompt":
+        return ""
+    return logical_observation_value(record.get("before"))
+
+
 def member_projection(
     ordinal: int | None,
     example: dict[str, Any] | None,
     event: dict[str, Any],
     raw_entry: dict[str, Any],
+    semantic_event: dict[str, Any],
 ) -> dict[str, Any]:
     record = raw_entry["record"]
-    terminal = terminal_observation(record)
+    selected_source, selected_observation, selected_checkpoint = (
+        reducer_selected_observation(record, semantic_event)
+    )
     audit = json.loads(event.get("auditSerialized", "{}"))
+    reduction = semantic_event.get("reduction", {})
     return {
         "oneBasedExampleOrdinal": ordinal,
         "exampleID": example.get("exampleID") if example else None,
@@ -418,10 +558,23 @@ def member_projection(
         "beforeAXErrors": record.get("beforeAXErrors", []),
         "afterAXErrors": record.get("afterAXErrors", []),
         "before": observation_projection(record.get("before")),
-        "selectedTerminalObservationSource": terminal[0] if terminal else None,
-        "selectedTerminalObservation": (
-            observation_projection(terminal[1]) if terminal else None
-        ),
+        "beforeLogicalValue": logical_member_before(record, semantic_event),
+        "selectedTerminalObservationSource": selected_source,
+        "selectedTerminalCheckpointID": selected_checkpoint,
+        "selectedTerminalObservation": observation_projection(selected_observation),
+        "selectedTerminalLogicalValue": logical_observation_value(selected_observation),
+        "semanticReduction": {
+            "rule": reduction.get("rule"),
+            "reason": reduction.get("reason"),
+            "selectedObservationID": reduction.get("selectedObservationID"),
+            "selectedObservationSource": reduction.get("selectedObservationSource"),
+            "derivationObservationSource": semantic_event.get(
+                "derivationObservationSource"
+            ),
+            "usedObservationCapturedAt": semantic_event.get(
+                "usedObservationCapturedAt"
+            ),
+        },
     }
 
 
@@ -434,6 +587,29 @@ def serialized_destination(event: dict[str, Any]) -> tuple[Any, Any]:
     if not isinstance(destination, dict):
         return None, None
     return destination.get("application"), destination.get("window")
+
+
+def event_review_projection(event: dict[str, Any]) -> dict[str, Any]:
+    try:
+        serialized = json.loads(event.get("serialized", "{}"))
+    except json.JSONDecodeError:
+        serialized = {}
+    try:
+        audit = json.loads(event.get("auditSerialized", "{}"))
+    except json.JSONDecodeError:
+        audit = {}
+    content = audit.get("content")
+    if not isinstance(content, str):
+        content = serialized.get("content")
+    return {
+        "eventID": event.get("sourceEventID"),
+        "kind": event.get("kind"),
+        "beganAt": event.get("beganAt"),
+        "availableAt": event.get("availableAt"),
+        "destination": serialized.get("destination") or serialized.get("source"),
+        "content": content,
+        "boundaryReason": audit.get("boundaryReason"),
+    }
 
 
 def neighborhood_write_events(
@@ -477,12 +653,65 @@ def intervening_events(
     ]
 
 
+def continuity_evidence(members: list[dict[str, Any]]) -> dict[str, Any]:
+    transitions = []
+    for previous, following in zip(members, members[1:]):
+        previous_value = previous.get("selectedTerminalLogicalValue")
+        following_value = following.get("beforeLogicalValue")
+        matches = (
+            isinstance(previous_value, str)
+            and isinstance(following_value, str)
+            and previous_value == following_value
+        )
+        transitions.append(
+            {
+                "fromWriteEventID": previous["writeEventID"],
+                "toWriteEventID": following["writeEventID"],
+                "matchesExactly": matches,
+                "fromObservationID": previous["selectedTerminalObservation"].get(
+                    "observationID"
+                ),
+                "toObservationID": following["before"].get("observationID"),
+                "fromValueSHA256": previous["selectedTerminalObservation"].get(
+                    "valueSHA256"
+                ),
+                "toValueSHA256": following["before"].get("valueSHA256"),
+            }
+        )
+    return {
+        "continuousReplayableState": all(
+            transition["matchesExactly"] for transition in transitions
+        ),
+        "transitions": transitions,
+    }
+
+
+def mechanical_gate_failures(
+    *,
+    continuous_replay: bool,
+    exact_identity_stable: bool,
+    intervening_reads: list[dict[str, Any]],
+    overlapping_outside_writes: list[dict[str, Any]],
+) -> list[str]:
+    failures = []
+    if not continuous_replay:
+        failures.append("discontinuous_editable_state")
+    if not exact_identity_stable:
+        failures.append("logical_editable_identity_changed")
+    if intervening_reads:
+        failures.append("causally_available_read_inside_candidate")
+    if overlapping_outside_writes:
+        failures.append("outside_write_overlaps_candidate")
+    return failures
+
+
 def build_candidate(
     corpus_id: str,
     neighborhood: Neighborhood,
     examples: list[dict[str, Any]],
     events: list[dict[str, Any]],
     raw_records: dict[str, dict[str, Any]],
+    semantic_events: dict[str, dict[str, dict[str, Any]]],
 ) -> dict[str, Any]:
     anchor_examples = examples[neighborhood.first - 1 : neighborhood.last]
     if len(anchor_examples) != neighborhood.last - neighborhood.first + 1:
@@ -506,7 +735,14 @@ def build_candidate(
                 f"v0 shadow review requires one raw attempt per member: {event_id}"
             )
         raw_entry = raw_records[lineage[0]]
-        members.append(member_projection(ordinal, example, event, raw_entry))
+        semantic_event = semantic_events[event["sessionID"]].get(event_id)
+        if semantic_event is None:
+            raise ReviewError(f"missing bound semantic event: {event_id}")
+        members.append(
+            member_projection(
+                ordinal, example, event, raw_entry, semantic_event
+            )
+        )
         member_event_ids.append(event_id)
         source_record_ids.extend(lineage)
 
@@ -520,8 +756,7 @@ def build_candidate(
     initial_value, initial_source = logical_initial_value(
         anchor_examples[0], initial_observation
     )
-    terminal = terminal_observation(last_raw)
-    terminal_value = terminal[1].get("value") if terminal else None
+    terminal_value = last_member["selectedTerminalLogicalValue"]
     net_edit = (
         minimal_edit(initial_value, terminal_value)
         if isinstance(terminal_value, str)
@@ -579,12 +814,12 @@ def build_candidate(
         and semantic_anchor["status"] == "proven"
     )
     if numeric_selection_aligned:
-        completion_status = "mechanically_representable_numeric_selection"
+        alignment_status = "mechanically_representable_numeric_selection"
     elif semantic_anchor_aligned:
-        completion_status = "mechanically_representable_semantic_anchor"
+        alignment_status = "mechanically_representable_semantic_anchor"
     else:
-        completion_status = "not_mechanically_proven"
-    single_completion = numeric_selection_aligned or semantic_anchor_aligned
+        alignment_status = "not_mechanically_proven"
+    alignment_proven = numeric_selection_aligned or semantic_anchor_aligned
 
     began = timestamp(first_member["beganAt"])
     closed = timestamp(last_member["availableAt"])
@@ -592,12 +827,50 @@ def build_candidate(
     intervening = intervening_events(events, member_set, began, closed)
     intervening_reads = [event for event in intervening if event["kind"] == "read"]
     intervening_writes = [event for event in intervening if event["kind"] == "write"]
+    overlapping_outside_writes = [
+        event
+        for event in events
+        if event.get("kind") == "write"
+        and event["sourceEventID"] not in member_set
+        and timestamp(event["beganAt"]) <= closed
+        and timestamp(event["availableAt"]) >= began
+    ]
     identities = [member["targetIdentity"] for member in members]
     exact_identity_stable = all(identity == identities[0] for identity in identities)
     semantic_destination_stable = all(
         stable_destination(identity) == stable_destination(identities[0])
         for identity in identities
     )
+    continuity = continuity_evidence(members)
+    continuous_replay = continuity["continuousReplayableState"]
+    gate_failures = mechanical_gate_failures(
+        continuous_replay=continuous_replay,
+        exact_identity_stable=exact_identity_stable,
+        intervening_reads=intervening_reads,
+        overlapping_outside_writes=overlapping_outside_writes,
+    )
+    if not alignment_proven:
+        completion_status = "not_mechanically_proven"
+    elif gate_failures:
+        completion_status = "mechanical_alignment_gated_out"
+    else:
+        completion_status = alignment_status
+    single_completion = alignment_proven and not gate_failures
+
+    chronologically_sorted = sorted(
+        events,
+        key=lambda event: (
+            event["availableAt"],
+            event.get("beganAt") or event["availableAt"],
+            event["sourceEventID"],
+        ),
+    )
+    prior_events = [
+        event for event in chronologically_sorted if timestamp(event["availableAt"]) < began
+    ][-3:]
+    following_events = [
+        event for event in chronologically_sorted if timestamp(event["availableAt"]) > closed
+    ][:5]
     candidate_material = {
         "corpusID": corpus_id,
         "label": neighborhood.label,
@@ -606,8 +879,23 @@ def build_candidate(
     candidate_id = "episode_candidate_" + hashlib.sha256(
         canonical_bytes(candidate_material)
     ).hexdigest()
+    explicit_submission_boundary = last_member["boundaryReason"] in {
+        "return_pressed",
+        "submission_boundary",
+    }
+    return_observed = (
+        "return" in last_member.get("inputHints", [])
+        or last_member["selectedTerminalObservationSource"]
+        == "pre_return_checkpoint"
+    )
+    if explicit_submission_boundary:
+        closure_status = "objective_submission_observed"
+    elif return_observed:
+        closure_status = "return_observed_requires_surface_interpretation"
+    else:
+        closure_status = "ambiguous_requires_review"
     return {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "builderVersion": BUILDER_VERSION,
         "authority": "shadow_review_only",
         "candidateID": candidate_id,
@@ -624,12 +912,13 @@ def build_candidate(
         "initialConditioningState": anchor_examples[0].get("conditioningState"),
         "initialObservationSource": initial_source,
         "initialObservation": observation_projection(initial_observation),
-        "finalObservationSource": terminal[0] if terminal else None,
-        "finalObservation": observation_projection(terminal[1]) if terminal else None,
+        "finalObservationSource": last_member["selectedTerminalObservationSource"],
+        "finalObservation": last_member["selectedTerminalObservation"],
         "members": members,
         "causalEvidence": {
             "interveningReadCount": len(intervening_reads),
             "interveningWriteCountOutsideCandidate": len(intervening_writes),
+            "overlappingOutsideWriteCount": len(overlapping_outside_writes),
             "interveningEvents": [
                 {
                     "eventID": event["sourceEventID"],
@@ -640,14 +929,34 @@ def build_candidate(
                 for event in intervening
             ],
             "noCausallyAvailableReadDuringCandidate": not intervening_reads,
+            "noOverlappingOutsideWrite": not overlapping_outside_writes,
+            "overlappingOutsideWrites": [
+                event_review_projection(event) for event in overlapping_outside_writes
+            ],
         },
         "surfaceEvidence": {
             "exactTargetIdentityStable": exact_identity_stable,
             "semanticDestinationStable": semantic_destination_stable,
             "targetIdentities": identities,
         },
+        "continuityEvidence": continuity,
+        "mechanicalGates": {
+            "passed": not gate_failures,
+            "failures": gate_failures,
+            "requiresContinuousReplayableState": True,
+            "requiresExactLogicalEditableIdentity": True,
+            "requiresNoCausallyAvailableRead": True,
+            "requiresNoOverlappingOutsideWrite": True,
+        },
+        "closureContext": {
+            "priorEvents": [event_review_projection(event) for event in prior_events],
+            "followingEvents": [
+                event_review_projection(event) for event in following_events
+            ],
+        },
         "singleCompletionDiagnostic": {
             "status": completion_status,
+            "alignmentStatusBeforeGates": alignment_status,
             "numericSelectionAligned": numeric_selection_aligned,
             "semanticAnchorAligned": semantic_anchor_aligned,
             "semanticAnchor": semantic_anchor,
@@ -656,7 +965,9 @@ def build_candidate(
             "initialSelectionLength": initial_length,
             "initialSelectionCoordinateUnit": coordinate_unit,
             "netFieldEdit": net_edit,
-            "proposedFinalizedTarget": net_edit["content"] if single_completion else None,
+            "proposedFinalizedTarget": (
+                net_edit["content"] if alignment_proven and net_edit is not None else None
+            ),
             "warning": (
                 "Mechanical representability is not a merge or closure decision. "
                 "A reviewer must still decide whether this is one thought, whether "
@@ -667,14 +978,13 @@ def build_candidate(
         },
         "closureEvidence": {
             "lastBoundaryReason": last_member["boundaryReason"],
-            "objectiveSubmissionBoundary": last_member["boundaryReason"]
-            in {"return_pressed", "submission_boundary"},
-            "status": (
-                "objective_submission_observed"
-                if last_member["boundaryReason"]
-                in {"return_pressed", "submission_boundary"}
-                else "ambiguous_requires_review"
-            ),
+            "lastSelectedObservationSource": last_member[
+                "selectedTerminalObservationSource"
+            ],
+            "lastInputHints": last_member.get("inputHints", []),
+            "returnObserved": return_observed,
+            "objectiveSubmissionBoundary": explicit_submission_boundary,
+            "status": closure_status,
         },
     }
 
@@ -686,6 +996,61 @@ def render_excerpt(value: str | None, maximum: int = 700) -> str:
         return value
     half = maximum // 2
     return value[:half] + "\n… [excerpt clipped] …\n" + value[-half:]
+
+
+def marked_transition_state(
+    value: str, offset: int, changed_length: int, radius: int = 320
+) -> str:
+    start = max(0, offset - radius)
+    end = min(len(value), offset + changed_length + radius)
+    prefix = "…" if start else ""
+    suffix = "…" if end < len(value) else ""
+    local_offset = offset - start
+    local_end = local_offset + changed_length
+    excerpt = value[start:end]
+    marker = excerpt[local_offset:local_end]
+    if not marker:
+        marker = "∅"
+    return (
+        prefix
+        + excerpt[:local_offset]
+        + "⟦"
+        + marker
+        + "⟧"
+        + excerpt[local_end:]
+        + suffix
+    )
+
+
+def member_transition(member: dict[str, Any]) -> dict[str, Any] | None:
+    before = member.get("beforeLogicalValue")
+    after = member.get("selectedTerminalLogicalValue")
+    if not isinstance(before, str) or not isinstance(after, str):
+        return None
+    edit = minimal_edit(before, after)
+    return {
+        "edit": edit,
+        "before": marked_transition_state(
+            before, edit["characterOffset"], len(edit["removedContent"])
+        ),
+        "after": marked_transition_state(
+            after, edit["characterOffset"], len(edit["content"])
+        ),
+    }
+
+
+def event_markdown(event: dict[str, Any]) -> list[str]:
+    destination = event.get("destination")
+    destination_text = json.dumps(destination, ensure_ascii=False, sort_keys=True)
+    content = render_excerpt(event.get("content"), maximum=260)
+    return [
+        f"- `{event.get('kind')}` available `{event.get('availableAt')}` "
+        f"at `{destination_text}`",
+        "",
+        "  ```text",
+        "  " + (content or "[no projected content]").replace("\n", "\n  "),
+        "  ```",
+    ]
 
 
 def markdown(candidates: list[dict[str, Any]]) -> str:
@@ -701,6 +1066,8 @@ def markdown(candidates: list[dict[str, Any]]) -> str:
         diagnostic = candidate["singleCompletionDiagnostic"]
         causal = candidate["causalEvidence"]
         closure = candidate["closureEvidence"]
+        gates = candidate["mechanicalGates"]
+        continuity = candidate["continuityEvidence"]
         lines.extend([
             f"## {candidate['label']}",
             "",
@@ -709,6 +1076,9 @@ def markdown(candidates: list[dict[str, Any]]) -> str:
             f"- Duration: {candidate['durationSeconds']:.3f}s",
             f"- Intervening READs: {causal['interveningReadCount']}",
             f"- Stable semantic destination: {candidate['surfaceEvidence']['semanticDestinationStable']}",
+            f"- Exact logical editable identity: {candidate['surfaceEvidence']['exactTargetIdentityStable']}",
+            f"- Continuous raw replay: {continuity['continuousReplayableState']}",
+            f"- Hard mechanical gates passed: {gates['passed']} (`{json.dumps(gates['failures'])}`)",
             f"- Closure: `{closure['status']}` (`{closure['lastBoundaryReason']}`)",
             f"- Single-completion diagnostic: `{diagnostic['status']}`",
             "",
@@ -722,15 +1092,33 @@ def markdown(candidates: list[dict[str, Any]]) -> str:
                 if ordinal is not None
                 else "History-only semantic WRITE"
             )
+            transition = member_transition(member)
             lines.extend([
                 f"#### {title} — `{member['boundaryReason']}`",
                 "",
                 "```text",
                 member["currentLossTarget"] or "[no independent loss target]",
                 "```",
+                f"Reducer-selected terminal: `{member['selectedTerminalObservationSource']}` "
+                f"(`{member['semanticReduction']['selectedObservationID']}`; "
+                f"reason `{member['semanticReduction']['reason']}`)",
                 f"Raw: `{member['rawPath']}:{member['rawLine']}`",
                 "",
             ])
+            if transition is not None:
+                lines.extend([
+                    "Raw logical BEFORE (changed span marked):",
+                    "",
+                    "```text",
+                    transition["before"],
+                    "```",
+                    "Raw reducer-selected terminal state (changed span marked):",
+                    "",
+                    "```text",
+                    transition["after"],
+                    "```",
+                    "",
+                ])
         lines.extend([
             "### Mechanically reconstructed candidate completion",
             "",
@@ -738,6 +1126,16 @@ def markdown(candidates: list[dict[str, Any]]) -> str:
             render_excerpt(diagnostic.get("proposedFinalizedTarget")),
             "```",
             "",
+            "### Events immediately after the candidate",
+            "",
+        ])
+        following = candidate["closureContext"]["followingEvents"]
+        if following:
+            for event in following:
+                lines.extend(event_markdown(event))
+        else:
+            lines.append("[No later semantic event in the corpus.]\n")
+        lines.extend([
             "### Review decision",
             "",
             "- [ ] correct closed substantive episode",
@@ -797,6 +1195,9 @@ def main() -> int:
     session_ids = {event["sessionID"] for event in selected_events}
     raw_sessions = discover_raw_sessions(project, session_ids)
     raw_records, raw_sources = load_raw_records(raw_sessions, needed_ids)
+    semantic_events, semantic_sources = discover_semantic_sessions(
+        project, manifest, session_ids
+    )
     candidates = [
         build_candidate(
             manifest["corpusID"],
@@ -804,12 +1205,13 @@ def main() -> int:
             examples,
             events,
             raw_records,
+            semantic_events,
         )
         for neighborhood in arguments.neighborhood
     ]
     annotations = [
         {
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "candidateID": candidate["candidateID"],
             "memberWriteEventIDs": candidate["memberWriteEventIDs"],
             "decision": "unreviewed",
@@ -828,7 +1230,7 @@ def main() -> int:
         write_jsonl(temporary / "annotations.jsonl", annotations)
         (temporary / "review.md").write_text(markdown(candidates), encoding="utf-8")
         review_manifest = {
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "builderVersion": BUILDER_VERSION,
             "status": "shadow_review_only_not_training_authority",
             "source": {
@@ -838,6 +1240,7 @@ def main() -> int:
                 "examplesSHA256": sha256(corpus_path / "examples.jsonl"),
                 "eventsSHA256": sha256(corpus_path / "events.jsonl"),
                 "rawSessions": raw_sources,
+                "semanticSessions": semantic_sources,
             },
             "neighborhoods": [
                 {
@@ -851,6 +1254,11 @@ def main() -> int:
                 "newReadIsHardMergeBoundary": True,
                 "mechanicalRepresentabilityRequiresNumericOrUniqueSemanticAlignment": True,
                 "semanticAlignmentPreservesNumericDisagreement": True,
+                "terminalObservationMustMatchSemanticReducerProvenance": True,
+                "continuousEditableReplayIsHardGate": True,
+                "sameLogicalEditableIsHardGate": True,
+                "interveningReadIsHardGate": True,
+                "overlappingOutsideWriteIsHardGate": True,
                 "mechanicalRepresentabilityIsNotEpisodeAuthority": True,
                 "microWritesRemainUnchanged": True,
                 "trainingArtifactsRemainUnchanged": True,
@@ -867,6 +1275,11 @@ def main() -> int:
                 ),
                 "objectiveClosures": sum(
                     value["closureEvidence"]["objectiveSubmissionBoundary"]
+                    for value in candidates
+                ),
+                "mechanicallyGatedOut": sum(
+                    value["singleCompletionDiagnostic"]["status"]
+                    == "mechanical_alignment_gated_out"
                     for value in candidates
                 ),
             },

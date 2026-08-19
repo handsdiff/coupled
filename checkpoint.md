@@ -1027,8 +1027,8 @@ and delay-bounded WRITEs faithfully describe editing mechanics, but the desired
 target is the closed authored completion that captures the user's next thought.
 
 No collector, semantic reducer, causal compiler, packed dataset, loss mask, or
-model result has been changed. A new non-authoritative diagnostic layer now
-implements:
+model result has been changed. The non-authoritative
+`phase1-episode-v0-shadow-r2` diagnostic layer now implements:
 
 ```text
 raw evidence
@@ -1051,24 +1051,44 @@ python3 scripts/check-phase1-episode-review.py
 
 The artifact contains the complete member trajectory, including semantic
 history-only WRITEs omitted from the old loss-bearing examples; full initial,
-intermediate, and final AX values; exact raw lineage; cursor and selection
-evidence; causal events; a mechanical initial-to-final edit; and an unreviewed
-annotation sidecar. A causally available READ inside the interval is a hard
-merge boundary. Mechanical representability is deliberately not treated as
-episode closure or training authority.
+intermediate, and final AX values; exact raw and reduced-event lineage; cursor
+and selection evidence; causal events; a mechanical initial-to-final edit; and
+an unreviewed annotation sidecar. Every member's terminal state is the exact raw
+observation selected by the bound semantic reducer event. This matters for
+submitted fields whose raw `after` is empty or invalid while a pre-Return
+checkpoint retains the actual authored content.
+
+Mechanical status has four hard gates in addition to cursor/semantic alignment:
+every reducer-selected terminal value must exactly equal the next member's
+logical `BEFORE`; exact logical editable identity must remain stable; no
+causally available READ may occur inside the interval; and no outside WRITE may
+overlap it. A candidate failing any gate can retain a diagnostic proposed edit
+but cannot receive a `mechanically_representable_*` status. Mechanical
+representability is deliberately not treated as episode closure or training
+authority.
 
 Two seeded neighborhoods expose the intended distinction:
 
 - ChatGPT examples 32–41 contain 12 semantic WRITEs, including two
   history-only edits. The complete final prompt is representable as one
-  insertion from the initial empty prompt, but there is no objective submission
-  boundary in the selected interval, so closure remains ambiguous.
+  insertion from the initial empty prompt. Its final semantic event selects a
+  pre-Return checkpoint because raw terminal capture was invalid, and the next
+  event is a ChatGPT READ showing the submitted prompt/response transition.
+  This is strong closure evidence, recorded as
+  `return_observed_requires_surface_interpretation`; Return is not universally
+  treated as submission because it can remain ordinary multiline editing.
 - Obsidian examples 152–158 contain eight semantic WRITEs, including the
   history-only `to` → `as` correction. Their final authored passage is
   representable as one completion. Obsidian's numeric AX selection is wrong by
   43 characters, but the independently captured semantic left/right ranges
   uniquely meet at the observed edit boundary. The diagnostic preserves and
   displays the numeric disagreement; it does not rewrite it.
+
+The Markdown review now shows the reducer-selected provenance and a marked raw
+`BEFORE`/selected-terminal transition for every member, plus the next five
+semantic events after each proposed candidate so submission, clearing,
+application switching, new composition, and later READ evidence are directly
+inspectable.
 
 The semantic-anchor proof is conservative: after removing only whitespace,
 zero-width space, and BOM layout scaffolding, both anchors must contain at least
@@ -1080,9 +1100,9 @@ serialization. An independent replay produced byte-identical artifacts.
 
 Canonical shadow hashes:
 
-- `episode-review.json`: `177e5bb5519418f355b22817eba12eed1681a540738baa5decfbf1104bab6d39`
-- `episode-candidates.jsonl`: `b8c871ca75762dfdbb3a1477c2b0f8797fc75ce2adba95f3b5bce00583be77e5`
-- `review.md`: `1e742d5ffc6b5ea595c44dd0fd9eec2ba504e1bd77b45190cb0cfd495b6a89a6`
+- `episode-review.json`: `754e18f07758dc95f646aef09a490d31c3259ce93b3e366f81b56121219ef2ac`
+- `episode-candidates.jsonl`: `396867bca3b9c2d44902721710073b9f64ce5525360fa39c0c9976abe2e1fb5d`
+- `review.md`: `33457b64c5674947f576c43f0370bcd5898e250f13113b14bd98dc0ff07a33f6`
 
 The next checkpoint is review, not automation: adjudicate these two
 neighborhoods and roughly 18 additional submitted prompts, internal

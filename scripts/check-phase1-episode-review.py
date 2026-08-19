@@ -144,6 +144,86 @@ def check_read_is_hard_causal_boundary(builder: ModuleType) -> None:
         dt.datetime.fromisoformat("2026-08-19T12:00:05+00:00"),
     )
     assert [value["sourceEventID"] for value in inside] == ["read-1"]
+    failures = builder.mechanical_gate_failures(
+        continuous_replay=True,
+        exact_identity_stable=True,
+        intervening_reads=inside,
+        overlapping_outside_writes=[],
+    )
+    assert failures == ["causally_available_read_inside_candidate"]
+
+
+def check_reducer_selected_terminal_is_authoritative(builder: ModuleType) -> None:
+    record = {
+        "after": {
+            "observationID": "after-empty",
+            "observedAt": "2026-08-19T12:00:05Z",
+            "value": "",
+        },
+        "returnCheckpoints": [
+            {
+                "checkpointID": "return-1",
+                "observation": {
+                    "observationID": "pre-return-authored",
+                    "observedAt": "2026-08-19T12:00:04Z",
+                    "value": "complete submitted prompt",
+                },
+            }
+        ],
+    }
+    semantic = {
+        "usedCheckpointID": "return-1",
+        "reduction": {
+            "selectedObservationID": "pre-return-authored",
+            "selectedObservationSource": "pre_return_checkpoint",
+        },
+    }
+    source, observation, checkpoint = builder.reducer_selected_observation(
+        record, semantic
+    )
+    assert source == "pre_return_checkpoint"
+    assert checkpoint == "return-1"
+    assert observation["value"] == "complete submitted prompt"
+
+
+def projected_observation(identifier: str, value: str) -> dict[str, Any]:
+    return {
+        "observationID": identifier,
+        "value": value,
+        "valueSHA256": identifier,
+    }
+
+
+def check_continuity_is_exact_gate(builder: ModuleType) -> None:
+    continuous = [
+        {
+            "writeEventID": "one",
+            "selectedTerminalLogicalValue": "same state",
+            "selectedTerminalObservation": projected_observation("a", "same state"),
+            "before": projected_observation("before-a", ""),
+        },
+        {
+            "writeEventID": "two",
+            "beforeLogicalValue": "same state",
+            "selectedTerminalLogicalValue": "later state",
+            "selectedTerminalObservation": projected_observation("b", "later state"),
+            "before": projected_observation("before-b", "same state"),
+        },
+    ]
+    assert builder.continuity_evidence(continuous)["continuousReplayableState"]
+    continuous[1]["beforeLogicalValue"] = "different state"
+    evidence = builder.continuity_evidence(continuous)
+    assert not evidence["continuousReplayableState"]
+    failures = builder.mechanical_gate_failures(
+        continuous_replay=False,
+        exact_identity_stable=True,
+        intervening_reads=[],
+        overlapping_outside_writes=[{"sourceEventID": "other-write"}],
+    )
+    assert failures == [
+        "discontinuous_editable_state",
+        "outside_write_overlaps_candidate",
+    ]
 
 
 def check_deterministic_serialization(builder: ModuleType) -> None:
@@ -158,6 +238,8 @@ def main() -> int:
     check_unique_semantic_anchor(builder)
     check_history_only_write_is_retained(builder)
     check_read_is_hard_causal_boundary(builder)
+    check_reducer_selected_terminal_is_authoritative(builder)
+    check_continuity_is_exact_gate(builder)
     check_deterministic_serialization(builder)
     print("Phase 1 episode-review checks passed.")
     return 0
