@@ -302,6 +302,10 @@ final class ActiveTapWriteCollector {
             return
         }
 
+        if classification.isUnmodifiedReturn {
+            observeReturnWithoutActiveWrite(inputObservedAt: inputObservedAt)
+            return
+        }
         guard classification.canStartWrite else { return }
         let beforeStarted = DispatchTime.now().uptimeNanoseconds
         let before = captureFocusedTarget(includeValue: true, reason: "write_before")
@@ -1436,6 +1440,53 @@ final class ActiveTapWriteCollector {
             logicalBefore: logicalValue(before, target: target),
             logicalPreReturn: logicalValue(preReturn, target: target)
         )
+    }
+
+    private func observeReturnWithoutActiveWrite(inputObservedAt: String) {
+        let capture = captureFocusedTarget(
+            includeValue: true,
+            reason: "standalone_pre_return_submission_probe"
+        )
+        guard capture.isEligibleApplication,
+              capture.errors.isEmpty,
+              let target = capture.target,
+              let observation = capture.observation,
+              !observation.valueWasTruncated else { return }
+        let probe = PostSubmissionProbe(
+            attemptID: "standalone-return-\(UUID().uuidString)",
+            inputObservedAt: inputObservedAt,
+            processIdentifier: target.app.processIdentifier,
+            role: target.identity.role,
+            bundleIdentifier: target.app.bundleIdentifier,
+            fieldDescription: target.identity.fieldDescription,
+            logicalBefore: "",
+            logicalPreReturn: logicalValue(observation, target: target)
+        )
+        if target.identity.role == (kAXTextFieldRole as String)
+            || target.identity.role == (kAXComboBoxRole as String) {
+            emitPostSubmissionTriggerIfCredible(
+                probe: probe,
+                postReturnObservation: nil,
+                postReturnErrors: []
+            )
+            return
+        }
+
+        Timer.scheduledTimer(
+            withTimeInterval: configuration.postInputCheckpointDelay,
+            repeats: false
+        ) { [weak self] _ in
+            guard let self else { return }
+            let postReturn = self.captureHeldTarget(
+                target,
+                reason: "standalone_post_return_submission_probe"
+            )
+            self.emitPostSubmissionTriggerIfCredible(
+                probe: probe,
+                postReturnObservation: postReturn.observation,
+                postReturnErrors: postReturn.errors
+            )
+        }
     }
 
     private func emitPostSubmissionTriggerIfCredible(
