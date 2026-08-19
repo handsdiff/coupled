@@ -9,7 +9,7 @@ from decimal import Decimal
 from typing import Any
 
 
-COST_LATENCY_VERSION = "phase1-cost-latency-v2"
+COST_LATENCY_VERSION = "phase1-cost-latency-v3"
 MILLION = Decimal(1_000_000)
 OPENAI_API_EQUIVALENT_PRICE_CONTRACT = {
     "model": "gpt-5.6-sol",
@@ -140,6 +140,33 @@ def summarize_openai_api_equivalent_cost(rows: list[dict[str, Any]]) -> dict[str
     }
 
 
+def summarize_openai_usage(rows: list[dict[str, Any]]) -> dict[str, int]:
+    return {
+        "inputTokens": sum(int((row.get("usage") or {}).get("input_tokens") or 0) for row in rows),
+        "cachedInputTokens": sum(
+            int(
+                ((row.get("usage") or {}).get("input_tokens_details") or {}).get(
+                    "cached_tokens"
+                )
+                or 0
+            )
+            for row in rows
+        ),
+        "outputTokens": sum(
+            int((row.get("usage") or {}).get("output_tokens") or 0) for row in rows
+        ),
+        "reasoningTokens": sum(
+            int(
+                ((row.get("usage") or {}).get("output_tokens_details") or {}).get(
+                    "reasoning_tokens"
+                )
+                or 0
+            )
+            for row in rows
+        ),
+    }
+
+
 def tinker_latency(rows: list[dict[str, Any]]) -> dict[str, Any]:
     has_components = all(
         "generationLatencySeconds" in row
@@ -207,6 +234,55 @@ def tinker_arm_cost(
     }
 
 
+def benchmark_arms(
+    *,
+    frontier_rows: list[dict[str, Any]],
+    frozen_qwen_rows: list[dict[str, Any]],
+    personalized_qwen_rows: list[dict[str, Any]],
+    prefill_rate: Decimal | None,
+    sample_rate: Decimal | None,
+) -> dict[str, Any]:
+    frozen_latency = tinker_latency(frozen_qwen_rows)
+    personalized_latency = tinker_latency(personalized_qwen_rows)
+    arms: dict[str, Any] = {
+        "frozen_gpt_5.6_sol_xhigh": {
+            "latency": latency_summary(
+                frontier_rows,
+                "one_subscription_responses_generation_request_including_reasoning",
+            ),
+            "cost": {
+                "billingBasis": "existing_chatgpt_monthly_subscription",
+                "experimentSpecificChargeUSD": None,
+                "reason": "subscription usage was not separately metered or attributable",
+                "usage": summarize_openai_usage(frontier_rows),
+                "apiEquivalent": summarize_openai_api_equivalent_cost(frontier_rows),
+            },
+        },
+        "frozen_qwen3.5_9b_base": {
+            "latency": frozen_latency["primary"],
+            "latencyComponents": frozen_latency,
+            "cost": None,
+        },
+        "personalized_qwen3.5_9b_base": {
+            "latency": personalized_latency["primary"],
+            "latencyComponents": personalized_latency,
+            "cost": None,
+        },
+    }
+    if prefill_rate is not None and sample_rate is not None:
+        arms["frozen_qwen3.5_9b_base"]["cost"] = tinker_arm_cost(
+            frozen_qwen_rows,
+            prefill_rate=prefill_rate,
+            sample_rate=sample_rate,
+        )
+        arms["personalized_qwen3.5_9b_base"]["cost"] = tinker_arm_cost(
+            personalized_qwen_rows,
+            prefill_rate=prefill_rate,
+            sample_rate=sample_rate,
+        )
+    return arms
+
+
 def build_cost_latency_report(
     *,
     frontier_rows: list[dict[str, Any]],
@@ -217,6 +293,7 @@ def build_cost_latency_report(
     tinker_manifest: dict[str, Any],
     provider_plan: dict[str, Any] | None,
     verified_tinker_charge_usd: Decimal | None,
+    evaluation_example_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     tinker_score_rows = frozen_qwen_rows + personalized_qwen_rows
     observed_prefill = sum(
@@ -236,36 +313,9 @@ def build_cost_latency_report(
         if field in recorded_usage and int(recorded_usage[field]) != observed:
             raise ValueError(f"Tinker {field} differs from operation records")
 
-    frozen_latency = tinker_latency(frozen_qwen_rows)
-    personalized_latency = tinker_latency(personalized_qwen_rows)
-    api_equivalent = summarize_openai_api_equivalent_cost(frontier_rows)
-    arms: dict[str, Any] = {
-        "frozen_gpt_5.6_sol_xhigh": {
-            "latency": latency_summary(
-                frontier_rows,
-                "one_subscription_responses_generation_request_including_reasoning",
-            ),
-            "cost": {
-                "billingBasis": "existing_chatgpt_monthly_subscription",
-                "experimentSpecificChargeUSD": None,
-                "reason": "subscription usage was not separately metered or attributable",
-                "usage": frontier_manifest.get("summary", {}).get("usage"),
-                "apiEquivalent": api_equivalent,
-            },
-        },
-        "frozen_qwen3.5_9b_base": {
-            "latency": frozen_latency["primary"],
-            "latencyComponents": frozen_latency,
-            "cost": None,
-        },
-        "personalized_qwen3.5_9b_base": {
-            "latency": personalized_latency["primary"],
-            "latencyComponents": personalized_latency,
-            "cost": None,
-        },
-    }
-
     rate_contract = None
+    prefill_rate = None
+    sample_rate = None
     if provider_plan is not None:
         prices = provider_plan["tinker"]["pricesPerMillionUSD"]
         prefill_rate = Decimal(prices["prefill"])
@@ -276,21 +326,56 @@ def build_cost_latency_report(
             "pricingSource": provider_plan["tinker"]["pricingSource"],
             "pricesPerMillionUSD": prices,
         }
-        arms["frozen_qwen3.5_9b_base"]["cost"] = tinker_arm_cost(
-            frozen_qwen_rows,
-            prefill_rate=prefill_rate,
-            sample_rate=sample_rate,
-        )
-        arms["personalized_qwen3.5_9b_base"]["cost"] = tinker_arm_cost(
-            personalized_qwen_rows,
-            prefill_rate=prefill_rate,
-            sample_rate=sample_rate,
-        )
         training_positions = observed_training_positions
         training_estimate = priced_tokens(training_positions, training_rate)
     else:
         training_positions = observed_training_positions
         training_estimate = None
+
+    all_executed_arms = benchmark_arms(
+        frontier_rows=frontier_rows,
+        frozen_qwen_rows=frozen_qwen_rows,
+        personalized_qwen_rows=personalized_qwen_rows,
+        prefill_rate=prefill_rate,
+        sample_rate=sample_rate,
+    )
+    if evaluation_example_ids is None:
+        evaluation_arms = all_executed_arms
+        evaluation_count = len(frontier_rows)
+        excluded_count = 0
+    else:
+        frontier_evaluation = [
+            row for row in frontier_rows if row["exampleID"] in evaluation_example_ids
+        ]
+        frozen_evaluation = [
+            row for row in frozen_qwen_rows if row["exampleID"] in evaluation_example_ids
+        ]
+        personalized_evaluation = [
+            row
+            for row in personalized_qwen_rows
+            if row["exampleID"] in evaluation_example_ids
+        ]
+        if not (
+            len(frontier_evaluation)
+            == len(frozen_evaluation)
+            == len(personalized_evaluation)
+            == len(evaluation_example_ids)
+        ):
+            raise ValueError("cost/latency evaluation coverage differs across arms")
+        evaluation_arms = benchmark_arms(
+            frontier_rows=frontier_evaluation,
+            frozen_qwen_rows=frozen_evaluation,
+            personalized_qwen_rows=personalized_evaluation,
+            prefill_rate=prefill_rate,
+            sample_rate=sample_rate,
+        )
+        evaluation_count = len(evaluation_example_ids)
+        excluded_count = len(frontier_rows) - evaluation_count
+
+    frozen_latency = evaluation_arms["frozen_qwen3.5_9b_base"]["latencyComponents"]
+    personalized_latency = evaluation_arms[
+        "personalized_qwen3.5_9b_base"
+    ]["latencyComponents"]
 
     tinker_observed_seconds = sum(
         float(row["latencySeconds"]) for row in tinker_score_rows + updates
@@ -298,6 +383,11 @@ def build_cost_latency_report(
     report = {
         "schemaVersion": 1,
         "reportVersion": COST_LATENCY_VERSION,
+        "headlineScope": {
+            "kind": "prospective_evaluation_after_warmup",
+            "examples": evaluation_count,
+            "warmupExamplesExcluded": excluded_count,
+        },
         "comparability": {
             "generationLatencyDirectlyComparableAcrossArms": (
                 frozen_latency["componentsAvailable"]
@@ -312,7 +402,8 @@ def build_cost_latency_report(
                 "record target-likelihood and generation request latency independently"
             ),
         },
-        "arms": arms,
+        "arms": evaluation_arms,
+        "allExecutedArms": all_executed_arms,
         "personalizationTraining": {
             "latency": latency_summary(
                 updates,
@@ -414,7 +505,7 @@ def cost_latency_csv(report: dict[str, Any]) -> str:
         "component": "tinker_aggregate_all_operations",
         "observations": sum(
             value["latency"]["observations"]
-            for name, value in report["arms"].items()
+            for name, value in report["allExecutedArms"].items()
             if name != "frozen_gpt_5.6_sol_xhigh"
         ) + training["latency"]["observations"],
         "latency_semantics": "sum_of_recorded_scoring_generation_and_update_wall_clock",

@@ -417,21 +417,26 @@ def main() -> int:
         audit = json.loads((audit_output / "experiment.json").read_text())
         if not (
             audit["status"] == "passed_developmental_not_thesis_conclusion"
-            and audit["auditVersion"] == "phase1-real-experiment-audit-v4"
-            and audit["protocol"]["examples"] == 200
+            and audit["auditVersion"] == "phase1-real-experiment-audit-v5"
+            and audit["protocol"]["providerScoredExamples"] == 200
+            and audit["protocol"]["warmupExamples"] == 50
+            and audit["protocol"]["prospectiveEvaluationExamples"] == 150
             and audit["summaries"][ARM_FROZEN_FRONTIER]["generatedCompletion"][
                 "exactMatches"
-            ] == 200
+            ] == 150
             and audit["summaries"][ARM_PERSONALIZED_QWEN]["generatedCompletion"][
                 "correctPrefix"
             ]["microTargetCoverage"] == 1.0
             and audit["summaries"][ARM_FROZEN_QWEN]["generatedCompletion"][
                 "pasteActions"
             ]["recall"] == 1.0
-            and audit["costLatencyReportVersion"] == "phase1-cost-latency-v2"
+            and audit["costLatencyReportVersion"] == "phase1-cost-latency-v3"
             and (audit_output / "cost-latency.json").is_file()
             and (audit_output / "cost-latency.csv").is_file()
             and len(load_json_lines(audit_output / "comparisons.jsonl")) == 200
+            and len(
+                load_json_lines(audit_output / "evaluation-comparisons.jsonl")
+            ) == 150
         ):
             raise AssertionError("synthetic final experiment audit failed")
         tampered_scores = load_json_lines(tinker_directory / "scores.jsonl")

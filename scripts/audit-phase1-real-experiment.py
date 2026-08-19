@@ -40,7 +40,7 @@ from phase1_cost_latency import (
 from phase1_training_contract import TrainingContractError, sha256
 
 
-AUDIT_VERSION = "phase1-real-experiment-audit-v4"
+AUDIT_VERSION = "phase1-real-experiment-audit-v5"
 
 
 def target_profile(example: dict[str, Any]) -> dict[str, Any]:
@@ -193,6 +193,13 @@ def main() -> int:
     }
 
     blocks = corpus["blocking"]["blocks"]
+    if len(blocks) < 2:
+        raise TrainingContractError("prospective evaluation requires a warm-up block")
+    warmup_example_ids = list(blocks[0]["exampleIDs"])
+    evaluation_example_ids = [
+        example_id for block in blocks[1:] for example_id in block["exampleIDs"]
+    ]
+    evaluation_example_id_set = set(evaluation_example_ids)
     update_by_block = {row["afterBlockID"]: row for row in updates}
     if list(update_by_block) != [row["blockID"] for row in blocks]:
         raise TrainingContractError("update blocks differ from frozen protocol")
@@ -226,6 +233,11 @@ def main() -> int:
         comparisons.append({
             "exampleID": example_id,
             "blockID": example["experimentBlockID"],
+            "evaluationRole": (
+                "prospective_evaluation"
+                if example_id in evaluation_example_id_set
+                else "warmup_excluded_from_headline"
+            ),
             "application": frozen.get("application"),
             "target": frozen["target"],
             "pasteActionCount": frozen["pasteActionCount"],
@@ -299,7 +311,20 @@ def main() -> int:
             ) / math.log(2),
         })
 
+    evaluation_comparisons = [
+        row for row in comparisons if row["evaluationRole"] == "prospective_evaluation"
+    ]
     summaries = {
+        arm: arm_summary(
+            [by_arm[arm][example_id] for example_id in evaluation_example_ids],
+            [
+                prediction_metrics_by_arm[arm][example_id]
+                for example_id in evaluation_example_ids
+            ],
+        )
+        for arm in (ARM_FROZEN_QWEN, ARM_FROZEN_FRONTIER, ARM_PERSONALIZED_QWEN)
+    }
+    all_scored_operational_summaries = {
         arm: arm_summary(
             [by_arm[arm][example_id] for example_id in example_ids],
             [prediction_metrics_by_arm[arm][example_id] for example_id in example_ids],
@@ -310,7 +335,7 @@ def main() -> int:
         arm: {
             stratum: summarize_prediction_metrics([
                 prediction_metrics_by_arm[arm][example_id]
-                for example_id in example_ids
+                for example_id in evaluation_example_ids
                 if profile_by_id[example_id]["targetStratum"] == stratum
             ])
             for stratum in (
@@ -332,6 +357,7 @@ def main() -> int:
         tinker_manifest=tinker_manifest,
         provider_plan=provider_plan,
         verified_tinker_charge_usd=arguments.verified_tinker_charge_usd,
+        evaluation_example_ids=evaluation_example_id_set,
     )
     block_summaries = []
     for block in blocks:
@@ -344,6 +370,11 @@ def main() -> int:
         block_summaries.append({
             "blockID": block["blockID"],
             "examples": len(ids),
+            "evaluationRole": (
+                "warmup_excluded_from_headline"
+                if block is blocks[0]
+                else "prospective_evaluation"
+            ),
             "precedingTrainingExamples": sum(
                 len(value["exampleIDs"])
                 for value in blocks[: blocks.index(block)]
@@ -361,12 +392,15 @@ def main() -> int:
     temporary = Path(tempfile.mkdtemp(prefix=f".{output.name}.", dir=output.parent))
     try:
         write_jsonl(temporary / "comparisons.jsonl", comparisons)
+        write_jsonl(
+            temporary / "evaluation-comparisons.jsonl", evaluation_comparisons
+        )
         (temporary / "cost-latency.json").write_bytes(canonical_bytes(cost_latency))
         (temporary / "cost-latency.csv").write_text(
             cost_latency_csv(cost_latency), encoding="utf-8"
         )
         manifest = {
-            "schemaVersion": 3,
+            "schemaVersion": 4,
             "auditVersion": AUDIT_VERSION,
             "status": "passed_developmental_not_thesis_conclusion",
             "source": {
@@ -390,8 +424,18 @@ def main() -> int:
                 ),
             },
             "protocol": {
-                "examples": len(examples),
+                "providerScoredExamples": len(examples),
+                "warmupExamples": len(warmup_example_ids),
+                "prospectiveEvaluationExamples": len(evaluation_example_ids),
                 "blocks": len(blocks),
+                "warmupBlockID": blocks[0]["blockID"],
+                "prospectiveEvaluationBlockIDs": [
+                    block["blockID"] for block in blocks[1:]
+                ],
+                "headlineEvaluationRule": (
+                    "exclude the first block because the personalized arm has no prior "
+                    "personal training and is identical to the frozen base"
+                ),
                 "scoreCompleteBlockBeforeUpdate": True,
                 "frontierHasComparableTokenNLL": False,
                 "personalizedUpdatePolicy": "warm_start_then_train_full_cumulative_corpus",
@@ -427,10 +471,12 @@ def main() -> int:
             },
             "costLatencyReportVersion": COST_LATENCY_VERSION,
             "summaries": summaries,
+            "allScoredOperationalSummaries": all_scored_operational_summaries,
             "generatedCompletionStrata": generated_completion_strata,
             "blockSummaries": block_summaries,
             "personalizedCumulativeBitsSavedVersusFrozen": sum(
-                row["personalizedBitsSavedVersusFrozen"] for row in comparisons
+                row["personalizedBitsSavedVersusFrozen"]
+                for row in evaluation_comparisons
             ),
             "providerUsage": {
                 "frontier": frontier_manifest.get("summary", {}).get("usage"),
@@ -440,6 +486,9 @@ def main() -> int:
         }
         manifest["artifactDigestsSHA256"] = {
             "comparisons.jsonl": sha256(temporary / "comparisons.jsonl"),
+            "evaluation-comparisons.jsonl": sha256(
+                temporary / "evaluation-comparisons.jsonl"
+            ),
             "cost-latency.json": sha256(temporary / "cost-latency.json"),
             "cost-latency.csv": sha256(temporary / "cost-latency.csv"),
         }
