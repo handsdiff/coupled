@@ -1027,14 +1027,15 @@ and delay-bounded WRITEs faithfully describe editing mechanics, but the desired
 target is the closed authored completion that captures the user's next thought.
 
 No collector, semantic reducer, causal compiler, packed dataset, loss mask, or
-model result has been changed. The non-authoritative
-`phase1-episode-v0-shadow-r2` diagnostic layer now implements:
+model result has been changed. Commit `a1ae878` froze the initial
+`phase1-episode-v0-shadow-r2` reconstruction checkpoint. The current
+non-authoritative `phase1-episode-design-v1-shadow-r3` layer implements:
 
 ```text
 raw evidence
 → unchanged semantic READ/WRITE events
 → shadow composition-episode review
-→ human development annotations
+→ episode-design proposals and human review annotations
 ```
 
 Run it with:
@@ -1042,11 +1043,15 @@ Run it with:
 ```bash
 python3 scripts/build-phase1-episode-review.py \
   --corpus coupled-data/phase1-experiment-1-corpus-v2-unredacted-canonical-20260818 \
-  --output coupled-data/phase1-experiment-1-episode-development-gold-v0-shadow-r2-20260819 \
+  --packed coupled-data/phase1-experiment-1-corpus-v2-unredacted-canonical-20260818-qwen-pack-v7 \
+  --output coupled-data/phase1-experiment-1-episode-design-review-v1-shadow-r3-final2-20260819 \
   --selection-file episode-review/phase1-episode-development-gold-v0.json \
   --proposals-file episode-review/phase1-episode-development-gold-v0-proposals.json
 
 python3 scripts/check-phase1-episode-review.py
+
+python3 scripts/serve-phase1-episode-design-review.py \
+  --review coupled-data/phase1-experiment-1-episode-design-review-v1-shadow-r3-final2-20260819
 ```
 
 The artifact contains the complete member trajectory, including semantic
@@ -1143,9 +1148,63 @@ Canonical 20-neighborhood shadow hashes:
 - `proposed-annotations.jsonl`: `bd39b3397fe095d3bae58d9ebb9639d318f3f4f640e0ead32da16582bc99083b`
 - `review.md`: `dd91dd408ab368514babc895abc1fa0f683e180b7b1494a895922c5d139aa8bf`
 
-An independent replay of all five generated artifacts is byte-identical. The
-next checkpoint remains review, not automation: inspect and accept or revise the
-20 assistant proposals into human development annotations. Only after
-conservative deterministic episode rules match that adjudicated set should a
-versioned episode layer become compiler authority and replace member WRITEs in
-model-facing history with one resolved episode.
+The 20-case artifact above remains the reconstruction checkpoint. It is
+superseded for episode-design review by a 21-neighborhood projection that adds
+the examples 120–123 fast-lookup sequence and binds every selected example to
+the exact shared `phase1-token-pack-v7` model input used in the developmental
+experiment. Sixty-seven distinct example inputs are stored with the exact task
+instruction, retained serialized event history, conditioning query, token
+counts, truncation counts, and SHA-256. The builder verifies those values
+against the frozen packing plan rather than synthesizing a new context.
+
+Every candidate now states that its onset is
+`first_mutating_input_pre_application_proxy`. The historical sessions did not
+capture an explicit focus-time prediction opportunity. This permits honest
+offline episode reconstruction but is not evidence that the training query
+matches a later live focus-time query.
+
+Examples 119–125 establish the important distinction:
+
+- Examples 115–119 remain one coherent closed Obsidian paragraph.
+- Example 120 is an unfinished composition and remains history-only.
+- Examples 121 and 122 are instrumental URL-navigation and in-page-Find
+  actions. They remain causal history but receive no substantive-content loss.
+- Example 123 is a substantive insight, but the short Cursor passage the human
+  read after finding `sublinear` never entered the packed model context. It is
+  therefore history-only with
+  `confirmed_human_visible_model_missing_information`, not a target.
+- Examples 124–125 are explicitly partitioned and merged into one target ending
+  `perhaps missing the explicit compression aspect? perhaps not`.
+
+This changes the abstraction from all-or-nothing candidate decisions to
+partition-capable episode-design proposals. A causal sequence can preserve each
+micro-WRITE while separately deciding which partitions are unfinished,
+instrumental, under-conditioned, or one closed substantive outcome.
+Every proposed representable partition is independently gated on exact
+editable-state continuity, stable logical editable identity, and the absence of
+an intervening causal READ. In particular, the `124–125` merge passes all three
+checks; it is not being accepted merely because the enclosing `123–125`
+neighborhood looks semantically related.
+
+The dedicated read-only localhost UI renders the actual historical prediction
+input beside the complete raw/reduced edit trajectory and proposed outcome. It
+also exposes visibility gaps and every partition's own sampling input. It uses
+no remote assets and does not mutate annotations or training artifacts. The
+tracked selection/proposal filenames retain their earlier `development-gold-v0`
+names only for checkpoint continuity; their manifests explicitly identify them
+as an episode-design review set, not gold evaluation data or training authority.
+
+Canonical episode-design v1 hashes:
+
+- `episode-review.json`: `4da566740aaf06cd18cab6a86b36932f8a8759c7bf6f13e477697380ab170011`
+- `episode-candidates.jsonl`: `d1b6c6c500575eca9ba529c136070f504bfd2337e0441e9ae235baea10cc130f`
+- `model-facing-inputs.jsonl`: `9a957109f5a6c1597115264e5be0fb2ed8c1c46409aa1d57afee1386069e8c83`
+- `annotations.jsonl`: `0448d604fe8f415f5fe8a92037f3d8f7487fc09dceda88a36dcde83f5cc526d0`
+- `proposed-annotations.jsonl`: `c3ffe7d4ab7e29ed375d28e1fe77d07059c6ce7663caaa4a1b9677937dcf504f`
+- `review.md`: `f18b620236950ab640a5f239f5070cf2284f8efc5ff03718391a3a6eaf6d6495`
+
+An independent replay of all six artifacts is byte-identical, the UI's
+read-only artifact check passes, and the HTTP index/detail endpoints were
+exercised locally. The next checkpoint remains human review, not automation:
+accept or revise these episode-design partitions before any versioned episode
+layer becomes compiler or training authority.

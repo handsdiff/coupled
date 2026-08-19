@@ -52,6 +52,7 @@ python3 -m py_compile \
   "$project_dir/scripts/audit-phase1-real-experiment.py" \
   "$project_dir/scripts/build-phase1-episode-review.py" \
   "$project_dir/scripts/check-phase1-episode-review.py" \
+  "$project_dir/scripts/serve-phase1-episode-design-review.py" \
   "$project_dir/scripts/phase1_prediction_metrics.py" \
   "$project_dir/scripts/check-phase1-prediction-metrics.py" \
   "$project_dir/scripts/check-phase1-subscription-responses.py" \

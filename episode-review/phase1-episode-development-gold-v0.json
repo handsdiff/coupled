@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "selectionID": "phase1-episode-development-gold-v0-20260819",
+  "selectionID": "phase1-episode-design-review-v1-20260819",
   "corpusID": "corpus_c1c62e66bee2ffea947a59870a37c33ad3b07078d01bb21870d14b932aee35c1",
-  "status": "unadjudicated_development_selection",
-  "purpose": "Develop taste and conservative deterministic rules for closed substantive composition episodes; this is not training authority.",
+  "status": "episode_design_review_selection_not_gold_or_training_authority",
+  "purpose": "Review whether exact historical prediction inputs support closed substantive composition targets; the legacy filename is retained only for checkpoint continuity.",
   "neighborhoods": [
     {
       "label": "chatgpt_cursor_revision",
@@ -125,11 +125,19 @@
       "rationale": "Two separate note lines test whether quiet same-document activity should remain two thoughts."
     },
     {
-      "label": "obsidian_disjoint_regions",
+      "label": "obsidian_fast_lookup_boundary",
+      "firstOneBasedExampleOrdinal": 120,
+      "lastOneBasedExampleOrdinal": 123,
+      "category": "human_visible_model_missing_causal_boundary",
+      "rationale": "An unfinished Obsidian thought leads to URL navigation and in-page Find before returning to a substantive insight; the short browser passage was human-visible but absent from packed model context.",
+      "mode": "causal_sequence"
+    },
+    {
+      "label": "obsidian_post_lookup_partition",
       "firstOneBasedExampleOrdinal": 123,
       "lastOneBasedExampleOrdinal": 125,
-      "category": "disjoint_editor_regions_negative_control",
-      "rationale": "Writes jump between distant regions of one note and include intervening READs; one completion should not be guessed."
+      "category": "causal_partition_design_case",
+      "rationale": "Example 123 is under-conditioned by a missing short read, while 124 and 125 form one subsequent correction-bearing thought; the proposal must express 123 | 124+125."
     },
     {
       "label": "obsidian_gtm_composition",

@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "selectionID": "phase1-episode-development-gold-v0-20260819",
-  "status": "assistant_proposals_pending_human_adjudication",
-  "authority": "development_diagnostic_only_not_training_authority",
+  "selectionID": "phase1-episode-design-review-v1-20260819",
+  "status": "assistant_episode_design_proposals_pending_human_adjudication",
+  "authority": "episode_design_review_only_not_training_authority",
   "adjudicationQuestion": "At the initial conditioning point, what single completion could have captured the intended output and made the subsequent editing trajectory largely unnecessary, using no information read later?",
   "proposals": [
     {
@@ -144,12 +144,82 @@
       "notes": "Two standalone observations written after a quiet gap should not be concatenated merely because they share a note."
     },
     {
-      "label": "obsidian_disjoint_regions",
-      "decision": "split_into_independent_episodes",
+      "label": "obsidian_fast_lookup_boundary",
+      "decision": "partition_history_only_sequence",
       "targetPolicy": "none_for_combined_candidate",
-      "closureAssessment": "distant_regions_with_intervening_reads",
+      "closureAssessment": "new_external_information_between_unfinished_and_substantive_writes",
       "representableAsSingleCompletion": false,
-      "notes": "The writes move across note regions and later text may depend on intervening reads."
+      "visibilityAssessment": {
+        "status": "confirmed_human_visible_model_missing_information",
+        "missingInformation": "The Cursor page passage found with the term 'sublinear' was visible to the user during a short browser visit but no corresponding READ entered the packed context before example 123.",
+        "evidence": "Examples 121 and 122 retain the URL and Find actions; example 123's exact packed history contains neither the relevant page passage nor an equivalent READ."
+      },
+      "partitions": [
+        {
+          "firstOneBasedExampleOrdinal": 120,
+          "lastOneBasedExampleOrdinal": 120,
+          "decision": "history_only_unfinished_composition",
+          "targetPolicy": "none_unfinished_composition",
+          "representableAsSingleCompletion": false,
+          "notes": "The Obsidian phrase ends mid-clause before the lookup and is not a closed substantive outcome."
+        },
+        {
+          "firstOneBasedExampleOrdinal": 121,
+          "lastOneBasedExampleOrdinal": 121,
+          "decision": "history_only_instrumental_navigation",
+          "targetPolicy": "none_instrumental_navigation",
+          "representableAsSingleCompletion": false,
+          "notes": "The exact URL is a navigation command, not the substantive thought target."
+        },
+        {
+          "firstOneBasedExampleOrdinal": 122,
+          "lastOneBasedExampleOrdinal": 122,
+          "decision": "history_only_instrumental_find",
+          "targetPolicy": "none_instrumental_find",
+          "representableAsSingleCompletion": false,
+          "notes": "The in-page Find query remains causal action history but receives no substantive-content loss."
+        },
+        {
+          "firstOneBasedExampleOrdinal": 123,
+          "lastOneBasedExampleOrdinal": 123,
+          "decision": "history_only_missing_model_visible_read",
+          "targetPolicy": "none_missing_model_visible_information",
+          "representableAsSingleCompletion": false,
+          "notes": "The insight is substantive but cannot receive loss because its supporting page passage is missing from the model-facing input."
+        }
+      ],
+      "notes": "This sequence is not one giant episode: new external information closes the initial opportunity, but the later opportunity is under-conditioned in the old capture."
+    },
+    {
+      "label": "obsidian_post_lookup_partition",
+      "decision": "partition_candidate",
+      "targetPolicy": "none_for_combined_candidate",
+      "closureAssessment": "example_123_is_causally_separate_124_and_125_form_one_thought",
+      "representableAsSingleCompletion": false,
+      "visibilityAssessment": {
+        "status": "partition_specific",
+        "missingInformation": "Example 123 lacks the short Cursor-page READ; examples 124–125 begin after later captured READ evidence and are reviewed separately."
+      },
+      "partitions": [
+        {
+          "firstOneBasedExampleOrdinal": 123,
+          "lastOneBasedExampleOrdinal": 123,
+          "decision": "history_only_missing_model_visible_read",
+          "targetPolicy": "none_missing_model_visible_information",
+          "representableAsSingleCompletion": false,
+          "notes": "Do not train on the indexing/sublinear insight from this historical input."
+        },
+        {
+          "firstOneBasedExampleOrdinal": 124,
+          "lastOneBasedExampleOrdinal": 125,
+          "decision": "merge_closed_episode",
+          "targetPolicy": "custom_authored_target",
+          "proposedMarkerTarget": "\nnext action prediction as a forcing function for information retrieval feels correct, but perhaps missing the explicit compression aspect? perhaps not",
+          "representableAsSingleCompletion": true,
+          "notes": "The immediate 'perhaps not' revises the same developing thought and should not become an independent target."
+        }
+      ],
+      "notes": "The proposal explicitly represents 123 | 124+125 instead of applying one all-or-nothing split to the neighborhood."
     },
     {
       "label": "obsidian_gtm_composition",

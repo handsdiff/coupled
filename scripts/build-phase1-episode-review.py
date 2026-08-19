@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 
-BUILDER_VERSION = "phase1-episode-v0-shadow-r2"
+BUILDER_VERSION = "phase1-episode-design-v1-shadow-r3"
 SEMANTIC_ANCHOR_MINIMUM_CHARACTERS = 32
 
 
@@ -55,6 +55,51 @@ def load_jsonl(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def indexed(rows: list[dict[str, Any]], key: str, label: str) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        value = row.get(key)
+        if not isinstance(value, str) or not value:
+            raise ReviewError(f"{label} row has no {key}")
+        if value in result:
+            raise ReviewError(f"duplicate {key} in {label}: {value}")
+        result[value] = row
+    return result
+
+
+def parsed_json(value: str) -> Any:
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError as error:
+        raise ReviewError("model-facing serialized value is not JSON") from error
+
+
+def model_event_projection(serialized: str) -> dict[str, Any]:
+    value = parsed_json(serialized)
+    if not isinstance(value, dict):
+        raise ReviewError("model-facing event is not an object")
+    if value.get("kind") == "read":
+        source = value.get("source") if isinstance(value.get("source"), dict) else {}
+        return {
+            "kind": "read",
+            "application": source.get("application"),
+            "window": source.get("window"),
+            "content": value.get("content", ""),
+        }
+    destination = (
+        value.get("destination")
+        if isinstance(value.get("destination"), dict)
+        else {}
+    )
+    return {
+        "kind": value.get("kind", "write"),
+        "application": destination.get("application"),
+        "window": destination.get("window"),
+        "authorshipResolution": value.get("authorshipResolution"),
+        "authorshipSegments": value.get("authorshipSegments", []),
+    }
+
+
 def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
     with path.open("wb") as handle:
         for row in rows:
@@ -77,6 +122,86 @@ def marker_target(target: dict[str, Any]) -> str:
         else:
             pieces.append(str(segment.get("content", "")))
     return "".join(pieces)
+
+
+def model_facing_projection(
+    example: dict[str, Any],
+    plan: dict[str, Any],
+    packed: dict[str, Any],
+    context_blocks: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    example_id = example["exampleID"]
+    if plan.get("exampleID") != example_id or packed.get("exampleID") != example_id:
+        raise ReviewError(f"packed lineage disagrees for {example_id}")
+    retained_history = []
+    serialized_history = []
+    for ordinal, retained in enumerate(plan.get("retainedContextBlocks", [])):
+        block_id = retained.get("contextBlockID")
+        block = context_blocks.get(block_id)
+        if block is None:
+            raise ReviewError(f"missing packed context block {block_id} for {example_id}")
+        serialized = retained.get("serializedOverride") or block.get("serialized")
+        if not isinstance(serialized, str):
+            raise ReviewError(f"invalid packed context block {block_id}")
+        serialized_history.append(serialized)
+        retained_history.append(
+            {
+                "ordinal": ordinal,
+                "contextBlockID": block_id,
+                "availableAt": block.get("availableAt"),
+                "contentTruncated": bool(retained.get("contentTruncated")),
+                "serialized": serialized,
+                "projection": model_event_projection(serialized),
+            }
+        )
+    context = "\n".join(serialized_history)
+    query = example.get("query")
+    instruction = plan.get("taskInstruction")
+    if not isinstance(query, str) or not isinstance(instruction, str):
+        raise ReviewError(f"missing packed query or task instruction for {example_id}")
+    body = query if not context else context + "\n" + query
+    semantic_input = instruction + "\n" + body
+    semantic_sha = hashlib.sha256(semantic_input.encode()).hexdigest()
+    if semantic_sha != plan.get("semanticModelInputSHA256"):
+        raise ReviewError(f"semantic model input digest disagrees for {example_id}")
+    if hashlib.sha256(query.encode()).hexdigest() != plan.get("rightEdgeQuerySHA256"):
+        raise ReviewError(f"right-edge query digest disagrees for {example_id}")
+    packed_count = packed.get("modelInputTokenCount")
+    total_count = len(packed.get("inputIDs", []))
+    if (
+        not isinstance(packed_count, int)
+        or total_count != packed_count + packed.get("targetTokenCount", 0)
+    ):
+        raise ReviewError(f"packed sequence count disagrees for {example_id}")
+    return {
+        "schemaVersion": 1,
+        "exampleID": example_id,
+        "targetEventID": example.get("targetEventID"),
+        "samplingSemantics": "first_mutating_input_pre_application_proxy",
+        "focusTimeObservationAvailable": False,
+        "focusTimeLimitation": (
+            "The source session did not record a focus-time prediction opportunity. "
+            "This is the exact input used by the old offline experiment at the first "
+            "mutating input, not proof of live focus-time train–serve alignment."
+        ),
+        "taskInstruction": instruction,
+        "querySerialized": query,
+        "query": parsed_json(query),
+        "retainedHistory": retained_history,
+        "exactSemanticModelInput": semantic_input,
+        "semanticModelInputSHA256": semantic_sha,
+        "modelInputTokenCount": packed_count,
+        "modelInputTokenCountBeforePacking": packed.get(
+            "modelInputTokenCountBeforePacking"
+        ),
+        "sourceContextEventCount": packed.get("sourceContextEventCount"),
+        "retainedContextEventCount": len(retained_history),
+        "droppedContextEventCount": packed.get("droppedContextEventCount"),
+        "partiallyRetainedContextEventCount": packed.get(
+            "partiallyRetainedContextEventCount"
+        ),
+        "unusedModelInputTokenBudget": packed.get("unusedModelInputTokenBudget"),
+    }
 
 
 def utf16_length(value: str) -> int:
@@ -353,6 +478,7 @@ class Neighborhood:
     last: int
     category: str | None = None
     rationale: str | None = None
+    mode: str = "editable_episode"
 
 
 def parse_neighborhood(value: str) -> Neighborhood:
@@ -386,6 +512,7 @@ def load_selection(path: Path, corpus_id: str) -> tuple[list[Neighborhood], dict
         last = row.get("lastOneBasedExampleOrdinal")
         category = row.get("category")
         rationale = row.get("rationale")
+        mode = row.get("mode", "editable_episode")
         if (
             not isinstance(label, str)
             or not label
@@ -397,6 +524,7 @@ def load_selection(path: Path, corpus_id: str) -> tuple[list[Neighborhood], dict
             or not category
             or not isinstance(rationale, str)
             or not rationale
+            or mode not in {"editable_episode", "causal_sequence"}
         ):
             raise ReviewError(f"invalid selection neighborhood: {row!r}")
         neighborhoods.append(
@@ -406,6 +534,7 @@ def load_selection(path: Path, corpus_id: str) -> tuple[list[Neighborhood], dict
                 last=last,
                 category=category,
                 rationale=rationale,
+                mode=mode,
             )
         )
     labels = [value.label for value in neighborhoods]
@@ -669,6 +798,11 @@ def neighborhood_write_events(
 ) -> list[dict[str, Any]]:
     anchors = examples[neighborhood.first - 1 : neighborhood.last]
     event_by_id = {event["sourceEventID"]: event for event in events}
+    if neighborhood.mode == "causal_sequence":
+        return sorted(
+            [event_by_id[anchor["targetEventID"]] for anchor in anchors],
+            key=lambda event: (event["beganAt"], event["sourceEventID"]),
+        )
     first = event_by_id[anchors[0]["targetEventID"]]
     last = event_by_id[anchors[-1]["targetEventID"]]
     destination = serialized_destination(first)
@@ -952,6 +1086,7 @@ def build_candidate(
         "label": neighborhood.label,
         "selectionCategory": neighborhood.category,
         "selectionRationale": neighborhood.rationale,
+        "selectionMode": neighborhood.mode,
         "oneBasedExampleRange": {
             "first": neighborhood.first,
             "last": neighborhood.last,
@@ -961,6 +1096,15 @@ def build_candidate(
         "beganAt": first_member["beganAt"],
         "candidateAvailableAt": last_member["availableAt"],
         "durationSeconds": (closed - began).total_seconds(),
+        "predictionOpportunity": {
+            "modelFacingExampleID": anchor_examples[0]["exampleID"],
+            "samplingSemantics": "first_mutating_input_pre_application_proxy",
+            "focusTimeObservationAvailable": False,
+            "limitation": (
+                "The source session has no explicit focus-time observation. "
+                "Episode onset is reconstructed from the first selected mutating input."
+            ),
+        },
         "initialConditioningState": anchor_examples[0].get("conditioningState"),
         "initialObservationSource": initial_source,
         "initialObservation": observation_projection(initial_observation),
@@ -1108,6 +1252,7 @@ def event_markdown(event: dict[str, Any]) -> list[str]:
 def markdown(
     candidates: list[dict[str, Any]],
     proposals_by_label: dict[str, dict[str, Any]] | None = None,
+    model_inputs_by_example: dict[str, dict[str, Any]] | None = None,
 ) -> str:
     lines = [
         "# Phase 1 episode review — shadow mode",
@@ -1123,6 +1268,10 @@ def markdown(
         closure = candidate["closureEvidence"]
         gates = candidate["mechanicalGates"]
         continuity = candidate["continuityEvidence"]
+        prediction = candidate["predictionOpportunity"]
+        model_input = (model_inputs_by_example or {}).get(
+            prediction["modelFacingExampleID"]
+        )
         lines.extend([
             f"## {candidate['label']}",
             "",
@@ -1139,6 +1288,42 @@ def markdown(
             f"- Closure: `{closure['status']}` (`{closure['lastBoundaryReason']}`)",
             f"- Single-completion diagnostic: `{diagnostic['status']}`",
             "",
+            "### Actual old-experiment sampling input",
+            "",
+            f"- Sampling semantics: `{prediction['samplingSemantics']}`",
+            f"- Focus-time observation available: `{prediction['focusTimeObservationAvailable']}`",
+            f"- Limitation: {prediction['limitation']}",
+            "",
+        ])
+        if model_input is not None:
+            lines.extend([
+                f"- Exact packed semantic input: `{model_input['modelInputTokenCount']}` tokens",
+                f"- Retained history: `{model_input['retainedContextEventCount']}` / "
+                f"`{model_input['sourceContextEventCount']}` source events; "
+                f"`{model_input['droppedContextEventCount']}` dropped",
+                f"- SHA-256: `{model_input['semanticModelInputSHA256']}`",
+                "",
+                "Conditioning query:",
+                "",
+                "```json",
+                json.dumps(
+                    model_input["query"],
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                ),
+                "```",
+                "",
+                "<details><summary>Exact model-facing task + retained history + query</summary>",
+                "",
+                "```text",
+                model_input["exactSemanticModelInput"],
+                "```",
+                "",
+                "</details>",
+                "",
+            ])
+        lines.extend([
             "### Current independent loss targets",
             "",
         ])
@@ -1230,6 +1415,12 @@ def markdown(
                 f"- Notes: {proposal['notes']}",
                 "",
             ])
+            visibility = proposal.get("visibilityAssessment", {})
+            lines.extend([
+                f"- Human/model visibility assessment: `{visibility.get('status', 'not_assessed')}`",
+                f"- Visibility note: {visibility.get('note') or visibility.get('missingInformation') or '[none]'}",
+                "",
+            ])
             if finalized is not None:
                 lines.extend([
                     "Proposed structured target:",
@@ -1241,6 +1432,16 @@ def markdown(
                     "```",
                     "",
                 ])
+            if proposal.get("partitions"):
+                lines.extend(["Proposed partitions:", ""])
+                for partition in proposal["partitions"]:
+                    lines.extend([
+                        f"- `{partition['firstOneBasedExampleOrdinal']}–{partition['lastOneBasedExampleOrdinal']}`: "
+                        f"`{partition['decision']}`; target policy "
+                        f"`{partition['targetPolicy']}`",
+                        f"  - {partition['notes']}",
+                    ])
+                lines.append("")
     return "\n".join(lines) + "\n"
 
 
@@ -1279,9 +1480,11 @@ def authored_target(content: str) -> dict[str, Any]:
     }
 
 
-def resolve_proposal(
-    candidate: dict[str, Any], proposal: dict[str, Any]
-) -> dict[str, Any]:
+def resolve_target(
+    candidate: dict[str, Any],
+    proposal: dict[str, Any],
+    members: list[dict[str, Any]],
+) -> dict[str, Any] | None:
     policy = proposal.get("targetPolicy")
     finalized: dict[str, Any] | None
     if policy == "mechanically_reconstructed_candidate":
@@ -1296,7 +1499,7 @@ def resolve_proposal(
     elif policy == "current_single_structured_target":
         targets = [
             member["currentTarget"]
-            for member in candidate["members"]
+            for member in members
             if member["currentTarget"] is not None
         ]
         if len(targets) != 1:
@@ -1312,7 +1515,7 @@ def resolve_proposal(
             )
         paste_segments = [
             segment
-            for member in candidate["members"]
+            for member in members
             for segment in (member.get("currentTarget") or {}).get("segments", [])
             if segment.get("type") == "paste"
         ]
@@ -1335,18 +1538,117 @@ def resolve_proposal(
         }
         if marker_target(finalized) != marker:
             raise ReviewError(f"custom marker target did not round-trip: {candidate['label']}")
-    elif policy == "custom_authored_target_from_selected_terminal_without_ui_scaffold":
+    elif policy in {
+        "custom_authored_target",
+        "custom_authored_target_from_selected_terminal_without_ui_scaffold",
+    }:
         marker = proposal.get("proposedMarkerTarget")
         if not isinstance(marker, str) or not marker:
             raise ReviewError(f"custom authored target is empty: {candidate['label']}")
         finalized = authored_target(marker)
-    elif policy in {
-        "none_for_combined_candidate",
-        "none_until_initial_composition_member_is_included",
-    }:
+    elif isinstance(policy, str) and policy.startswith("none_"):
         finalized = None
     else:
         raise ReviewError(f"unknown target policy for {candidate['label']}: {policy}")
+    return finalized
+
+
+def resolve_partitions(
+    candidate: dict[str, Any], proposal: dict[str, Any]
+) -> list[dict[str, Any]]:
+    rows = proposal.get("partitions", [])
+    if not isinstance(rows, list):
+        raise ReviewError(f"partitions must be a list: {candidate['label']}")
+    if not rows:
+        return []
+    result = []
+    previous_last = 0
+    candidate_first = candidate["oneBasedExampleRange"]["first"]
+    candidate_last = candidate["oneBasedExampleRange"]["last"]
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ReviewError(f"partition must be an object: {candidate['label']}")
+        first = row.get("firstOneBasedExampleOrdinal")
+        last = row.get("lastOneBasedExampleOrdinal")
+        if (
+            not isinstance(first, int)
+            or not isinstance(last, int)
+            or first < candidate_first
+            or last > candidate_last
+            or last < first
+            or first <= previous_last
+        ):
+            raise ReviewError(f"invalid or overlapping partition: {candidate['label']}")
+        previous_last = last
+        first_positions = [
+            index
+            for index, member in enumerate(candidate["members"])
+            if member.get("oneBasedExampleOrdinal") == first
+        ]
+        last_positions = [
+            index
+            for index, member in enumerate(candidate["members"])
+            if member.get("oneBasedExampleOrdinal") == last
+        ]
+        if len(first_positions) != 1 or len(last_positions) != 1:
+            raise ReviewError(
+                f"partition {first}:{last} has no loss-bearing member: {candidate['label']}"
+            )
+        members = candidate["members"][first_positions[0] : last_positions[0] + 1]
+        if not members:
+            raise ReviewError(f"empty partition member slice: {candidate['label']}")
+        partition_began = timestamp(members[0]["beganAt"])
+        partition_available = timestamp(members[-1]["availableAt"])
+        intervening_reads = [
+            event
+            for event in candidate["causalEvidence"]["interveningEvents"]
+            if event.get("kind") == "read"
+            and partition_began <= timestamp(event["availableAt"]) <= partition_available
+        ]
+        continuity = continuity_evidence(members)
+        exact_identity = all(
+            member["targetIdentity"] == members[0]["targetIdentity"]
+            for member in members
+        )
+        representable = row["representableAsSingleCompletion"]
+        if representable and (
+            not continuity["continuousReplayableState"]
+            or not exact_identity
+            or intervening_reads
+        ):
+            raise ReviewError(
+                f"representable partition fails causal/mechanical gates: {candidate['label']} {first}:{last}"
+            )
+        result.append(
+            {
+                "firstOneBasedExampleOrdinal": first,
+                "lastOneBasedExampleOrdinal": last,
+                "decision": row["decision"],
+                "targetPolicy": row["targetPolicy"],
+                "finalizedTarget": resolve_target(candidate, row, members),
+                "modelFacingExampleID": members[0]["exampleID"],
+                "representableAsSingleCompletion": representable,
+                "partitionEvidence": {
+                    "memberWriteEventIDs": [
+                        member["writeEventID"] for member in members
+                    ],
+                    "continuousReplayableState": continuity[
+                        "continuousReplayableState"
+                    ],
+                    "exactLogicalEditableIdentity": exact_identity,
+                    "interveningReadCount": len(intervening_reads),
+                },
+                "notes": row["notes"],
+            }
+        )
+    return result
+
+
+def resolve_proposal(
+    candidate: dict[str, Any], proposal: dict[str, Any]
+) -> dict[str, Any]:
+    policy = proposal.get("targetPolicy")
+    finalized = resolve_target(candidate, proposal, candidate["members"])
     return {
         "schemaVersion": 2,
         "candidateID": candidate["candidateID"],
@@ -1360,6 +1662,16 @@ def resolve_proposal(
         "representableAsSingleCompletion": proposal[
             "representableAsSingleCompletion"
         ],
+        "visibilityAssessment": proposal.get(
+            "visibilityAssessment",
+            {
+                "status": "no_specific_gap_identified_in_this_design_review",
+                "note": (
+                    "This is not proof that all human-visible information was captured."
+                ),
+            },
+        ),
+        "partitions": resolve_partitions(candidate, proposal),
         "notes": proposal["notes"],
     }
 
@@ -1367,6 +1679,12 @@ def resolve_proposal(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--corpus", required=True, type=Path)
+    parser.add_argument(
+        "--packed",
+        required=True,
+        type=Path,
+        help="frozen packed dataset whose exact model-facing plans are reviewed",
+    )
     parser.add_argument("--output", required=True, type=Path)
     selection_group = parser.add_mutually_exclusive_group(required=True)
     selection_group.add_argument(
@@ -1387,12 +1705,26 @@ def main() -> int:
     )
     arguments = parser.parse_args()
     corpus_path = arguments.corpus.expanduser().resolve()
+    packed_path = arguments.packed.expanduser().resolve()
     output = arguments.output.expanduser().resolve()
     if output.exists():
         raise ReviewError(f"output already exists: {output}")
     project = Path(__file__).resolve().parent.parent
     manifest_path = corpus_path / "corpus.json"
     manifest = load_json(manifest_path)
+    packing_path = packed_path / "packing.json"
+    packing_manifest = load_json(packing_path)
+    packing_source = packing_manifest.get("source", {})
+    if packing_source.get("sessionID") != manifest.get("corpusID"):
+        raise ReviewError("packed dataset corpusID does not match source corpus")
+    source_digests = packing_source.get("digestsSHA256", {})
+    for name in ("examples.jsonl", "context-blocks.jsonl"):
+        if source_digests.get(name) != sha256(corpus_path / name):
+            raise ReviewError(f"packed dataset source digest disagrees: {name}")
+    for name in ("context-plans.jsonl", "packed-examples.jsonl"):
+        expected = packing_manifest.get("artifactDigestsSHA256", {}).get(name)
+        if not expected or sha256(packed_path / name) != expected:
+            raise ReviewError(f"packed artifact changed: {name}")
     selection_manifest = None
     selection_path = None
     if arguments.selection_file is not None:
@@ -1410,6 +1742,21 @@ def main() -> int:
             raise ReviewError(f"corpus artifact changed: {name}")
     examples = load_jsonl(corpus_path / "examples.jsonl")
     events = load_jsonl(corpus_path / "events.jsonl")
+    context_blocks = indexed(
+        load_jsonl(corpus_path / "context-blocks.jsonl"),
+        "contextBlockID",
+        "context blocks",
+    )
+    context_plans = indexed(
+        load_jsonl(packed_path / "context-plans.jsonl"),
+        "exampleID",
+        "context plans",
+    )
+    packed_examples = indexed(
+        load_jsonl(packed_path / "packed-examples.jsonl"),
+        "exampleID",
+        "packed examples",
+    )
     if [example.get("chronologicalOrdinal") for example in examples] != list(
         range(len(examples))
     ):
@@ -1445,6 +1792,26 @@ def main() -> int:
         )
         for neighborhood in neighborhoods
     ]
+    selected_examples = {
+        example["exampleID"]: example
+        for neighborhood in neighborhoods
+        for example in examples[neighborhood.first - 1 : neighborhood.last]
+    }
+    model_facing_inputs = [
+        model_facing_projection(
+            example,
+            context_plans[example_id],
+            packed_examples[example_id],
+            context_blocks,
+        )
+        for example_id, example in sorted(
+            selected_examples.items(),
+            key=lambda item: item[1]["chronologicalOrdinal"],
+        )
+    ]
+    model_inputs_by_example = {
+        value["exampleID"]: value for value in model_facing_inputs
+    }
     proposal_manifest = None
     proposal_path = None
     proposals_by_label: dict[str, dict[str, Any]] = {}
@@ -1481,13 +1848,15 @@ def main() -> int:
     temporary = Path(tempfile.mkdtemp(prefix=f".{output.name}.", dir=output.parent))
     try:
         write_jsonl(temporary / "episode-candidates.jsonl", candidates)
+        write_jsonl(temporary / "model-facing-inputs.jsonl", model_facing_inputs)
         write_jsonl(temporary / "annotations.jsonl", annotations)
         if proposed_annotations:
             write_jsonl(
                 temporary / "proposed-annotations.jsonl", proposed_annotations
             )
         (temporary / "review.md").write_text(
-            markdown(candidates, proposals_by_label), encoding="utf-8"
+            markdown(candidates, proposals_by_label, model_inputs_by_example),
+            encoding="utf-8",
         )
         review_manifest = {
             "schemaVersion": 2,
@@ -1499,6 +1868,17 @@ def main() -> int:
                 "corpusSHA256": sha256(manifest_path),
                 "examplesSHA256": sha256(corpus_path / "examples.jsonl"),
                 "eventsSHA256": sha256(corpus_path / "events.jsonl"),
+                "packed": {
+                    "path": str(packed_path.relative_to(project)),
+                    "packingSHA256": sha256(packing_path),
+                    "packerVersion": packing_manifest.get("packerVersion"),
+                    "contextPlansSHA256": sha256(
+                        packed_path / "context-plans.jsonl"
+                    ),
+                    "packedExamplesSHA256": sha256(
+                        packed_path / "packed-examples.jsonl"
+                    ),
+                },
                 "rawSessions": raw_sources,
                 "semanticSessions": semantic_sources,
                 "selection": (
@@ -1527,6 +1907,7 @@ def main() -> int:
                     "lastOneBasedExampleOrdinal": value.last,
                     "category": value.category,
                     "rationale": value.rationale,
+                    "mode": value.mode,
                 }
                 for value in neighborhoods
             ],
@@ -1542,7 +1923,10 @@ def main() -> int:
                 "mechanicalRepresentabilityIsNotEpisodeAuthority": True,
                 "microWritesRemainUnchanged": True,
                 "trainingArtifactsRemainUnchanged": True,
-                "humanAnnotationsAreDevelopmentGoldNotProductionRequirement": True,
+                "humanAnnotationsAreEpisodeDesignReviewNotProductionRequirement": True,
+                "samplingOpportunityIsFirstMutationProxyNotFocusTime": True,
+                "exactPackedModelFacingInputIsBoundAndRendered": True,
+                "proposalPartitionsAreNonAuthoritative": True,
             },
             "counts": {
                 "candidates": len(candidates),
@@ -1565,10 +1949,14 @@ def main() -> int:
                 "assistantProposalsPendingHumanAdjudication": len(
                     proposed_annotations
                 ),
+                "modelFacingInputs": len(model_facing_inputs),
             },
             "artifactDigestsSHA256": {
                 "episode-candidates.jsonl": sha256(
                     temporary / "episode-candidates.jsonl"
+                ),
+                "model-facing-inputs.jsonl": sha256(
+                    temporary / "model-facing-inputs.jsonl"
                 ),
                 "annotations.jsonl": sha256(temporary / "annotations.jsonl"),
                 "review.md": sha256(temporary / "review.md"),

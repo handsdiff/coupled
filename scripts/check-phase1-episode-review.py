@@ -237,15 +237,17 @@ def check_development_selection(builder: ModuleType) -> None:
     path = project / "episode-review" / "phase1-episode-development-gold-v0.json"
     manifest = json.loads(path.read_text(encoding="utf-8"))
     neighborhoods, loaded = builder.load_selection(path, manifest["corpusID"])
-    assert loaded["selectionID"] == "phase1-episode-development-gold-v0-20260819"
-    assert len(neighborhoods) == 20
-    assert len({value.label for value in neighborhoods}) == 20
+    assert loaded["selectionID"] == "phase1-episode-design-review-v1-20260819"
+    assert len(neighborhoods) == 21
+    assert len({value.label for value in neighborhoods}) == 21
     assert all(value.category and value.rationale for value in neighborhoods)
     categories = {value.category for value in neighborhoods}
     assert "submitted_single_write" in categories
     assert "within_composition_cursor_revision" in categories
     assert "causal_boundary_negative_control" in categories
     assert "independent_actions_negative_control" in categories
+    assert "human_visible_model_missing_causal_boundary" in categories
+    assert "causal_partition_design_case" in categories
 
 
 def check_development_proposals(builder: ModuleType) -> None:
@@ -266,9 +268,12 @@ def check_development_proposals(builder: ModuleType) -> None:
         selection_id=selection["selectionID"],
         candidate_labels=labels,
     )
-    assert loaded["status"] == "assistant_proposals_pending_human_adjudication"
+    assert (
+        loaded["status"]
+        == "assistant_episode_design_proposals_pending_human_adjudication"
+    )
     assert set(by_label) == labels
-    assert len(by_label) == 20
+    assert len(by_label) == 21
     assert any(
         value["decision"] == "merge_closed_episode"
         for value in proposal["proposals"]
@@ -281,6 +286,16 @@ def check_development_proposals(builder: ModuleType) -> None:
         value["decision"] == "defer_causal_ambiguity"
         for value in proposal["proposals"]
     )
+    lookup = by_label["obsidian_fast_lookup_boundary"]
+    assert lookup["visibilityAssessment"]["status"] == (
+        "confirmed_human_visible_model_missing_information"
+    )
+    assert len(lookup["partitions"]) == 4
+    post_lookup = by_label["obsidian_post_lookup_partition"]
+    assert [
+        (value["firstOneBasedExampleOrdinal"], value["lastOneBasedExampleOrdinal"])
+        for value in post_lookup["partitions"]
+    ] == [(123, 123), (124, 125)]
 
 
 def check_structured_paste_proposal(builder: ModuleType) -> None:
@@ -326,6 +341,123 @@ def check_structured_paste_proposal(builder: ModuleType) -> None:
     assert target["segments"][1] == paste
 
 
+def check_model_facing_projection(builder: ModuleType) -> None:
+    query = json.dumps({"kind": "write_conditioning_state", "cursor": "here"})
+    event = json.dumps({"kind": "read", "content": "visible evidence"})
+    instruction = "Predict the completion."
+    semantic = instruction + "\n" + event + "\n" + query
+    example = {"exampleID": "example", "targetEventID": "target", "query": query}
+    plan = {
+        "exampleID": "example",
+        "taskInstruction": instruction,
+        "rightEdgeQuerySHA256": builder.hashlib.sha256(query.encode()).hexdigest(),
+        "semanticModelInputSHA256": builder.hashlib.sha256(semantic.encode()).hexdigest(),
+        "retainedContextBlocks": [
+            {"contextBlockID": "read", "contentTruncated": False}
+        ],
+    }
+    packed = {
+        "exampleID": "example",
+        "modelInputTokenCount": 3,
+        "targetTokenCount": 1,
+        "inputIDs": [1, 2, 3, 4],
+        "modelInputTokenCountBeforePacking": 3,
+        "sourceContextEventCount": 1,
+        "droppedContextEventCount": 0,
+        "partiallyRetainedContextEventCount": 0,
+        "unusedModelInputTokenBudget": 5,
+    }
+    projection = builder.model_facing_projection(
+        example,
+        plan,
+        packed,
+        {"read": {"serialized": event, "availableAt": "2026-08-19T12:00:00Z"}},
+    )
+    assert projection["exactSemanticModelInput"] == semantic
+    assert projection["retainedHistory"][0]["projection"]["content"] == (
+        "visible evidence"
+    )
+    assert projection["focusTimeObservationAvailable"] is False
+
+
+def check_partition_resolution(builder: ModuleType) -> None:
+    candidate = {
+        "candidateID": "partition",
+        "label": "partition",
+        "memberWriteEventIDs": ["123", "124", "125"],
+        "members": [
+            {
+                "oneBasedExampleOrdinal": ordinal,
+                "exampleID": f"example-{ordinal}",
+                "writeEventID": str(ordinal),
+                "beganAt": f"2026-08-19T12:00:{ordinal - 120:02d}Z",
+                "availableAt": f"2026-08-19T12:00:{ordinal - 119:02d}Z",
+                "beforeLogicalValue": "" if ordinal == 123 else str(ordinal - 1),
+                "selectedTerminalLogicalValue": str(ordinal),
+                "before": {
+                    "observationID": f"before-{ordinal}",
+                    "valueSHA256": f"before-hash-{ordinal}",
+                },
+                "selectedTerminalObservation": {
+                    "observationID": f"after-{ordinal}",
+                    "valueSHA256": f"after-hash-{ordinal}",
+                },
+                "targetIdentity": {
+                    "bundleIdentifier": "md.obsidian",
+                    "windowTitle": "note",
+                    "role": "AXTextArea",
+                },
+                "currentTarget": builder.authored_target(str(ordinal)),
+            }
+            for ordinal in (123, 124, 125)
+        ],
+        "oneBasedExampleRange": {"first": 123, "last": 125},
+        "finalObservation": {"value": "unused"},
+        "causalEvidence": {"interveningEvents": []},
+        "singleCompletionDiagnostic": {},
+    }
+    proposal = {
+        "decision": "partition_candidate",
+        "targetPolicy": "none_for_combined_candidate",
+        "closureAssessment": "fixture",
+        "representableAsSingleCompletion": False,
+        "notes": "fixture",
+        "partitions": [
+            {
+                "firstOneBasedExampleOrdinal": 123,
+                "lastOneBasedExampleOrdinal": 123,
+                "decision": "history_only",
+                "targetPolicy": "none_missing_information",
+                "representableAsSingleCompletion": False,
+                "notes": "missing",
+            },
+            {
+                "firstOneBasedExampleOrdinal": 124,
+                "lastOneBasedExampleOrdinal": 125,
+                "decision": "merge_closed_episode",
+                "targetPolicy": "custom_authored_target",
+                "proposedMarkerTarget": "124 perhaps not",
+                "representableAsSingleCompletion": True,
+                "notes": "merge",
+            },
+        ],
+    }
+    resolved = builder.resolve_proposal(candidate, proposal)
+    assert resolved["finalizedTarget"] is None
+    assert len(resolved["partitions"]) == 2
+    assert resolved["partitions"][0]["finalizedTarget"] is None
+    assert (
+        resolved["partitions"][1]["finalizedTarget"]["resolvedContent"]
+        == "124 perhaps not"
+    )
+    assert resolved["partitions"][1]["partitionEvidence"] == {
+        "memberWriteEventIDs": ["124", "125"],
+        "continuousReplayableState": True,
+        "exactLogicalEditableIdentity": True,
+        "interveningReadCount": 0,
+    }
+
+
 def main() -> int:
     builder = load_builder()
     check_final_state_not_keystroke_concatenation(builder)
@@ -338,6 +470,8 @@ def main() -> int:
     check_development_selection(builder)
     check_development_proposals(builder)
     check_structured_paste_proposal(builder)
+    check_model_facing_projection(builder)
+    check_partition_resolution(builder)
     print("Phase 1 episode-review checks passed.")
     return 0
 
