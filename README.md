@@ -305,7 +305,7 @@ and application-generated text that should not receive loss.
 
 --viewport-side-crop 0.1
 --viewport-top-crop 0.1
---viewport-bottom-crop 0.35
+--viewport-bottom-crop 0.1
     Configure the OCR recognition region.
 
 --cursor-context-characters 512

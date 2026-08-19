@@ -9,7 +9,7 @@ struct Configuration {
     var writeDelay: TimeInterval = 3.0
     var viewportSideCropFraction = 0.1
     var viewportTopCropFraction = 0.1
-    var viewportBottomCropFraction = 0.35
+    var viewportBottomCropFraction = 0.1
     let postPasteCheckpointDelay: TimeInterval = 0.05
     let postInputCheckpointDelay: TimeInterval = 0.05
     var cursorContextCharacters = 512

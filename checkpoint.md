@@ -115,6 +115,13 @@ delay and capture timestamp; they must not be backdated or relabeled as
 one-second observations. They can remain explicitly identified lower-recall
 history, while delay-homogeneous comparisons should use separate cohorts.
 
+The bottom viewport crop is now 10%, matching the existing 10% top and side
+crops. The transition began at the next clean session boundary,
+`phase1-ordinary-work-2026-08-19-3-read-delay-1-bottom-crop-10`. Existing OCR
+content retains its actual crop metadata. Historical sessions that retained
+full-window screenshots can later be re-OCRed into a new versioned raw-derived
+artifact with the 10% crop; existing OCR records must not be mutated in place.
+
 A derived READ requires:
 
 1. a complete `READ_DELAY` interval;
