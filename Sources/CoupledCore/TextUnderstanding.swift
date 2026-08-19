@@ -313,6 +313,35 @@ public func logicalEditableValue(_ value: String, placeholderValue: String?) -> 
     valueRepresentsPlaceholder(value, placeholderValue: placeholderValue) ? "" : value
 }
 
+/// Classifies only high-confidence keyboard submission boundaries that should
+/// start the ordinary delayed READ settlement process. This is sensor trigger
+/// evidence, not a third semantic event kind.
+public func postSubmissionReadTriggerEvidence(
+    role: String,
+    logicalBefore: String,
+    logicalPreReturn: String,
+    logicalPostReturn: String?,
+    postReturnUnavailable: Bool
+) -> String? {
+    guard logicalPreReturn != logicalBefore,
+          !logicalPreReturn.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        return nil
+    }
+
+    if role == "AXTextField" || role == "AXComboBox" {
+        return "single_line_return"
+    }
+    if postReturnUnavailable {
+        return "field_unavailable_after_return"
+    }
+    guard let logicalPostReturn else { return nil }
+    if logicalPostReturn == logicalBefore
+        || logicalPostReturn.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        return "field_cleared_after_return"
+    }
+    return nil
+}
+
 /// Identifies UI prompt chrome that an application exposes as AXValue even
 /// though the editable field is logically empty. This is deliberately narrow:
 /// unknown short field values remain user content rather than being guessed

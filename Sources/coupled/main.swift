@@ -149,6 +149,9 @@ do {
             eventWriter: eventWriter,
             mutatingInputObserver: { [weak reads] input in
                 reads?.supersedePendingReads(with: input)
+            },
+            postSubmissionObserver: { [weak reads] trigger in
+                reads?.observePostSubmission(trigger)
             }
         )
         try writes.start()
