@@ -32,6 +32,7 @@ def main() -> int:
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--adjudication-label", required=True)
     parser.add_argument("--include-shortest-paste", action="store_true")
+    parser.add_argument("--include-longest-ordinary", action="store_true")
     args = parser.parse_args()
     if args.output.exists():
         raise ValueError(f"output exists: {args.output}")
@@ -52,6 +53,15 @@ def main() -> int:
         if not pastes:
             raise ValueError("source has no separate paste example")
         selected.append(min(pastes, key=lambda row: (len(row["target"]["resolvedContent"]), row["exampleID"])))
+    if args.include_longest_ordinary:
+        ordinary = [
+            row for row in examples
+            if not any(segment.get("type") == "paste" for segment in row["target"]["segments"])
+            and row not in selected
+        ]
+        if not ordinary:
+            raise ValueError("source has no additional ordinary example")
+        selected.append(max(ordinary, key=lambda row: (len(row["target"]["resolvedContent"]), row["exampleID"])))
     selected.sort(key=lambda row: (row["targetBeganAt"], row["exampleID"]))
     for ordinal, row in enumerate(selected):
         row["chronologicalOrdinal"] = ordinal
@@ -73,7 +83,7 @@ def main() -> int:
         "counts": {**source_manifest["counts"], "examples": len(selected)},
         "smokeSubset": {
             "schemaVersion": 1,
-            "policy": "named_multi_write_episode_plus_shortest_grounded_paste",
+            "policy": "named_multi_write_episode_plus_shortest_grounded_paste_plus_longest_ordinary",
             "exampleIDs": [x["exampleID"] for x in selected],
         },
     }

@@ -1246,3 +1246,96 @@ read-only artifact check passes, and the HTTP index/detail endpoints were
 exercised locally. The next checkpoint remains human review, not automation:
 accept or revise these episode-design partitions before any versioned episode
 layer becomes compiler or training authority.
+
+## Closed composition episode corpus
+
+The 21-case episode-design review and the user's 2026-08-19 taste audit now
+feed a versioned layer between semantic events and loss-bearing examples:
+
+```text
+raw evidence
+→ phase1-semantic-v7 READ/WRITE micro-events
+→ phase1-episode-v1 closed composition episodes
+→ phase1-episode-causal-v1 examples
+→ phase1-token-pack-v6
+```
+
+Micro-WRITEs remain unchanged in chronological history and raw lineage. They
+no longer independently receive loss when an adjudicated group represents one
+closed composition. An episode uses the conditioning state captured before its
+first member, removes every member WRITE from its own context, becomes
+available only after its final member, and receives one structured target plus
+one EOS. Novel causal READs still partition thoughts; exact/repeated READs do
+not automatically do so. Ambiguous trajectories stay as history rather than
+being forced into a completion.
+
+Canonical all-data-through-2026-08-19 artifacts:
+
+```text
+coupled-data/phase1-episode-all-through-2026-08-19-micro-corpus-v1
+coupled-data/phase1-episode-all-through-2026-08-19-corpus-v1
+coupled-data/phase1-episode-all-through-2026-08-19-pack-v1
+```
+
+The source comprises the two sessions behind the original 200-example corpus
+plus four ordinary-work sessions from August 19. The micro conversion contains
+1,457 semantic events and 361 eligible micro targets. Episode v1 produces 295
+loss-bearing units: 28 multi-WRITE episodes absorb 97 micro-WRITEs, and 11
+reviewed micro-WRITEs remain history-only. The remaining unaffected eligible
+WRITEs are explicitly marked `unreviewed_singleton_closed_baseline`; this is an
+inspectable conservative baseline, not a claim that the system has solved a
+universal semantic definition of thought closure.
+
+Two user-supplied blind checks passed:
+
+- the Obsidian sequence around `2026-08-19T12:43:16.708Z` reconstructs five
+  semantic members into one finalized note composition, including the `(131)`
+  middle edit and subsequent continuation;
+- the Code sequence around `2026-08-19T19:05:05.004Z` reconstructs two members
+  into `this is better. take a look at the reviewer thread. it flagged a
+  post-submission trigger to clean up some other gaps.`
+
+Episode construction is deterministic: an independent replay produced
+byte-identical `corpus.json`, `examples.jsonl`, and `events.jsonl`. The episode
+audit verifies unique member ownership, causal context cutoffs, absence of all
+member WRITEs from their own input, grounded paste targets, and both blind
+cases. The tokenizer pack contains 295 examples and 34 grounded paste actions;
+the ordinary packed-data audit passes.
+
+### Qwen-only episode smoke
+
+A deliberately small Tinker smoke used three targets: the second blind
+multi-WRITE episode, the shortest grounded-paste target, and the longest
+ordinary target. It exercised 315 unique loss-bearing tokens, including paste
+and EOS, over 20 bounded epochs and 60 optimizer steps.
+
+Canonical artifacts:
+
+```text
+coupled-data/phase1-episode-smoke-corpus-v1
+coupled-data/phase1-episode-smoke-pack-v1
+coupled-data/phase1-episode-smoke-tinker-plan-v1.json
+coupled-data/phase1-episode-smoke-tinker-run-v1.json
+```
+
+The mechanical results were successful:
+
+- baseline weighted NLL: `3.544003669`;
+- trained weighted NLL: `0.000278241` (ratio `0.00007851`);
+- exact greedy generation: 3/3 targets;
+- EOS termination: 3/3;
+- grounded paste marker: exact;
+- sampler weights and optimizer state saved and reloaded;
+- reloaded generation was token-for-token identical.
+
+The legacy overfit report is labeled `failed_acceptance` solely because it
+requires bitwise-identical floating-point log probabilities after optimizer
+reload. Reloaded mean NLL differed by at most `0.000019011`; exact generated
+tokens, stop reasons, checkpoints, masks, and operation ceilings all matched.
+This is a provider numerical-reproducibility diagnostic, not a dataset or
+training-operation failure. Estimated logical cost was `$3.174507` before
+checkpoint storage; provider billing was still pending when the report closed.
+
+The next paid step is not another smoke. Inspect the changed episode targets,
+freeze the episode policy/version, then regenerate the full Phase 1
+score-before-update experiment over these closed composition units.
