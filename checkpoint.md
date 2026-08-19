@@ -792,9 +792,9 @@ Tinker completed 400 NLL calls, 400 samples, 500 optimizer steps, 14,587,208
 training positions, 24,415,028 prefill tokens, 120,232 observed sampled tokens,
 and eight checkpoint saves (sampler plus optimizer state after each block).
 Training NLL at the four update boundaries fell from `3.3493` to `2.5777`,
-`1.9438`, and `1.4444`. The frozen-price estimate before checkpoint storage is
-`$37.694867`, below the authorized `$40.00` ceiling; actual provider billing
-must be read from Tinker rather than inferred from this estimate. The Tinker
+`1.9438`, and `1.4444`. The frozen-price estimate before checkpoint storage was
+`$37.694867`; the user-verified final Tinker charge was `$30.10`, below both the
+estimate and the authorized `$40.00` ceiling. The Tinker
 manifest, score, and update hashes are respectively
 `bbba0c7ae35e2552ebfe30c474df8ad1c500c1c754151405a3e69da5899341a1`,
 `2c3322ae1de0b245d6b436a9bd165f870956c1a86c94b5610bc9371dccfd2815`,
@@ -891,7 +891,7 @@ making stronger judgment-distillation claims. Keep subsequent chronological
 blocks prospective and report unique human targets separately from repeated
 training presentations.
 
-Before the next paid run, read actual Tinker billing for this experiment,
+Before the next paid run, carry the verified `$30.10` charge into cost planning,
 freeze the next appended corpus and context plans, generate a new reviewed
 provider plan, and decide whether to retain cumulative replay or add a
 new-block-only training arm. Reduced-history, timestamp, context-length,
