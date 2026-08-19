@@ -9,11 +9,11 @@ import json
 from decimal import Decimal
 from pathlib import Path
 
-from phase1_experiment import validate_inputs
+from phase1_experiment import TINKER_TRAINING_CONTRACT, validate_inputs
 from phase1_training_contract import TrainingContractError, sha256
 
 
-PLAN_VERSION = "phase1-provider-plan-v2"
+PLAN_VERSION = "phase1-provider-plan-v3"
 QWEN_MODEL = "Qwen/Qwen3.5-9B-Base"
 OPENAI_MODEL = "gpt-5.6-sol"
 OPENAI_REASONING_EFFORT = "xhigh"
@@ -25,6 +25,7 @@ TINKER_TRAIN_PER_MILLION = Decimal("1.463")
 OPENAI_INPUT_PER_MILLION = Decimal("5.00")
 OPENAI_OUTPUT_PER_MILLION = Decimal("30.00")
 CHECKPOINT_RESERVE = Decimal("1.00")
+HARD_EXECUTION_CEILING = Decimal("40.00")
 
 
 def money(tokens: int, price: Decimal) -> Decimal:
@@ -58,6 +59,12 @@ def main() -> int:
         or arguments.openai_max_output_tokens <= 0
     ):
         raise TrainingContractError("epochs and generation ceiling must be positive")
+    if arguments.epochs_per_update != TINKER_TRAINING_CONTRACT[
+        "epochsPerCumulativeUpdate"
+    ]:
+        raise TrainingContractError(
+            "epochs per update differ from the frozen Tinker training contract"
+        )
 
     corpus_path = arguments.corpus.expanduser().resolve()
     packed_path = arguments.packed.expanduser().resolve()
@@ -110,6 +117,8 @@ def main() -> int:
         "checkpointReserveUSD": CHECKPOINT_RESERVE,
     }
     tinker_total = sum(tinker_cost.values(), Decimal(0))
+    if tinker_total > HARD_EXECUTION_CEILING:
+        raise TrainingContractError("Tinker projection exceeds the hard execution ceiling")
 
     context_blocks = {
         row["contextBlockID"]: row
@@ -163,7 +172,7 @@ def main() -> int:
             "qwenTokenCountProxyNotBillingAuthority": openai_proxy_input_tokens,
             "comparableTargetNLLAvailable": False,
         },
-        "unverifiedUntilAuthenticatedPreflight": [
+            "unverifiedUntilAuthenticatedPreflight": [
             "account model access",
             "resolved model snapshot if exposed",
             "actual usage-limit consumption",
@@ -207,10 +216,33 @@ def main() -> int:
             "requiresNoAdditionalCreditAuthorization": True,
         })
 
+    project_directory = Path(__file__).resolve().parent.parent
+    implementation_paths = [
+        Path(__file__).resolve(),
+        project_directory / "scripts/phase1_experiment.py",
+        project_directory / "scripts/phase1_training_contract.py",
+        project_directory / "scripts/phase1_tinker_overfit_contract.py",
+        project_directory / "scripts/phase1_subscription_responses.py",
+        project_directory / "scripts/run-phase1-frontier-arm.py",
+        project_directory / "scripts/run-phase1-tinker-prequential.py",
+        project_directory / "scripts/audit-phase1-real-experiment.py",
+        project_directory / "scripts/tinker-requirements.txt",
+        project_directory / "scripts/litellm-subscription-requirements.txt",
+    ]
+    for path in implementation_paths:
+        if not path.is_file():
+            raise TrainingContractError(f"missing experiment implementation file: {path}")
+
     plan = {
         "schemaVersion": 1,
         "planVersion": PLAN_VERSION,
         "status": "local_plan_only_no_authentication_or_data_transfer",
+        "implementation": {
+            "fileDigestsSHA256": {
+                str(path.relative_to(project_directory)): sha256(path)
+                for path in implementation_paths
+            },
+        },
         "source": {
             "corpusID": corpus["corpusID"],
             "corpusSHA256": sha256(corpus_path / "corpus.json"),
@@ -260,6 +292,13 @@ def main() -> int:
                 **{key: decimal_string(value) for key, value in tinker_cost.items()},
                 "totalIncludingReserve": decimal_string(tinker_total),
             },
+            "trainingContract": TINKER_TRAINING_CONTRACT,
+            "hardExecutionCeilingUSD": str(HARD_EXECUTION_CEILING),
+            "interruptionPolicy": {
+                "partialUpdateReplayAllowedUnderThisPlan": False,
+                "inFlightOperationReplayAllowedUnderThisPlan": False,
+                "reason": "a repeated paid operation is outside the frozen cost projection",
+            },
         },
         "openai": openai_plan,
         "authorizationBoundary": {
@@ -268,7 +307,7 @@ def main() -> int:
             "thisCommandTransmitsPersonalData": False,
             "separateApprovalRequiredForAuthenticatedMetadataCalls": True,
             "separateApprovalRequiredForAnyDataBearingCall": True,
-            "hardCostCeilingFrozen": False,
+            "hardCostCeilingFrozen": True,
             "chatGPTSubscriptionCannotFundResponsesAPI": True,
         },
     }

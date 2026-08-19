@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from phase1_experiment import load_jsonl, validate_inputs
+from phase1_experiment import semantic_model_input, target_text, validate_inputs
 from phase1_subscription_responses import (
     MODEL,
     REASONING_EFFORT,
@@ -19,60 +19,6 @@ from phase1_subscription_responses import (
     request_completion,
 )
 from phase1_training_contract import TrainingContractError
-
-
-PASTE_MARKER = "<|paste|>"
-
-
-def target_text(target: dict[str, Any]) -> str:
-    pieces: list[str] = []
-    for segment in target.get("segments", []):
-        kind = segment.get("type")
-        if kind == "authored_text" and isinstance(segment.get("content"), str):
-            pieces.append(segment["content"])
-        elif kind == "paste":
-            pieces.append(PASTE_MARKER)
-        else:
-            raise TrainingContractError(f"unsupported target segment: {kind}")
-    result = "".join(pieces)
-    if not result:
-        raise TrainingContractError("paste preflight target is empty")
-    return result
-
-
-def semantic_input(
-    corpus_path: Path,
-    example: dict[str, Any],
-    plan: dict[str, Any],
-) -> str:
-    blocks = {
-        value["contextBlockID"]: value
-        for value in load_jsonl(corpus_path / "context-blocks.jsonl")
-    }
-    serialized: list[str] = []
-    for retained in plan["retainedContextBlocks"]:
-        text = retained.get("serializedOverride")
-        if text is None:
-            text = blocks[retained["contextBlockID"]]["serialized"]
-        serialized.append(text)
-    context = "\n".join(serialized)
-    body = example["query"] if not context else context + "\n" + example["query"]
-    value = plan["taskInstruction"] + "\n" + body
-    if hashlib.sha256(value.encode()).hexdigest() != plan["semanticModelInputSHA256"]:
-        raise TrainingContractError("semantic model input digest disagrees")
-
-    events = {
-        event["sourceEventID"]: event
-        for event in load_jsonl(corpus_path / "events.jsonl")
-    }
-    privacy = json.loads((corpus_path / "privacy-policy.json").read_text())
-    for entry in privacy["events"]:
-        event_id = entry["sourceEventID"]
-        if events[event_id]["serialized"] in value:
-            raise TrainingContractError(
-                f"unredacted private context survived for {event_id}"
-            )
-    return value
 
 
 def main() -> int:
@@ -104,7 +50,7 @@ def main() -> int:
         raise TrainingContractError("no matching grounded-paste example")
     example = candidates[0]
     plan = plans[example["exampleID"]]
-    model_input = semantic_input(corpus_path, example, plan)
+    model_input = semantic_model_input(corpus_path, example, plan)
     expected = target_text(example["target"])
     report: dict[str, Any] = {
         "schemaVersion": 1,

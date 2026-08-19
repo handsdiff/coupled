@@ -691,7 +691,7 @@ chronological-block and cross-model scoring harness, not basic remote training:
 - **Sliding window versus retrieval:** every causally available event remains addressable by ID, but BM25 query preprocessing, retrieval selection, and a frozen retrieval-plan artifact are not implemented.
 - **Direct versus private reasoning:** the same input and final target can be reused, but scratchpad generation, final-answer isolation, latency accounting, and scoring are not implemented.
 - **Continual Qwen versus closed ICL:** the Qwen LoRA path and provider-neutral prequential protocol rehearsal are mechanically implemented, but the paid personalized-Qwen block adapter and frontier-model adapter are not yet authorized or executed.
-- **Open- and closed-model scaling:** packer v7 freezes one shared semantic context plan containing the retained block IDs, any exact oldest-block rewrite, exact query digest, full semantic-input digest, paste-action instruction, and privacy-redacted context blocks. Every arm must reconstruct this same plan; no model tokenizer may select extra history.
+- **Open- and closed-model scaling:** packer v7 freezes one shared semantic context plan containing the retained block IDs, any exact oldest-block rewrite, exact query digest, full semantic-input digest, and paste-action instruction. Every arm must reconstruct this same plan; no model tokenizer may select extra history. The current authorized experiment uses the complete unredacted 200-example corpus.
 
 Every scored example must retain its individual pre-update NLL when exposed by the model interface. Block reports distinguish macro example-average NLL, in which every WRITE contributes equally, from micro target-token NLL, in which longer targets contribute more loss-bearing tokens. The completed Tinker overfit reports the latter as its headline aggregate; the two statistics must not be conflated.
 
@@ -729,28 +729,30 @@ than either pretending continuous coverage or automatically resetting history.
 The marker is serialization metadata, not a third semantic event. Hard reset
 versus gap-aware carryover is a later versioned ablation.
 
-The first assembled corpus contains Run 8 followed by the August 18 session.
-Before privacy filtering it has 28 + 172 = 200 eligible examples. Three private
-form fields span five WRITE bursts; a versioned privacy policy excludes those
-five targets and replaces their later model-facing history with an explicit
-redacted WRITE marker while leaving local semantic evidence unchanged. The
-result is 195 examples in chronological blocks of 50, 50, 50, and 45. It retains
-837 semantic READ/WRITE events plus one structural `unknown` coverage gap.
-Repeated assembly is byte-identical. Packer v7 creates the common 32K semantic
-context plan and packs all 195 targets with 23 grounded paste actions; the
-corpus and packed audits pass. The shared plan preserves one identical left-edge
+The first assembled corpus contains Run 8 followed by the August 18 session:
+28 + 172 = 200 eligible examples. An earlier candidate excluded five Inkling
+form-response WRITEs and redacted them from later history. The user subsequently
+authorized those responses as both learned targets and provider-transmitted
+context, so that 195-example projection is superseded. The canonical unredacted
+corpus has 200 examples in four chronological blocks of 50, retains all 837
+semantic READ/WRITE events plus one structural `unknown` coverage gap, and has
+zero redacted or privacy-excluded targets. Independent assembly is byte-identical.
+Packer v7 creates the common 32K semantic context plan and packs all 200 targets
+with 24 grounded paste actions; both independent packed example/context-plan
+artifacts are byte-identical and their audits pass. The shared plan preserves one
+identical left-edge
 task instruction—predict the exact next human WRITE completion, represent every
 paste action as literal `<|paste|>` rather than its payload, and output only that
 completion—inside the 32K budget for every arm. This prevents the personalized
 model from being the only condition taught an otherwise unstated serialization
 convention.
 
-The `phase1-prequential-v1` mock backend rehearses 585 scores and four updates
+The `phase1-prequential-v1` mock backend rehearses 600 scores and four updates
 without a model, network, authentication, or cost. It proves each complete block
 is scored before update and records the chosen initial exposure policy explicitly:
 warm-start the prior checkpoint and train one epoch over the full cumulative
-corpus. Across the four blocks, 2,748 loss-bearing target-token occurrences
-become 7,264 presentations across updates. This is an exposure
+corpus. Across the four blocks, 2,782 loss-bearing target-token occurrences
+become 7,298 presentations across updates. This is an exposure
 choice recorded for later comparison, not additional unique human data.
 
 ## Remaining requirements
@@ -773,7 +775,7 @@ and bounded Tinker LoRA overfit—including exact `<|paste|>`/EOS generation and
 sampler/optimizer-state reload—have passed. They remain mechanical gates rather
 than behavioral evidence.
 
-1. Freeze the canonical 195-example privacy-filtered corpus and shared 32K semantic context plans from the two audited sessions.
+1. Freeze the canonical 200-example unredacted corpus and shared 32K semantic context plans from the two audited sessions. The user's authorization explicitly includes the five Inkling form-response targets and their appearance in provider-transmitted history.
 2. Preflight the exact Tinker and subscription-backed LiteLLM Responses operations, model identities, decoding, projected token use, privacy boundaries, and hard cost ceilings without transmitting personal data.
 3. After separate authorization, score each block with frozen base Qwen, frozen `gpt-5.6-sol` at `xhigh`, and the current personalized checkpoint using the same context plan.
 4. Train the personalized Qwen only after complete block scoring, save sampler and optimizer state, and use each result only for the following block.
@@ -802,7 +804,7 @@ than behavioral evidence.
 
 With the prior mechanical provider charge audited at `$14.37`, retain that
 memorization result as a harness gate. The immediate next gate is a no-data-transfer
-provider preflight for the new 195-example, four-block corpus. It must calculate
+provider preflight for the new 200-example, four-block corpus. It must calculate
 exact Tinker training/scoring positions and verify the subscription-backed
 LiteLLM route, pin
 model and project identities, and produce an immutable reviewed plan before any
@@ -825,8 +827,8 @@ training starts a new versioned lineage rather than retroactively turning
 already observed data into a prospective result. Run 8's memorization remains a
 mechanical result, not a behavioral one.
 
-The local provider plan calculates 14,423,310 cumulative Tinker training
-positions and a `$38.180924` Tinker projection including a `$1` checkpoint
+The superseding unredacted provider plan calculates 14,587,208 cumulative Tinker
+training positions and a `$38.863580` Tinker projection including a `$1` checkpoint
 reserve. The frontier arm is configured as a direct Responses request through a
 loopback LiteLLM proxy using the ChatGPT-subscription route
 `chatgpt/gpt-5.6-sol` at `xhigh`; it must never fall back to an OpenAI API key.
@@ -840,18 +842,39 @@ or metadata and cannot target a nonlocal URL. The ChatGPT OAuth flow and a
 non-personal authenticated preflight passed: `chatgpt/gpt-5.6-sol` at requested
 `xhigh` returned model `gpt-5.6-sol` and exact output `OK`, using 1,642 input and
 5 output tokens. It used no OpenAI API key and transmitted no collected data.
-The separately authorized single-example data gate also passed. The earliest
-eligible grounded-paste example was reconstructed from the frozen privacy-filtered
-semantic context plan, its input digest and private-event redactions were verified
-locally, and only its 11,592-byte model input was transmitted; its held-out target
-was not sent. `gpt-5.6-sol` at requested `xhigh` returned the exact expected
+The separately authorized single-example data gate also passed on the earlier
+privacy-filtered candidate. The earliest eligible grounded-paste example is
+unchanged in the unredacted corpus; it was reconstructed from the frozen shared
+semantic context plan, and only its 11,592-byte model input was transmitted; its
+held-out target was not sent. `gpt-5.6-sol` at requested `xhigh` returned the exact expected
 `<|paste|>` completion in 3.53 seconds, using 4,150 input tokens and 85 output
 tokens, of which 74 were reasoning tokens. The authenticated report is
 `coupled-data/phase1-experiment-1-paste-preflight-authenticated-v1.json` with
 SHA-256 `448dcc399d4cc3dc58873deebbd1864607ce69616ecfd8ac083bd87a274e27df`.
 This proves the shared paste instruction is understood on one real example; it
 is a transport/serialization gate, not behavioral evidence. Complete-corpus
-scoring remains a separate explicitly authorized operation.
+scoring was subsequently authorized, including the restored Inkling material,
+but remains paused until the regenerated artifacts and real runners are reviewed.
+
+Provider-plan v3 closes the final execution-review gaps. It freezes the actual
+Qwen training contract in the reviewed artifact: rank-32 LoRA over attention,
+MLP, and unembedding; seed 17; one example per forward/backward operation; one
+epoch over the cumulative corpus after each block; deterministic SHA-256 example
+ordering; Adam at learning rate `0.0002`, betas `0.9/0.95`, epsilon `1e-12`, no
+weight decay, and gradient clipping at `1.0`; and seven-day sampler/optimizer
+checkpoints. It also binds every runner/dependency digest and requires the same
+clean Git revision on resume. Tinker writes an in-flight marker before each paid
+score, training, or checkpoint operation and refuses to replay either an
+in-flight operation or a partially completed update under the same `$40`
+authorization. Recovery would require explicit reconciliation and a new
+cost-authorized plan rather than silently omitting prior spend. A no-network
+regression constructs all 600 synthetic arm scores, exercises safe resume plus
+in-flight/partial-update/revision/dependency rejection, passes the final
+three-arm audit, and proves the audit rejects a personalized checkpoint that has
+already seen its scored block. The frozen provider plan is
+`coupled-data/phase1-experiment-1-provider-plan-local-v7-unredacted-frozen-runner.json`
+with SHA-256
+`b70be648abfd744b1e6af51a2aa4e2d80bba0a0693cff24e5f1f68b41e23710a`.
 
 Keep the initial task content-only given causal history plus known destination,
 semantic cursor context, and clipboard state. Idle-triggered sampling,

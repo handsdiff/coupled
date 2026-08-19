@@ -27,6 +27,32 @@ ARM_FROZEN_QWEN = "frozen_qwen3.5_9b_base"
 ARM_FROZEN_FRONTIER = "frozen_gpt_5.6_sol_xhigh"
 ARM_PERSONALIZED_QWEN = "personalized_qwen3.5_9b_base"
 ARMS = (ARM_FROZEN_QWEN, ARM_FROZEN_FRONTIER, ARM_PERSONALIZED_QWEN)
+PASTE_MARKER = "<|paste|>"
+TINKER_TRAINING_CONTRACT = {
+    "algorithm": "lora",
+    "rank": 32,
+    "trainAttention": True,
+    "trainMLP": True,
+    "trainUnembedding": True,
+    "seed": 17,
+    "batchExamplesPerForwardBackward": 1,
+    "epochsPerCumulativeUpdate": 1,
+    "checkpointTTLSeconds": 7 * 24 * 60 * 60,
+    "optimizer": {
+        "type": "adam",
+        "learningRate": 0.0002,
+        "beta1": 0.9,
+        "beta2": 0.95,
+        "epsilon": 1e-12,
+        "weightDecay": 0.0,
+        "gradientClipNorm": 1.0,
+    },
+    "exampleOrder": {
+        "version": "phase1-prequential-order-v1",
+        "algorithm": "sha256_ascending_then_example_id",
+        "material": "phase1-prequential:{seed}:{updateOrdinal}:{exampleID}",
+    },
+}
 
 
 def canonical_bytes(value: Any) -> bytes:
@@ -53,6 +79,68 @@ def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
     with path.open("wb") as handle:
         for row in rows:
             handle.write(canonical_bytes(row))
+
+
+def target_text(target: dict[str, Any]) -> str:
+    """Render the tokenizer-independent Phase 1 completion target."""
+
+    pieces: list[str] = []
+    for segment in target.get("segments", []):
+        kind = segment.get("type")
+        if kind == "authored_text" and isinstance(segment.get("content"), str):
+            pieces.append(segment["content"])
+        elif kind == "paste":
+            pieces.append(PASTE_MARKER)
+        else:
+            raise TrainingContractError(f"unsupported target segment: {kind}")
+    result = "".join(pieces)
+    if not result:
+        raise TrainingContractError("Phase 1 target is empty")
+    return result
+
+
+def semantic_model_input(
+    corpus_directory: Path,
+    example: dict[str, Any],
+    context_plan: dict[str, Any],
+) -> str:
+    """Reconstruct and verify the shared semantic input for non-Qwen arms.
+
+    The packed Qwen IDs and this text are two projections of the same frozen
+    context plan.  Known private events must occur only through their explicit
+    serialized redaction overrides.
+    """
+
+    blocks = {
+        value["contextBlockID"]: value
+        for value in load_jsonl(corpus_directory / "context-blocks.jsonl")
+    }
+    serialized: list[str] = []
+    for retained in context_plan["retainedContextBlocks"]:
+        text = retained.get("serializedOverride")
+        if text is None:
+            text = blocks[retained["contextBlockID"]]["serialized"]
+        serialized.append(text)
+    context = "\n".join(serialized)
+    body = example["query"] if not context else context + "\n" + example["query"]
+    value = context_plan["taskInstruction"] + "\n" + body
+    if hashlib.sha256(value.encode()).hexdigest() != context_plan[
+        "semanticModelInputSHA256"
+    ]:
+        raise TrainingContractError("semantic model input digest disagrees")
+
+    events = {
+        event["sourceEventID"]: event
+        for event in load_jsonl(corpus_directory / "events.jsonl")
+    }
+    privacy = json.loads((corpus_directory / "privacy-policy.json").read_text())
+    for entry in privacy["events"]:
+        event_id = entry["sourceEventID"]
+        if events[event_id]["serialized"] in value:
+            raise TrainingContractError(
+                f"unredacted private context survived for {event_id}"
+            )
+    return value
 
 
 @dataclass(frozen=True)
