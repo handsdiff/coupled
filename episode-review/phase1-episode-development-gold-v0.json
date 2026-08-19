@@ -87,7 +87,10 @@
       "firstOneBasedExampleOrdinal": 181,
       "lastOneBasedExampleOrdinal": 185,
       "category": "within_composition_fragmentation",
-      "rationale": "A long prompt continuation split by pauses and cursor boundaries tests reconstruction from a pre-existing authored prefix."
+      "rationale": "A long prompt split by pauses and cursor boundaries begins in a target-ineligible history-only WRITE 137 ms before example 181; the exact leading event is included to review the complete composition.",
+      "leadingWriteEventIDs": [
+        "evt_2ee98457e931a7545fd2e5387e7f57f5365ff055131ca38ddab6363cac9e1a2d"
+      ]
     },
     {
       "label": "chatgpt_fragmented_temporal",
@@ -144,7 +147,7 @@
       "firstOneBasedExampleOrdinal": 127,
       "lastOneBasedExampleOrdinal": 128,
       "category": "long_editor_ambiguous_boundary",
-      "rationale": "Two adjacent GTM-note writes test semantic continuity when raw editable identity or intervening evidence disagrees."
+      "rationale": "Two adjacent GTM-note writes test whether exact repeated READ content and an unstable AX element hash should remain non-boundaries when logical identity and field-state replay agree."
     },
     {
       "label": "code_independent_commands",

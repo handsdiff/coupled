@@ -131,7 +131,7 @@ def check_history_only_write_is_retained(builder: ModuleType) -> None:
     ]
 
 
-def check_read_is_hard_causal_boundary(builder: ModuleType) -> None:
+def check_only_novel_read_is_causal_boundary(builder: ModuleType) -> None:
     events = [
         event("write-1", "write", "2026-08-19T12:00:00Z", "2026-08-19T12:00:01Z"),
         event("read-1", "read", "2026-08-19T12:00:02Z", "2026-08-19T12:00:03Z"),
@@ -144,13 +144,33 @@ def check_read_is_hard_causal_boundary(builder: ModuleType) -> None:
         dt.datetime.fromisoformat("2026-08-19T12:00:05+00:00"),
     )
     assert [value["sourceEventID"] for value in inside] == ["read-1"]
+    repeated = builder.read_novelty_evidence(
+        inside,
+        {"retainedHistory": [{"serialized": inside[0]["serialized"]}]},
+    )
+    assert not repeated["novelReads"]
+    assert [value["sourceEventID"] for value in repeated["repeatedReads"]] == [
+        "read-1"
+    ]
     failures = builder.mechanical_gate_failures(
         continuous_replay=True,
-        exact_identity_stable=True,
-        intervening_reads=inside,
+        logical_identity_stable=True,
+        novel_intervening_reads=repeated["novelReads"],
         overlapping_outside_writes=[],
     )
-    assert failures == ["causally_available_read_inside_candidate"]
+    assert failures == []
+
+    novel = builder.read_novelty_evidence(
+        inside,
+        {"retainedHistory": [{"serialized": '{"kind":"read","content":"other"}'}]},
+    )
+    failures = builder.mechanical_gate_failures(
+        continuous_replay=True,
+        logical_identity_stable=True,
+        novel_intervening_reads=novel["novelReads"],
+        overlapping_outside_writes=[],
+    )
+    assert failures == ["novel_causally_available_read_inside_candidate"]
 
 
 def check_reducer_selected_terminal_is_authoritative(builder: ModuleType) -> None:
@@ -216,8 +236,8 @@ def check_continuity_is_exact_gate(builder: ModuleType) -> None:
     assert not evidence["continuousReplayableState"]
     failures = builder.mechanical_gate_failures(
         continuous_replay=False,
-        exact_identity_stable=True,
-        intervening_reads=[],
+        logical_identity_stable=True,
+        novel_intervening_reads=[],
         overlapping_outside_writes=[{"sourceEventID": "other-write"}],
     )
     assert failures == [
@@ -248,6 +268,12 @@ def check_development_selection(builder: ModuleType) -> None:
     assert "independent_actions_negative_control" in categories
     assert "human_visible_model_missing_causal_boundary" in categories
     assert "causal_partition_design_case" in categories
+    fragmented = next(
+        value for value in neighborhoods if value.label == "chatgpt_fragmented_long"
+    )
+    assert fragmented.leading_write_event_ids == (
+        "evt_2ee98457e931a7545fd2e5387e7f57f5365ff055131ca38ddab6363cac9e1a2d",
+    )
 
 
 def check_development_proposals(builder: ModuleType) -> None:
@@ -296,6 +322,12 @@ def check_development_proposals(builder: ModuleType) -> None:
         (value["firstOneBasedExampleOrdinal"], value["lastOneBasedExampleOrdinal"])
         for value in post_lookup["partitions"]
     ] == [(123, 123), (124, 125)]
+    assert by_label["obsidian_gtm_composition"]["decision"] == (
+        "merge_closed_episode"
+    )
+    assert by_label["chatgpt_fragmented_long"]["decision"] == (
+        "merge_closed_episode"
+    )
 
 
 def check_structured_paste_proposal(builder: ModuleType) -> None:
@@ -463,7 +495,7 @@ def main() -> int:
     check_final_state_not_keystroke_concatenation(builder)
     check_unique_semantic_anchor(builder)
     check_history_only_write_is_retained(builder)
-    check_read_is_hard_causal_boundary(builder)
+    check_only_novel_read_is_causal_boundary(builder)
     check_reducer_selected_terminal_is_authoritative(builder)
     check_continuity_is_exact_gate(builder)
     check_deterministic_serialization(builder)

@@ -84,7 +84,7 @@ class ReviewStore:
             example_id = candidate.get("predictionOpportunity", {}).get(
                 "modelFacingExampleID"
             )
-            if example_id not in self.model_inputs:
+            if example_id is not None and example_id not in self.model_inputs:
                 raise ReviewUIError(
                     f"candidate has no model-facing input: {candidate['label']}"
                 )
@@ -112,8 +112,14 @@ class ReviewStore:
         if candidate is None:
             raise KeyError(label)
         proposal = self.proposals.get(label)
+        opportunity = candidate["predictionOpportunity"]
         example_ids = {
-            candidate["predictionOpportunity"]["modelFacingExampleID"]
+            value
+            for value in (
+                opportunity.get("modelFacingExampleID"),
+                opportunity.get("nearestLaterPackedExampleID"),
+            )
+            if isinstance(value, str)
         }
         if proposal:
             example_ids.update(
@@ -146,7 +152,7 @@ async function loadIndex(){summaries=await (await fetch('/api/index')).json();do
 function modelPanel(m,title){const history=m.retainedHistory.map(e=>`<div class="card"><div class="meta">${e.ordinal} · ${esc(e.projection.kind)} · ${esc(e.projection.application)} · ${esc(e.projection.window)}${e.contentTruncated?' · TRUNCATED':''}</div>${pre(e.projection.kind==='read'?e.projection.content:e.projection.authorshipSegments)}</div>`).join('');return `<div class="card"><h3>${esc(title)}</h3><div class="meta">${m.modelInputTokenCount} tokens · ${m.retainedContextEventCount}/${m.sourceContextEventCount} events retained · ${m.droppedContextEventCount} dropped · ${esc(m.semanticModelInputSHA256)}</div><h3>Conditioning query</h3>${pre(m.query)}<details><summary>Exact retained model history</summary><div class="history">${history}</div></details><details><summary>Exact serialized model input</summary>${pre(m.exactSemanticModelInput)}</details></div>`}
 function proposalPanel(p){if(!p)return '<div class="card">No proposal.</div>';const vis=p.visibilityAssessment||{};const target=p.finalizedTarget?`<h3>Proposed target</h3><div class="card">${marker(p.finalizedTarget)}</div>`:'';const parts=(p.partitions||[]).map(x=>`<div class="card partition"><b>${x.firstOneBasedExampleOrdinal}–${x.lastOneBasedExampleOrdinal}: ${esc(x.decision)}</b><div class="meta">${esc(x.targetPolicy)} · input ${esc(x.modelFacingExampleID)}</div>${x.finalizedTarget?`<div>${marker(x.finalizedTarget)}</div>`:'<div class="warn">No loss target</div>'}<p>${esc(x.notes)}</p></div>`).join('');return `<div class="card"><h3>Assistant proposal — pending human adjudication</h3><b>${esc(p.decision)}</b><p>${esc(p.notes)}</p><div class="${vis.status?.includes('missing')?'bad':'meta'}"><b>${esc(vis.status)}</b><br>${esc(vis.missingInformation||vis.note||'')}</div></div>${target}${parts?`<h3>Explicit partitions</h3>${parts}`:''}`}
 function trajectory(c){return c.members.map(m=>`<div class="card"><b>Example ${m.oneBasedExampleOrdinal??'history-only'} · ${esc(m.application)} · ${esc(m.boundaryReason)}</b><div class="meta">${esc(m.writeEventID)} · selected ${esc(m.selectedTerminalObservationSource)}</div><h3>Old loss target</h3>${pre(m.currentLossTarget||'[no independent loss target]')}<details><summary>Raw logical BEFORE</summary>${pre(m.beforeLogicalValue)}</details><details><summary>Reducer-selected terminal</summary>${pre(m.selectedTerminalLogicalValue)}</details></div>`).join('')}
-async function loadDetail(label){selected=label;document.querySelectorAll('.item').forEach(b=>b.classList.toggle('active',b.dataset.label===label));const d=await (await fetch('/api/candidate?label='+encodeURIComponent(label))).json();const c=d.candidate,p=d.proposal,first=d.modelFacingInputs[c.predictionOpportunity.modelFacingExampleID];const all=Object.values(d.modelFacingInputs);document.getElementById('main').innerHTML=`<div class="warning"><b>Sampling proxy, not focus-time evidence.</b> ${esc(c.predictionOpportunity.limitation)}</div><h2>${esc(c.label)}</h2><div class="meta">Examples ${c.oneBasedExampleRange.first}–${c.oneBasedExampleRange.last} · ${esc(c.selectionCategory)} · ${esc(c.selectionMode)} · gates ${c.mechanicalGates.passed?'passed':'failed: '+c.mechanicalGates.failures.join(', ')}</div><p>${esc(c.selectionRationale)}</p><div class="grid"><section class="panel"><div class="head"><h2>What the model actually received</h2></div><div class="body">${modelPanel(first,'Candidate-onset input')}${all.filter(x=>x.exampleID!==first.exampleID).map(x=>modelPanel(x,'Partition input')).join('')}</div></section><section class="panel"><div class="head"><h2>What the human produced</h2></div><div class="body">${proposalPanel(p)}<h3>Complete micro-WRITE trajectory</h3>${trajectory(c)}</div></section></div>`}
+async function loadDetail(label){selected=label;document.querySelectorAll('.item').forEach(b=>b.classList.toggle('active',b.dataset.label===label));const d=await (await fetch('/api/candidate?label='+encodeURIComponent(label))).json();const c=d.candidate,p=d.proposal,onsetID=c.predictionOpportunity.modelFacingExampleID,first=onsetID?d.modelFacingInputs[onsetID]:null,all=Object.values(d.modelFacingInputs);const inputPanel=first?modelPanel(first,'Candidate-onset input'):`<div class="card bad"><h3>No frozen packed input existed at episode onset</h3><p>The first member was history-only in the old corpus. A future episode compiler must build a new query from this recorded conditioning state; the later packed example is not a substitute.</p>${pre(c.initialConditioningState)}</div>`;document.getElementById('main').innerHTML=`<div class="warning"><b>Sampling proxy, not focus-time evidence.</b> ${esc(c.predictionOpportunity.limitation)}</div><h2>${esc(c.label)}</h2><div class="meta">Examples ${c.oneBasedExampleRange.first}–${c.oneBasedExampleRange.last} · ${esc(c.selectionCategory)} · ${esc(c.selectionMode)} · gates ${c.mechanicalGates.passed?'passed':'failed: '+c.mechanicalGates.failures.join(', ')}</div><p>${esc(c.selectionRationale)}</p><div class="grid"><section class="panel"><div class="head"><h2>What the model actually received</h2></div><div class="body">${inputPanel}${all.filter(x=>!first||x.exampleID!==first.exampleID).map(x=>modelPanel(x,first?'Partition input':'Nearest later packed input (not episode onset)')).join('')}</div></section><section class="panel"><div class="head"><h2>What the human produced</h2></div><div class="body">${proposalPanel(p)}<h3>Complete micro-WRITE trajectory</h3>${trajectory(c)}</div></section></div>`}
 loadIndex().catch(e=>document.getElementById('main').textContent=e.stack||e);
 </script></body></html>'''
 

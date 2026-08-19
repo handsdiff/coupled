@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 
-BUILDER_VERSION = "phase1-episode-design-v1-shadow-r3"
+BUILDER_VERSION = "phase1-episode-design-v1-shadow-r4"
 SEMANTIC_ANCHOR_MINIMUM_CHARACTERS = 32
 
 
@@ -479,6 +479,7 @@ class Neighborhood:
     category: str | None = None
     rationale: str | None = None
     mode: str = "editable_episode"
+    leading_write_event_ids: tuple[str, ...] = ()
 
 
 def parse_neighborhood(value: str) -> Neighborhood:
@@ -513,6 +514,7 @@ def load_selection(path: Path, corpus_id: str) -> tuple[list[Neighborhood], dict
         category = row.get("category")
         rationale = row.get("rationale")
         mode = row.get("mode", "editable_episode")
+        leading_write_event_ids = row.get("leadingWriteEventIDs", [])
         if (
             not isinstance(label, str)
             or not label
@@ -525,6 +527,12 @@ def load_selection(path: Path, corpus_id: str) -> tuple[list[Neighborhood], dict
             or not isinstance(rationale, str)
             or not rationale
             or mode not in {"editable_episode", "causal_sequence"}
+            or not isinstance(leading_write_event_ids, list)
+            or any(
+                not isinstance(value, str) or not value
+                for value in leading_write_event_ids
+            )
+            or len(set(leading_write_event_ids)) != len(leading_write_event_ids)
         ):
             raise ReviewError(f"invalid selection neighborhood: {row!r}")
         neighborhoods.append(
@@ -535,6 +543,7 @@ def load_selection(path: Path, corpus_id: str) -> tuple[list[Neighborhood], dict
                 category=category,
                 rationale=rationale,
                 mode=mode,
+                leading_write_event_ids=tuple(leading_write_event_ids),
             )
         )
     labels = [value.label for value in neighborhoods]
@@ -722,6 +731,7 @@ def member_projection(
         "availableAt": event["availableAt"],
         "currentLossTarget": target_text(example) if example else None,
         "currentTarget": example.get("target") if example else None,
+        "conditioningState": semantic_event.get("conditioningState"),
         "operation": audit.get("operation"),
         "characterOffset": audit.get("characterOffset"),
         "removedContent": audit.get("removedContent", ""),
@@ -806,9 +816,26 @@ def neighborhood_write_events(
     first = event_by_id[anchors[0]["targetEventID"]]
     last = event_by_id[anchors[-1]["targetEventID"]]
     destination = serialized_destination(first)
-    began = timestamp(first["beganAt"])
+    leading = []
+    for event_id in neighborhood.leading_write_event_ids:
+        event = event_by_id.get(event_id)
+        if (
+            event is None
+            or event.get("kind") != "write"
+            or event.get("sessionID") != first.get("sessionID")
+            or serialized_destination(event) != destination
+            or timestamp(event["availableAt"]) > timestamp(first["beganAt"])
+        ):
+            raise ReviewError(
+                f"invalid leading WRITE {event_id}: {neighborhood.label}"
+            )
+        leading.append(event)
+    began = min(
+        [timestamp(first["beganAt"])]
+        + [timestamp(event["beganAt"]) for event in leading]
+    )
     closed = timestamp(last["availableAt"])
-    return sorted(
+    selected = sorted(
         [
             event
             for event in events
@@ -820,6 +847,10 @@ def neighborhood_write_events(
         ],
         key=lambda event: (event["beganAt"], event["sourceEventID"]),
     )
+    selected_ids = {event["sourceEventID"] for event in selected}
+    if any(event_id not in selected_ids for event_id in neighborhood.leading_write_event_ids):
+        raise ReviewError(f"leading WRITE was not selected: {neighborhood.label}")
+    return selected
 
 
 def intervening_events(
@@ -873,20 +904,74 @@ def continuity_evidence(members: list[dict[str, Any]]) -> dict[str, Any]:
 def mechanical_gate_failures(
     *,
     continuous_replay: bool,
-    exact_identity_stable: bool,
-    intervening_reads: list[dict[str, Any]],
+    logical_identity_stable: bool,
+    novel_intervening_reads: list[dict[str, Any]],
     overlapping_outside_writes: list[dict[str, Any]],
 ) -> list[str]:
     failures = []
     if not continuous_replay:
         failures.append("discontinuous_editable_state")
-    if not exact_identity_stable:
+    if not logical_identity_stable:
         failures.append("logical_editable_identity_changed")
-    if intervening_reads:
-        failures.append("causally_available_read_inside_candidate")
+    if novel_intervening_reads:
+        failures.append("novel_causally_available_read_inside_candidate")
     if overlapping_outside_writes:
         failures.append("outside_write_overlaps_candidate")
     return failures
+
+
+def read_novelty_evidence(
+    reads: list[dict[str, Any]],
+    onset_model_input: dict[str, Any] | None,
+) -> dict[str, Any]:
+    retained = (
+        {
+            row.get("serialized")
+            for row in onset_model_input.get("retainedHistory", [])
+            if isinstance(row.get("serialized"), str)
+        }
+        if onset_model_input is not None
+        else set()
+    )
+    assessments = []
+    for read in reads:
+        serialized = read.get("serialized")
+        repeated = onset_model_input is not None and serialized in retained
+        assessments.append(
+            {
+                "eventID": read.get("sourceEventID"),
+                "availableAt": read.get("availableAt"),
+                "status": (
+                    "exact_repeat_already_in_episode_onset_model_input"
+                    if repeated
+                    else (
+                        "novel_relative_to_episode_onset_model_input"
+                        if onset_model_input is not None
+                        else "novelty_unknown_without_episode_onset_model_input"
+                    )
+                ),
+                "isNovelCausalInformation": not repeated,
+                "serializedSHA256": (
+                    hashlib.sha256(serialized.encode()).hexdigest()
+                    if isinstance(serialized, str)
+                    else None
+                ),
+            }
+        )
+    return {
+        "episodeOnsetModelInputAvailable": onset_model_input is not None,
+        "assessments": assessments,
+        "novelReads": [
+            read
+            for read, assessment in zip(reads, assessments)
+            if assessment["isNovelCausalInformation"]
+        ],
+        "repeatedReads": [
+            read
+            for read, assessment in zip(reads, assessments)
+            if not assessment["isNovelCausalInformation"]
+        ],
+    }
 
 
 def build_candidate(
@@ -896,6 +981,7 @@ def build_candidate(
     events: list[dict[str, Any]],
     raw_records: dict[str, dict[str, Any]],
     semantic_events: dict[str, dict[str, dict[str, Any]]],
+    model_inputs_by_example: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
     anchor_examples = examples[neighborhood.first - 1 : neighborhood.last]
     if len(anchor_examples) != neighborhood.last - neighborhood.first + 1:
@@ -937,8 +1023,11 @@ def build_candidate(
     initial_observation = first_raw.get("before")
     if not isinstance(initial_observation, dict):
         raise ReviewError("first member has no complete BEFORE observation")
+    first_conditioning = first_member.get("conditioningState")
+    if not isinstance(first_conditioning, dict):
+        raise ReviewError("first member has no conditioning state")
     initial_value, initial_source = logical_initial_value(
-        anchor_examples[0], initial_observation
+        {"conditioningState": first_conditioning}, initial_observation
     )
     terminal_value = last_member["selectedTerminalLogicalValue"]
     net_edit = (
@@ -952,9 +1041,7 @@ def build_candidate(
     initial_location = cursor_fidelity.get("initialCursorOffsetCharacters")
     initial_length = cursor_fidelity.get("initialSelectionLengthCharacters")
     coordinate_unit = "unicode_character_from_cursor_fidelity"
-    cursor_context = anchor_examples[0].get("conditioningState", {}).get(
-        "cursorContext", {}
-    )
+    cursor_context = first_conditioning.get("cursorContext", {})
     selected_text = cursor_context.get("selectedText")
     if initial_source != "raw_before_value":
         initial_location = 0
@@ -1025,12 +1112,21 @@ def build_candidate(
         stable_destination(identity) == stable_destination(identities[0])
         for identity in identities
     )
+    onset_example_id = first_member.get("exampleID")
+    onset_model_input = (
+        model_inputs_by_example.get(onset_example_id)
+        if isinstance(onset_example_id, str)
+        else None
+    )
+    read_novelty = read_novelty_evidence(intervening_reads, onset_model_input)
+    novel_intervening_reads = read_novelty["novelReads"]
+    repeated_intervening_reads = read_novelty["repeatedReads"]
     continuity = continuity_evidence(members)
     continuous_replay = continuity["continuousReplayableState"]
     gate_failures = mechanical_gate_failures(
         continuous_replay=continuous_replay,
-        exact_identity_stable=exact_identity_stable,
-        intervening_reads=intervening_reads,
+        logical_identity_stable=semantic_destination_stable,
+        novel_intervening_reads=novel_intervening_reads,
         overlapping_outside_writes=overlapping_outside_writes,
     )
     if not alignment_proven:
@@ -1097,7 +1193,13 @@ def build_candidate(
         "candidateAvailableAt": last_member["availableAt"],
         "durationSeconds": (closed - began).total_seconds(),
         "predictionOpportunity": {
-            "modelFacingExampleID": anchor_examples[0]["exampleID"],
+            "modelFacingExampleID": onset_example_id,
+            "historicalPackedModelInputAvailable": onset_model_input is not None,
+            "nearestLaterPackedExampleID": (
+                anchor_examples[0]["exampleID"]
+                if onset_model_input is None
+                else None
+            ),
             "samplingSemantics": "first_mutating_input_pre_application_proxy",
             "focusTimeObservationAvailable": False,
             "limitation": (
@@ -1105,7 +1207,7 @@ def build_candidate(
                 "Episode onset is reconstructed from the first selected mutating input."
             ),
         },
-        "initialConditioningState": anchor_examples[0].get("conditioningState"),
+        "initialConditioningState": first_conditioning,
         "initialObservationSource": initial_source,
         "initialObservation": observation_projection(initial_observation),
         "finalObservationSource": last_member["selectedTerminalObservationSource"],
@@ -1113,6 +1215,9 @@ def build_candidate(
         "members": members,
         "causalEvidence": {
             "interveningReadCount": len(intervening_reads),
+            "novelInterveningReadCount": len(novel_intervening_reads),
+            "repeatedInterveningReadCount": len(repeated_intervening_reads),
+            "interveningReadAssessments": read_novelty["assessments"],
             "interveningWriteCountOutsideCandidate": len(intervening_writes),
             "overlappingOutsideWriteCount": len(overlapping_outside_writes),
             "interveningEvents": [
@@ -1125,6 +1230,7 @@ def build_candidate(
                 for event in intervening
             ],
             "noCausallyAvailableReadDuringCandidate": not intervening_reads,
+            "noNovelCausallyAvailableReadDuringCandidate": not novel_intervening_reads,
             "noOverlappingOutsideWrite": not overlapping_outside_writes,
             "overlappingOutsideWrites": [
                 event_review_projection(event) for event in overlapping_outside_writes
@@ -1132,7 +1238,8 @@ def build_candidate(
         },
         "surfaceEvidence": {
             "exactTargetIdentityStable": exact_identity_stable,
-            "semanticDestinationStable": semantic_destination_stable,
+            "logicalEditableIdentityStable": semantic_destination_stable,
+            "accessibilityObjectHashIsDiagnosticOnly": True,
             "targetIdentities": identities,
         },
         "continuityEvidence": continuity,
@@ -1140,8 +1247,8 @@ def build_candidate(
             "passed": not gate_failures,
             "failures": gate_failures,
             "requiresContinuousReplayableState": True,
-            "requiresExactLogicalEditableIdentity": True,
-            "requiresNoCausallyAvailableRead": True,
+            "requiresStableLogicalEditableIdentity": True,
+            "requiresNoNovelCausallyAvailableRead": True,
             "requiresNoOverlappingOutsideWrite": True,
         },
         "closureContext": {
@@ -1281,8 +1388,9 @@ def markdown(
             f"- Examples: {candidate['oneBasedExampleRange']['first']}–{candidate['oneBasedExampleRange']['last']}",
             f"- Duration: {candidate['durationSeconds']:.3f}s",
             f"- Intervening READs: {causal['interveningReadCount']}",
-            f"- Stable semantic destination: {candidate['surfaceEvidence']['semanticDestinationStable']}",
-            f"- Exact logical editable identity: {candidate['surfaceEvidence']['exactTargetIdentityStable']}",
+            f"- Novel/repeated READs: {causal['novelInterveningReadCount']}/{causal['repeatedInterveningReadCount']}",
+            f"- Stable logical editable identity: {candidate['surfaceEvidence']['logicalEditableIdentityStable']}",
+            f"- Exact Accessibility object identity (diagnostic): {candidate['surfaceEvidence']['exactTargetIdentityStable']}",
             f"- Continuous raw replay: {continuity['continuousReplayableState']}",
             f"- Hard mechanical gates passed: {gates['passed']} (`{json.dumps(gates['failures'])}`)",
             f"- Closure: `{closure['status']}` (`{closure['lastBoundaryReason']}`)",
@@ -1496,6 +1604,21 @@ def resolve_target(
                 f"mechanical proposal has no reconstructed target: {candidate['label']}"
             )
         finalized = authored_target(content)
+    elif policy == "continuous_insert_field_transition_candidate":
+        edit = candidate["singleCompletionDiagnostic"].get("netFieldEdit")
+        gates = candidate.get("mechanicalGates", {})
+        if (
+            not gates.get("passed")
+            or not isinstance(edit, dict)
+            or edit.get("operation") != "insert"
+            or edit.get("removedContent") != ""
+            or not isinstance(edit.get("content"), str)
+            or not edit["content"]
+        ):
+            raise ReviewError(
+                f"continuous insert proposal lacks a proven field transition: {candidate['label']}"
+            )
+        finalized = authored_target(edit["content"])
     elif policy == "current_single_structured_target":
         targets = [
             member["currentTarget"]
@@ -1765,6 +1888,26 @@ def main() -> int:
         if neighborhood.last > len(examples):
             raise ReviewError(f"neighborhood exceeds corpus: {neighborhood.label}")
     event_by_id = {event["sourceEventID"]: event for event in events}
+    selected_examples = {
+        example["exampleID"]: example
+        for neighborhood in neighborhoods
+        for example in examples[neighborhood.first - 1 : neighborhood.last]
+    }
+    model_facing_inputs = [
+        model_facing_projection(
+            example,
+            context_plans[example_id],
+            packed_examples[example_id],
+            context_blocks,
+        )
+        for example_id, example in sorted(
+            selected_examples.items(),
+            key=lambda item: item[1]["chronologicalOrdinal"],
+        )
+    ]
+    model_inputs_by_example = {
+        value["exampleID"]: value for value in model_facing_inputs
+    }
     selected_events = [
         event
         for neighborhood in neighborhoods
@@ -1789,29 +1932,10 @@ def main() -> int:
             events,
             raw_records,
             semantic_events,
+            model_inputs_by_example,
         )
         for neighborhood in neighborhoods
     ]
-    selected_examples = {
-        example["exampleID"]: example
-        for neighborhood in neighborhoods
-        for example in examples[neighborhood.first - 1 : neighborhood.last]
-    }
-    model_facing_inputs = [
-        model_facing_projection(
-            example,
-            context_plans[example_id],
-            packed_examples[example_id],
-            context_blocks,
-        )
-        for example_id, example in sorted(
-            selected_examples.items(),
-            key=lambda item: item[1]["chronologicalOrdinal"],
-        )
-    ]
-    model_inputs_by_example = {
-        value["exampleID"]: value for value in model_facing_inputs
-    }
     proposal_manifest = None
     proposal_path = None
     proposals_by_label: dict[str, dict[str, Any]] = {}
@@ -1908,6 +2032,7 @@ def main() -> int:
                     "category": value.category,
                     "rationale": value.rationale,
                     "mode": value.mode,
+                    "leadingWriteEventIDs": list(value.leading_write_event_ids),
                 }
                 for value in neighborhoods
             ],
@@ -1918,7 +2043,9 @@ def main() -> int:
                 "terminalObservationMustMatchSemanticReducerProvenance": True,
                 "continuousEditableReplayIsHardGate": True,
                 "sameLogicalEditableIsHardGate": True,
-                "interveningReadIsHardGate": True,
+                "novelInterveningReadIsHardGate": True,
+                "exactRepeatedReadAlreadyAtOnsetIsNotNewInformation": True,
+                "accessibilityElementHashIsDiagnosticNotLogicalIdentity": True,
                 "overlappingOutsideWriteIsHardGate": True,
                 "mechanicalRepresentabilityIsNotEpisodeAuthority": True,
                 "microWritesRemainUnchanged": True,

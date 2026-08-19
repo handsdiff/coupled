@@ -1044,7 +1044,7 @@ target is the closed authored completion that captures the user's next thought.
 No collector, semantic reducer, causal compiler, packed dataset, loss mask, or
 model result has been changed. Commit `a1ae878` froze the initial
 `phase1-episode-v0-shadow-r2` reconstruction checkpoint. The current
-non-authoritative `phase1-episode-design-v1-shadow-r3` layer implements:
+non-authoritative `phase1-episode-design-v1-shadow-r4` layer implements:
 
 ```text
 raw evidence
@@ -1059,14 +1059,14 @@ Run it with:
 python3 scripts/build-phase1-episode-review.py \
   --corpus coupled-data/phase1-experiment-1-corpus-v2-unredacted-canonical-20260818 \
   --packed coupled-data/phase1-experiment-1-corpus-v2-unredacted-canonical-20260818-qwen-pack-v7 \
-  --output coupled-data/phase1-experiment-1-episode-design-review-v1-shadow-r3-final2-20260819 \
+  --output coupled-data/phase1-experiment-1-episode-design-review-v1-shadow-r4-final-20260819 \
   --selection-file episode-review/phase1-episode-development-gold-v0.json \
   --proposals-file episode-review/phase1-episode-development-gold-v0-proposals.json
 
 python3 scripts/check-phase1-episode-review.py
 
 python3 scripts/serve-phase1-episode-design-review.py \
-  --review coupled-data/phase1-experiment-1-episode-design-review-v1-shadow-r3-final2-20260819
+  --review coupled-data/phase1-experiment-1-episode-design-review-v1-shadow-r4-final-20260819
 ```
 
 The artifact contains the complete member trajectory, including semantic
@@ -1080,9 +1080,13 @@ checkpoint retains the actual authored content.
 
 Mechanical status has four hard gates in addition to cursor/semantic alignment:
 every reducer-selected terminal value must exactly equal the next member's
-logical `BEFORE`; exact logical editable identity must remain stable; no
-causally available READ may occur inside the interval; and no outside WRITE may
-overlap it. A candidate failing any gate can retain a diagnostic proposed edit
+logical `BEFORE`; logical application/document/role identity must remain stable;
+no novel causal READ may occur inside the interval; and no outside WRITE may
+overlap it. Accessibility element hashes remain diagnostic because Electron can
+replace an AX object while exposing a continuously replayable field. An
+intervening READ is non-novel only when its exact serialized observation already
+appears in the episode-onset packed model history. A candidate failing any gate
+can retain a diagnostic proposed edit
 but cannot receive a `mechanically_representable_*` status. Mechanical
 representability is deliberately not treated as episode closure or training
 authority.
@@ -1197,12 +1201,31 @@ micro-WRITE while separately deciding which partitions are unfinished,
 instrumental, under-conditioned, or one closed substantive outcome.
 Every proposed representable partition is independently gated on exact
 editable-state continuity, stable logical editable identity, and the absence of
-an intervening causal READ. In particular, the `124–125` merge passes all three
+an intervening novel causal READ. In particular, the `124–125` merge passes all three
 checks; it is not being accepted merely because the enclosing `123–125`
 neighborhood looks semantically related.
 
+The remaining review pass adds two positive merges without weakening the
+ambiguous negative controls:
+
+- Obsidian 127–128 is one 392-character GTM composition. Its intervening READ is
+  byte-identical to content already retained twice at episode onset, its field
+  state replays exactly, and its logical app/document/role identity is stable.
+  The changed AX element hash and numeric cursor disagreement remain visible
+  diagnostics rather than invented evidence.
+- ChatGPT 181–185 now includes the exact target-ineligible WRITE that ended 137
+  milliseconds before example 181. The six micro-WRITEs replay into one complete
+  870-character submitted prompt. Because the real onset was history-only, the
+  old pack contains no historical query at that exact boundary; the review says
+  so explicitly and shows the nearest later packed input only as a diagnostic.
+- ChatGPT 193–196 remains deferred: its READ is novel relative to onset and its
+  raw editable trajectory is discontinuous.
+
 The dedicated read-only localhost UI renders the actual historical prediction
-input beside the complete raw/reduced edit trajectory and proposed outcome. It
+input beside the complete raw/reduced edit trajectory and proposed outcome. If
+the proposed episode begins at a formerly history-only WRITE, it renders the
+recorded onset conditioning and explicitly reports that no frozen packed input
+existed rather than substituting a later query. It
 also exposes visibility gaps and every partition's own sampling input. It uses
 no remote assets and does not mutate annotations or training artifacts. The
 tracked selection/proposal filenames retain their earlier `development-gold-v0`
@@ -1211,12 +1234,12 @@ as an episode-design review set, not gold evaluation data or training authority.
 
 Canonical episode-design v1 hashes:
 
-- `episode-review.json`: `4da566740aaf06cd18cab6a86b36932f8a8759c7bf6f13e477697380ab170011`
-- `episode-candidates.jsonl`: `d1b6c6c500575eca9ba529c136070f504bfd2337e0441e9ae235baea10cc130f`
+- `episode-review.json`: `007ada88f8c39460f0e622ad3b510a57146e769f9f508bb066868d99cdafdd83`
+- `episode-candidates.jsonl`: `72996b5fbfe3d974bfe1ebee9a53c346ac710e9e3126ca62650d2a4b24f16641`
 - `model-facing-inputs.jsonl`: `9a957109f5a6c1597115264e5be0fb2ed8c1c46409aa1d57afee1386069e8c83`
-- `annotations.jsonl`: `0448d604fe8f415f5fe8a92037f3d8f7487fc09dceda88a36dcde83f5cc526d0`
-- `proposed-annotations.jsonl`: `c3ffe7d4ab7e29ed375d28e1fe77d07059c6ce7663caaa4a1b9677937dcf504f`
-- `review.md`: `f18b620236950ab640a5f239f5070cf2284f8efc5ff03718391a3a6eaf6d6495`
+- `annotations.jsonl`: `6f8614b0f2d74df2f87a2f193ea65b6444597b71dad23387c02451588174bb63`
+- `proposed-annotations.jsonl`: `4909d8ac480e89a7beff88061098a124c0910b9c2f1aaf08e13e54b665ad2cf6`
+- `review.md`: `70940e7de18e89818883aee7e844f623bd82af73a37a6a00a8f2c1956c290aad`
 
 An independent replay of all six artifacts is byte-identical, the UI's
 read-only artifact check passes, and the HTTP index/detail endpoints were

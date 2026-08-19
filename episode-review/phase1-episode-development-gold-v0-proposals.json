@@ -96,11 +96,11 @@
     },
     {
       "label": "chatgpt_fragmented_long",
-      "decision": "expand_bounds_then_readjudicate",
-      "targetPolicy": "none_until_initial_composition_member_is_included",
-      "closureAssessment": "selected_neighborhood_starts_mid_composition",
-      "representableAsSingleCompletion": false,
-      "notes": "The selected BEFORE already contains an authored prompt prefix. The present bounds cannot yield the full next thought from their initial query state."
+      "decision": "merge_closed_episode",
+      "targetPolicy": "mechanically_reconstructed_candidate",
+      "closureAssessment": "complete_prompt_including_explicit_leading_history_only_write",
+      "representableAsSingleCompletion": true,
+      "notes": "The explicit leading history-only WRITE and examples 181–185 replay continuously into one submitted prompt. Because the episode begins at a formerly target-ineligible WRITE, no frozen packed onset input exists; a future episode compiler must construct that query from the recorded initial conditioning state."
     },
     {
       "label": "chatgpt_fragmented_temporal",
@@ -223,11 +223,11 @@
     },
     {
       "label": "obsidian_gtm_composition",
-      "decision": "split_at_causal_read_boundary",
-      "targetPolicy": "none_for_combined_candidate",
-      "closureAssessment": "intervening_read_and_editable_identity_change",
-      "representableAsSingleCompletion": false,
-      "notes": "The prose is semantically continuous, but later reading makes a single initial-query target causally unsafe."
+      "decision": "merge_closed_episode",
+      "targetPolicy": "continuous_insert_field_transition_candidate",
+      "closureAssessment": "repeated_read_and_continuous_logical_editable",
+      "representableAsSingleCompletion": true,
+      "notes": "The intervening READ is an exact repeat of content already present twice in the episode-onset model input. Continuous field-state replay and stable application/document/role establish one logical editable despite the changed AX element hash. The AX cursor still disagrees with the net insertion offset, so that disagreement remains explicit even though the continuous insertion transition supports this shadow merge proposal."
     },
     {
       "label": "code_independent_commands",
