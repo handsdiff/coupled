@@ -1042,9 +1042,9 @@ Run it with:
 ```bash
 python3 scripts/build-phase1-episode-review.py \
   --corpus coupled-data/phase1-experiment-1-corpus-v2-unredacted-canonical-20260818 \
-  --output coupled-data/phase1-experiment-1-episode-review-v0-shadow-20260819 \
-  --neighborhood chatgpt_cursor_revision=32:41 \
-  --neighborhood obsidian_cursor_revision=152:158
+  --output coupled-data/phase1-experiment-1-episode-development-gold-v0-shadow-r2-20260819 \
+  --selection-file episode-review/phase1-episode-development-gold-v0.json \
+  --proposals-file episode-review/phase1-episode-development-gold-v0-proposals.json
 
 python3 scripts/check-phase1-episode-review.py
 ```
@@ -1098,16 +1098,54 @@ targets, unique-versus-ambiguous anchors, edits outside the conditioned region,
 history-only member inclusion, READ boundaries, and deterministic
 serialization. An independent replay produced byte-identical artifacts.
 
-Canonical shadow hashes:
+The initial two-case artifact remains a useful narrow checkpoint. The
+development selection now expands it to 20 deliberately varied neighborhoods:
+submitted single writes; cursor revisions; long-editor compositions; mixed
+typed/paste submissions; fragmented prompts; causal READ boundaries; disjoint
+note regions; and independent terminal commands. The tracked selection fixes
+the corpus, ordinals, category, and rationale. It is distinct from the tracked
+assistant proposal sidecar, which remains explicitly pending human
+adjudication.
 
-- `episode-review.json`: `754e18f07758dc95f646aef09a490d31c3259ce93b3e366f81b56121219ef2ac`
-- `episode-candidates.jsonl`: `396867bca3b9c2d44902721710073b9f64ce5525360fa39c0c9976abe2e1fb5d`
-- `review.md`: `33457b64c5674947f576c43f0370bcd5898e250f13113b14bd98dc0ff07a33f6`
+The 20 neighborhoods contain 75 semantic WRITEs. Seven pass the complete
+mechanical representation test, three are mechanically gated out, and ten
+retain useful evidence without receiving a mechanical-positive label. The
+assistant taste pass proposes 13 single-completion episodes: seven unchanged
+singletons and six multi-WRITE merges. It proposes four definite splits, one
+split at a causal READ, one causal defer, and one bounds expansion before
+readjudication. These counts are diagnostic judgments, not training examples.
+In particular:
 
-The next checkpoint is review, not automation: adjudicate these two
-neighborhoods and roughly 18 additional submitted prompts, internal
-corrections, edits to older text, long pauses, multi-paragraph compositions,
-and clearly independent writes. Those annotations become a small development
-gold set. Only after conservative deterministic episode rules match it should a
+- ChatGPT 32–41 and Obsidian 152–158 are proposed merges into their final
+  authored completions.
+- Claude 133–134 becomes one structured typed/paste/typed completion. Its
+  opening quote was a history-only micro-WRITE; the proposed target preserves
+  the original paste checkpoint and clipboard lineage rather than relabeling
+  the clipboard payload as authored text.
+- ChatGPT 181–185 is not accepted as currently bounded because its initial
+  state already contains an earlier authored prompt prefix.
+- Intervening model READs, distant Obsidian regions, and distinct terminal
+  submissions remain split or deferred even when nearby text is semantically
+  related.
+
+The review projection now retains each member's complete structured target as
+well as its display form. This prevents `<|paste|>` from erasing the underlying
+authorship and clipboard evidence during episode adjudication. The generated
+`proposed-annotations.jsonl` resolves deterministic target policies into
+concrete structured targets, while the separate `annotations.jsonl` remains
+blank for human decisions. Nothing reads either file as training authority.
+
+Canonical 20-neighborhood shadow hashes:
+
+- `episode-review.json`: `d65b03527b2c0e453aed55a8a8c531111fa49967e41286fe96416d828a15c02f`
+- `episode-candidates.jsonl`: `37edbc2bc22b5607976428415853dffdd7ffa54a148278cdb22caa1bc3743879`
+- `annotations.jsonl`: `3d50ad720d024d3a8dcf058f1c7ac3b36823dc683acfc8c9351a6a69420232d0`
+- `proposed-annotations.jsonl`: `bd39b3397fe095d3bae58d9ebb9639d318f3f4f640e0ead32da16582bc99083b`
+- `review.md`: `dd91dd408ab368514babc895abc1fa0f683e180b7b1494a895922c5d139aa8bf`
+
+An independent replay of all five generated artifacts is byte-identical. The
+next checkpoint remains review, not automation: inspect and accept or revise the
+20 assistant proposals into human development annotations. Only after
+conservative deterministic episode rules match that adjudicated set should a
 versioned episode layer become compiler authority and replace member WRITEs in
 model-facing history with one resolved episode.

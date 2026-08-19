@@ -50,6 +50,8 @@ python3 -m py_compile \
   "$project_dir/scripts/run-phase1-tinker-prequential.py" \
   "$project_dir/scripts/check-phase1-real-runners.py" \
   "$project_dir/scripts/audit-phase1-real-experiment.py" \
+  "$project_dir/scripts/build-phase1-episode-review.py" \
+  "$project_dir/scripts/check-phase1-episode-review.py" \
   "$project_dir/scripts/phase1_prediction_metrics.py" \
   "$project_dir/scripts/check-phase1-prediction-metrics.py" \
   "$project_dir/scripts/check-phase1-subscription-responses.py" \
@@ -73,6 +75,7 @@ python3 "$project_dir/scripts/check-phase1-corpus.py"
 
 PYTHONPYCACHEPREFIX="$project_dir/.build/python-cache" \
 python3 "$project_dir/scripts/check-phase1-subscription-responses.py"
+python3 "$project_dir/scripts/check-phase1-episode-review.py"
 python3 "$project_dir/scripts/check-phase1-real-runners.py"
 python3 "$project_dir/scripts/check-phase1-prediction-metrics.py"
 python3 "$project_dir/scripts/check-phase1-cost-latency.py"

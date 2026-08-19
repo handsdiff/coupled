@@ -1,0 +1,171 @@
+{
+  "schemaVersion": 1,
+  "selectionID": "phase1-episode-development-gold-v0-20260819",
+  "status": "assistant_proposals_pending_human_adjudication",
+  "authority": "development_diagnostic_only_not_training_authority",
+  "adjudicationQuestion": "At the initial conditioning point, what single completion could have captured the intended output and made the subsequent editing trajectory largely unnecessary, using no information read later?",
+  "proposals": [
+    {
+      "label": "chatgpt_cursor_revision",
+      "decision": "merge_closed_episode",
+      "targetPolicy": "mechanically_reconstructed_candidate",
+      "closureAssessment": "submitted_response_visible_after_return",
+      "representableAsSingleCompletion": true,
+      "notes": "One long prompt. Pauses, the insertion of 'early', and the later insertion of 'and predict prompts, not code' revise the same developing thought."
+    },
+    {
+      "label": "obsidian_cursor_revision",
+      "decision": "merge_closed_episode",
+      "targetPolicy": "mechanically_reconstructed_candidate",
+      "closureAssessment": "stable_final_state_then_departure",
+      "representableAsSingleCompletion": true,
+      "notes": "The semantic anchors and exact state replay prove one inserted passage even though the numeric AX caret disagrees."
+    },
+    {
+      "label": "chatgpt_submitted_single",
+      "decision": "keep_single_closed_episode",
+      "targetPolicy": "current_single_structured_target",
+      "closureAssessment": "submitted_response_visible_after_return",
+      "representableAsSingleCompletion": true,
+      "notes": "Simple submitted-field positive control."
+    },
+    {
+      "label": "claude_submitted_initial",
+      "decision": "keep_single_closed_episode",
+      "targetPolicy": "current_single_structured_target",
+      "closureAssessment": "submitted_response_visible_after_return",
+      "representableAsSingleCompletion": true,
+      "notes": "The leading newline is application scaffold, not authored content; retain the reducer's authored target."
+    },
+    {
+      "label": "claude_submitted_followup",
+      "decision": "keep_single_closed_episode",
+      "targetPolicy": "current_single_structured_target",
+      "closureAssessment": "return_submission_observed",
+      "representableAsSingleCompletion": true,
+      "notes": "The visible 'Write a message…' value is environment scaffold, not removed human text."
+    },
+    {
+      "label": "chatgpt_submitted_long",
+      "decision": "keep_single_closed_episode",
+      "targetPolicy": "current_single_structured_target",
+      "closureAssessment": "complete_question_then_destination_departure",
+      "representableAsSingleCompletion": true,
+      "notes": "A coherent complete question followed by departure. The lack of a captured Return is retained as closure uncertainty."
+    },
+    {
+      "label": "claude_grounded_paste_prompt",
+      "decision": "keep_single_closed_episode",
+      "targetPolicy": "current_single_structured_target",
+      "closureAssessment": "submitted_response_visible_after_return",
+      "representableAsSingleCompletion": true,
+      "notes": "Retain the typed/paste/typed segments. The clipboard payload is resolved history but receives paste-action supervision, not authorship supervision."
+    },
+    {
+      "label": "gemini_corrective_submission",
+      "decision": "keep_single_closed_episode",
+      "targetPolicy": "current_single_structured_target",
+      "closureAssessment": "return_submission_observed",
+      "representableAsSingleCompletion": true,
+      "notes": "Simple corrective submitted-field positive control."
+    },
+    {
+      "label": "claude_grounded_paste_prompt_two",
+      "decision": "keep_single_closed_episode",
+      "targetPolicy": "current_single_structured_target",
+      "closureAssessment": "submitted_response_visible_after_return",
+      "representableAsSingleCompletion": true,
+      "notes": "Second submitted mixed-authorship positive control; preserve the grounded paste segment."
+    },
+    {
+      "label": "claude_mixed_paste_continuation",
+      "decision": "merge_closed_episode",
+      "targetPolicy": "custom_structured_target",
+      "proposedMarkerTarget": "trying to understand this tweet \"<|paste|>\". it is referencing the launch of qweb 3.8 27b. \ndo chinchilla scaling laws no longer apply? how does the poster know how much tokens qwen3.8 27b was trained on?",
+      "closureAssessment": "return_submission_observed",
+      "representableAsSingleCompletion": true,
+      "notes": "Fold the history-only insertion of the opening quote and the later authored continuation into one completion while preserving the original grounded paste lineage."
+    },
+    {
+      "label": "chatgpt_read_separated_independent",
+      "decision": "split_into_independent_episodes",
+      "targetPolicy": "none_for_combined_candidate",
+      "closureAssessment": "model_reads_and_new_field_state_between_writes",
+      "representableAsSingleCompletion": false,
+      "notes": "The second prompt was conditioned on intervening model output and cannot be backdated to the first prompt's query state."
+    },
+    {
+      "label": "chatgpt_fragmented_long",
+      "decision": "expand_bounds_then_readjudicate",
+      "targetPolicy": "none_until_initial_composition_member_is_included",
+      "closureAssessment": "selected_neighborhood_starts_mid_composition",
+      "representableAsSingleCompletion": false,
+      "notes": "The selected BEFORE already contains an authored prompt prefix. The present bounds cannot yield the full next thought from their initial query state."
+    },
+    {
+      "label": "chatgpt_fragmented_temporal",
+      "decision": "defer_causal_ambiguity",
+      "targetPolicy": "none_for_combined_candidate",
+      "closureAssessment": "intervening_read_and_discontinuous_state",
+      "representableAsSingleCompletion": false,
+      "notes": "The text looks semantically continuous, but the recorded READ prevents treating all later text as predictable from the initial conditioning state without first resolving the READ's authorship."
+    },
+    {
+      "label": "claude_cursor_fragment",
+      "decision": "merge_closed_episode",
+      "targetPolicy": "custom_authored_target_from_selected_terminal_without_ui_scaffold",
+      "proposedMarkerTarget": "if chinchilla scaling, which determines the tradeoff between data and parameters to minimize loss for a given compute budget, isn't really occurring much anymore. then what empirical scaling laws are actually occuring?",
+      "closureAssessment": "submitted_response_visible_after_return",
+      "representableAsSingleCompletion": true,
+      "notes": "The cursor-bounded fragments, comma insertion, and wording insertion revise one prompt. The visible Claude prompt scaffold remains environment state."
+    },
+    {
+      "label": "chatgpt_causal_protocol",
+      "decision": "merge_closed_episode",
+      "targetPolicy": "mechanically_reconstructed_candidate",
+      "closureAssessment": "submitted_response_visible_after_return",
+      "representableAsSingleCompletion": true,
+      "notes": "The numeric correction from 10–20 to 11–20 and subsequent continuations all refine one evaluation-protocol instruction."
+    },
+    {
+      "label": "obsidian_phase1_composition",
+      "decision": "merge_closed_episode",
+      "targetPolicy": "mechanically_reconstructed_candidate",
+      "closureAssessment": "stable_final_state_then_departure",
+      "representableAsSingleCompletion": true,
+      "notes": "One newly authored paragraph assembled across pauses and local cursor revisions; semantic anchors prove its location."
+    },
+    {
+      "label": "obsidian_independent_lines",
+      "decision": "split_into_independent_episodes",
+      "targetPolicy": "none_for_combined_candidate",
+      "closureAssessment": "discontinuous_state_and_separate_note_lines",
+      "representableAsSingleCompletion": false,
+      "notes": "Two standalone observations written after a quiet gap should not be concatenated merely because they share a note."
+    },
+    {
+      "label": "obsidian_disjoint_regions",
+      "decision": "split_into_independent_episodes",
+      "targetPolicy": "none_for_combined_candidate",
+      "closureAssessment": "distant_regions_with_intervening_reads",
+      "representableAsSingleCompletion": false,
+      "notes": "The writes move across note regions and later text may depend on intervening reads."
+    },
+    {
+      "label": "obsidian_gtm_composition",
+      "decision": "split_at_causal_read_boundary",
+      "targetPolicy": "none_for_combined_candidate",
+      "closureAssessment": "intervening_read_and_editable_identity_change",
+      "representableAsSingleCompletion": false,
+      "notes": "The prose is semantically continuous, but later reading makes a single initial-query target causally unsafe."
+    },
+    {
+      "label": "code_independent_commands",
+      "decision": "split_into_independent_episodes",
+      "targetPolicy": "none_for_combined_candidate",
+      "closureAssessment": "each_return_submits_an_independent_command",
+      "representableAsSingleCompletion": false,
+      "notes": "Each terminal command is a separate action even when commands occur within seconds of one another."
+    }
+  ]
+}

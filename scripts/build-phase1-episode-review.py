@@ -66,8 +66,12 @@ def timestamp(value: str) -> dt.datetime:
 
 
 def target_text(example: dict[str, Any]) -> str:
+    return marker_target(example.get("target", {}))
+
+
+def marker_target(target: dict[str, Any]) -> str:
     pieces: list[str] = []
-    for segment in example.get("target", {}).get("segments", []):
+    for segment in target.get("segments", []):
         if segment.get("type") == "paste":
             pieces.append("<|paste|>")
         else:
@@ -280,6 +284,7 @@ def reducer_selected_observation(
         item
         for item in raw_observations(record)
         if item[1].get("observationID") == selected_id
+        and item[0] == selected_source
     ]
     if len(matches) != 1:
         raise ReviewError(
@@ -287,9 +292,7 @@ def reducer_selected_observation(
         )
     source, observation, checkpoint_id = matches[0]
     if selected_source != source:
-        raise ReviewError(
-            f"selected observation source mismatch: reducer={selected_source!r} raw={source!r}"
-        )
+        raise ReviewError("selected observation source mismatch after source filtering")
     reduced_checkpoint = semantic_event.get("usedCheckpointID")
     if reduced_checkpoint is not None and reduced_checkpoint != checkpoint_id:
         raise ReviewError("selected checkpoint does not match reducer provenance")
@@ -348,6 +351,8 @@ class Neighborhood:
     label: str
     first: int
     last: int
+    category: str | None = None
+    rationale: str | None = None
 
 
 def parse_neighborhood(value: str) -> Neighborhood:
@@ -363,6 +368,50 @@ def parse_neighborhood(value: str) -> Neighborhood:
     if not label or first <= 0 or last < first:
         raise argparse.ArgumentTypeError("invalid neighborhood label or bounds")
     return Neighborhood(label=label, first=first, last=last)
+
+
+def load_selection(path: Path, corpus_id: str) -> tuple[list[Neighborhood], dict[str, Any]]:
+    selection = load_json(path)
+    if selection.get("corpusID") != corpus_id:
+        raise ReviewError("selection corpusID does not match source corpus")
+    rows = selection.get("neighborhoods")
+    if not isinstance(rows, list) or not rows:
+        raise ReviewError("selection must contain nonempty neighborhoods")
+    neighborhoods = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ReviewError("selection neighborhood must be an object")
+        label = row.get("label")
+        first = row.get("firstOneBasedExampleOrdinal")
+        last = row.get("lastOneBasedExampleOrdinal")
+        category = row.get("category")
+        rationale = row.get("rationale")
+        if (
+            not isinstance(label, str)
+            or not label
+            or not isinstance(first, int)
+            or not isinstance(last, int)
+            or first <= 0
+            or last < first
+            or not isinstance(category, str)
+            or not category
+            or not isinstance(rationale, str)
+            or not rationale
+        ):
+            raise ReviewError(f"invalid selection neighborhood: {row!r}")
+        neighborhoods.append(
+            Neighborhood(
+                label=label,
+                first=first,
+                last=last,
+                category=category,
+                rationale=rationale,
+            )
+        )
+    labels = [value.label for value in neighborhoods]
+    if len(set(labels)) != len(labels):
+        raise ReviewError("selection neighborhood labels must be unique")
+    return neighborhoods, selection
 
 
 def discover_raw_sessions(
@@ -543,6 +592,7 @@ def member_projection(
         "beganAt": event["beganAt"],
         "availableAt": event["availableAt"],
         "currentLossTarget": target_text(example) if example else None,
+        "currentTarget": example.get("target") if example else None,
         "operation": audit.get("operation"),
         "characterOffset": audit.get("characterOffset"),
         "removedContent": audit.get("removedContent", ""),
@@ -900,6 +950,8 @@ def build_candidate(
         "authority": "shadow_review_only",
         "candidateID": candidate_id,
         "label": neighborhood.label,
+        "selectionCategory": neighborhood.category,
+        "selectionRationale": neighborhood.rationale,
         "oneBasedExampleRange": {
             "first": neighborhood.first,
             "last": neighborhood.last,
@@ -1053,7 +1105,10 @@ def event_markdown(event: dict[str, Any]) -> list[str]:
     ]
 
 
-def markdown(candidates: list[dict[str, Any]]) -> str:
+def markdown(
+    candidates: list[dict[str, Any]],
+    proposals_by_label: dict[str, dict[str, Any]] | None = None,
+) -> str:
     lines = [
         "# Phase 1 episode review — shadow mode",
         "",
@@ -1072,6 +1127,8 @@ def markdown(candidates: list[dict[str, Any]]) -> str:
             f"## {candidate['label']}",
             "",
             f"- Candidate: `{candidate['candidateID']}`",
+            f"- Selection category: `{candidate.get('selectionCategory') or 'ad_hoc'}`",
+            f"- Selection rationale: {candidate.get('selectionRationale') or '[ad hoc neighborhood]'}",
             f"- Examples: {candidate['oneBasedExampleRange']['first']}–{candidate['oneBasedExampleRange']['last']}",
             f"- Duration: {candidate['durationSeconds']:.3f}s",
             f"- Intervening READs: {causal['interveningReadCount']}",
@@ -1119,6 +1176,20 @@ def markdown(candidates: list[dict[str, Any]]) -> str:
                     "```",
                     "",
                 ])
+            if member["currentTarget"] is not None:
+                lines.extend([
+                    "Structured target (authorship/paste provenance):",
+                    "",
+                    "```json",
+                    json.dumps(
+                        member["currentTarget"],
+                        ensure_ascii=False,
+                        indent=2,
+                        sort_keys=True,
+                    ),
+                    "```",
+                    "",
+                ])
         lines.extend([
             "### Mechanically reconstructed candidate completion",
             "",
@@ -1146,19 +1217,173 @@ def markdown(candidates: list[dict[str, Any]]) -> str:
             "- [ ] ambiguous closure; defer",
             "",
         ])
+        proposal = (proposals_by_label or {}).get(candidate["label"])
+        if proposal is not None:
+            finalized = proposal.get("finalizedTarget")
+            lines.extend([
+                "### Assistant proposal — pending human adjudication",
+                "",
+                f"- Decision: `{proposal['decision']}`",
+                f"- Target policy: `{proposal['targetPolicy']}`",
+                f"- Closure assessment: `{proposal['closureAssessment']}`",
+                f"- Representable as one completion: `{proposal['representableAsSingleCompletion']}`",
+                f"- Notes: {proposal['notes']}",
+                "",
+            ])
+            if finalized is not None:
+                lines.extend([
+                    "Proposed structured target:",
+                    "",
+                    "```json",
+                    json.dumps(
+                        finalized, ensure_ascii=False, indent=2, sort_keys=True
+                    ),
+                    "```",
+                    "",
+                ])
     return "\n".join(lines) + "\n"
+
+
+def load_proposals(
+    path: Path,
+    *,
+    selection_id: str,
+    candidate_labels: set[str],
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    manifest = load_json(path)
+    if manifest.get("selectionID") != selection_id:
+        raise ReviewError("proposal selectionID does not match review selection")
+    rows = manifest.get("proposals")
+    if not isinstance(rows, list) or not rows:
+        raise ReviewError("proposal file must contain non-empty proposals")
+    by_label: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict) or not isinstance(row.get("label"), str):
+            raise ReviewError("proposal rows require a label")
+        label = row["label"]
+        if label in by_label:
+            raise ReviewError(f"duplicate proposal label: {label}")
+        by_label[label] = row
+    if set(by_label) != candidate_labels:
+        missing = sorted(candidate_labels - set(by_label))
+        extra = sorted(set(by_label) - candidate_labels)
+        raise ReviewError(f"proposal labels differ; missing={missing}, extra={extra}")
+    return manifest, by_label
+
+
+def authored_target(content: str) -> dict[str, Any]:
+    return {
+        "schemaVersion": 1,
+        "resolvedContent": content,
+        "segments": [{"type": "authored_text", "content": content}],
+    }
+
+
+def resolve_proposal(
+    candidate: dict[str, Any], proposal: dict[str, Any]
+) -> dict[str, Any]:
+    policy = proposal.get("targetPolicy")
+    finalized: dict[str, Any] | None
+    if policy == "mechanically_reconstructed_candidate":
+        content = candidate["singleCompletionDiagnostic"].get(
+            "proposedFinalizedTarget"
+        )
+        if not isinstance(content, str) or not content:
+            raise ReviewError(
+                f"mechanical proposal has no reconstructed target: {candidate['label']}"
+            )
+        finalized = authored_target(content)
+    elif policy == "current_single_structured_target":
+        targets = [
+            member["currentTarget"]
+            for member in candidate["members"]
+            if member["currentTarget"] is not None
+        ]
+        if len(targets) != 1:
+            raise ReviewError(
+                f"single-target proposal resolved {len(targets)} targets: {candidate['label']}"
+            )
+        finalized = targets[0]
+    elif policy == "custom_structured_target":
+        marker = proposal.get("proposedMarkerTarget")
+        if not isinstance(marker, str) or marker.count("<|paste|>") != 1:
+            raise ReviewError(
+                f"custom structured target requires one paste marker: {candidate['label']}"
+            )
+        paste_segments = [
+            segment
+            for member in candidate["members"]
+            for segment in (member.get("currentTarget") or {}).get("segments", [])
+            if segment.get("type") == "paste"
+        ]
+        if len(paste_segments) != 1:
+            raise ReviewError(
+                f"custom structured target resolved {len(paste_segments)} paste segments: {candidate['label']}"
+            )
+        before, after = marker.split("<|paste|>")
+        resolved = candidate["finalObservation"].get("value")
+        if not isinstance(resolved, str) or not resolved:
+            raise ReviewError(f"custom target lacks final field value: {candidate['label']}")
+        finalized = {
+            "schemaVersion": 1,
+            "resolvedContent": resolved,
+            "segments": [
+                {"type": "authored_text", "content": before},
+                paste_segments[0],
+                {"type": "authored_text", "content": after},
+            ],
+        }
+        if marker_target(finalized) != marker:
+            raise ReviewError(f"custom marker target did not round-trip: {candidate['label']}")
+    elif policy == "custom_authored_target_from_selected_terminal_without_ui_scaffold":
+        marker = proposal.get("proposedMarkerTarget")
+        if not isinstance(marker, str) or not marker:
+            raise ReviewError(f"custom authored target is empty: {candidate['label']}")
+        finalized = authored_target(marker)
+    elif policy in {
+        "none_for_combined_candidate",
+        "none_until_initial_composition_member_is_included",
+    }:
+        finalized = None
+    else:
+        raise ReviewError(f"unknown target policy for {candidate['label']}: {policy}")
+    return {
+        "schemaVersion": 2,
+        "candidateID": candidate["candidateID"],
+        "label": candidate["label"],
+        "memberWriteEventIDs": candidate["memberWriteEventIDs"],
+        "status": "assistant_proposal_pending_human_adjudication",
+        "decision": proposal["decision"],
+        "targetPolicy": policy,
+        "finalizedTarget": finalized,
+        "closureAssessment": proposal["closureAssessment"],
+        "representableAsSingleCompletion": proposal[
+            "representableAsSingleCompletion"
+        ],
+        "notes": proposal["notes"],
+    }
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--corpus", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument(
+    selection_group = parser.add_mutually_exclusive_group(required=True)
+    selection_group.add_argument(
         "--neighborhood",
         action="append",
-        required=True,
         type=parse_neighborhood,
         help="repeatable LABEL=FIRST:LAST, using one-based inclusive example ordinals",
+    )
+    selection_group.add_argument(
+        "--selection-file",
+        type=Path,
+        help="versioned JSON selection containing labeled review neighborhoods",
+    )
+    parser.add_argument(
+        "--proposals-file",
+        type=Path,
+        help="assistant proposal sidecar bound to --selection-file; remains non-authoritative",
     )
     arguments = parser.parse_args()
     corpus_path = arguments.corpus.expanduser().resolve()
@@ -1168,6 +1393,17 @@ def main() -> int:
     project = Path(__file__).resolve().parent.parent
     manifest_path = corpus_path / "corpus.json"
     manifest = load_json(manifest_path)
+    selection_manifest = None
+    selection_path = None
+    if arguments.selection_file is not None:
+        selection_path = arguments.selection_file.expanduser().resolve()
+        neighborhoods, selection_manifest = load_selection(
+            selection_path, manifest["corpusID"]
+        )
+    else:
+        neighborhoods = arguments.neighborhood or []
+    if arguments.proposals_file is not None and selection_manifest is None:
+        raise ReviewError("--proposals-file requires --selection-file")
     for name in ("examples.jsonl", "events.jsonl"):
         expected = manifest.get("artifactDigestsSHA256", {}).get(name)
         if not expected or sha256(corpus_path / name) != expected:
@@ -1178,13 +1414,13 @@ def main() -> int:
         range(len(examples))
     ):
         raise ReviewError("examples are not in frozen chronological order")
-    for neighborhood in arguments.neighborhood:
+    for neighborhood in neighborhoods:
         if neighborhood.last > len(examples):
             raise ReviewError(f"neighborhood exceeds corpus: {neighborhood.label}")
     event_by_id = {event["sourceEventID"]: event for event in events}
     selected_events = [
         event
-        for neighborhood in arguments.neighborhood
+        for neighborhood in neighborhoods
         for event in neighborhood_write_events(neighborhood, examples, events)
     ]
     needed_ids = {
@@ -1207,8 +1443,26 @@ def main() -> int:
             raw_records,
             semantic_events,
         )
-        for neighborhood in arguments.neighborhood
+        for neighborhood in neighborhoods
     ]
+    proposal_manifest = None
+    proposal_path = None
+    proposals_by_label: dict[str, dict[str, Any]] = {}
+    proposed_annotations: list[dict[str, Any]] = []
+    if arguments.proposals_file is not None:
+        proposal_path = arguments.proposals_file.expanduser().resolve()
+        proposal_manifest, proposal_specs = load_proposals(
+            proposal_path,
+            selection_id=selection_manifest["selectionID"],
+            candidate_labels={candidate["label"] for candidate in candidates},
+        )
+        proposed_annotations = [
+            resolve_proposal(candidate, proposal_specs[candidate["label"]])
+            for candidate in candidates
+        ]
+        proposals_by_label = {
+            value["label"]: value for value in proposed_annotations
+        }
     annotations = [
         {
             "schemaVersion": 2,
@@ -1228,7 +1482,13 @@ def main() -> int:
     try:
         write_jsonl(temporary / "episode-candidates.jsonl", candidates)
         write_jsonl(temporary / "annotations.jsonl", annotations)
-        (temporary / "review.md").write_text(markdown(candidates), encoding="utf-8")
+        if proposed_annotations:
+            write_jsonl(
+                temporary / "proposed-annotations.jsonl", proposed_annotations
+            )
+        (temporary / "review.md").write_text(
+            markdown(candidates, proposals_by_label), encoding="utf-8"
+        )
         review_manifest = {
             "schemaVersion": 2,
             "builderVersion": BUILDER_VERSION,
@@ -1241,14 +1501,34 @@ def main() -> int:
                 "eventsSHA256": sha256(corpus_path / "events.jsonl"),
                 "rawSessions": raw_sources,
                 "semanticSessions": semantic_sources,
+                "selection": (
+                    {
+                        "selectionID": selection_manifest.get("selectionID"),
+                        "path": str(selection_path.relative_to(project)),
+                        "sha256": sha256(selection_path),
+                    }
+                    if selection_manifest is not None and selection_path is not None
+                    else None
+                ),
+                "assistantProposals": (
+                    {
+                        "status": proposal_manifest.get("status"),
+                        "path": str(proposal_path.relative_to(project)),
+                        "sha256": sha256(proposal_path),
+                    }
+                    if proposal_manifest is not None and proposal_path is not None
+                    else None
+                ),
             },
             "neighborhoods": [
                 {
                     "label": value.label,
                     "firstOneBasedExampleOrdinal": value.first,
                     "lastOneBasedExampleOrdinal": value.last,
+                    "category": value.category,
+                    "rationale": value.rationale,
                 }
-                for value in arguments.neighborhood
+                for value in neighborhoods
             ],
             "rules": {
                 "newReadIsHardMergeBoundary": True,
@@ -1282,6 +1562,9 @@ def main() -> int:
                     == "mechanical_alignment_gated_out"
                     for value in candidates
                 ),
+                "assistantProposalsPendingHumanAdjudication": len(
+                    proposed_annotations
+                ),
             },
             "artifactDigestsSHA256": {
                 "episode-candidates.jsonl": sha256(
@@ -1291,6 +1574,10 @@ def main() -> int:
                 "review.md": sha256(temporary / "review.md"),
             },
         }
+        if proposed_annotations:
+            review_manifest["artifactDigestsSHA256"][
+                "proposed-annotations.jsonl"
+            ] = sha256(temporary / "proposed-annotations.jsonl")
         (temporary / "episode-review.json").write_bytes(
             canonical_bytes(review_manifest)
         )

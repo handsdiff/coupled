@@ -1,0 +1,149 @@
+{
+  "schemaVersion": 1,
+  "selectionID": "phase1-episode-development-gold-v0-20260819",
+  "corpusID": "corpus_c1c62e66bee2ffea947a59870a37c33ad3b07078d01bb21870d14b932aee35c1",
+  "status": "unadjudicated_development_selection",
+  "purpose": "Develop taste and conservative deterministic rules for closed substantive composition episodes; this is not training authority.",
+  "neighborhoods": [
+    {
+      "label": "chatgpt_cursor_revision",
+      "firstOneBasedExampleOrdinal": 32,
+      "lastOneBasedExampleOrdinal": 41,
+      "category": "within_composition_cursor_revision",
+      "rationale": "Long prompt with pauses, a middle insertion, a local wording correction, return to the frontier, and later submission evidence."
+    },
+    {
+      "label": "obsidian_cursor_revision",
+      "firstOneBasedExampleOrdinal": 152,
+      "lastOneBasedExampleOrdinal": 158,
+      "category": "within_composition_cursor_revision",
+      "rationale": "Long-editor passage with corrections to newly authored text and an Accessibility numeric-caret disagreement."
+    },
+    {
+      "label": "chatgpt_submitted_single",
+      "firstOneBasedExampleOrdinal": 8,
+      "lastOneBasedExampleOrdinal": 8,
+      "category": "submitted_single_write",
+      "rationale": "Single ChatGPT query provides a simple submitted-field positive control."
+    },
+    {
+      "label": "claude_submitted_initial",
+      "firstOneBasedExampleOrdinal": 11,
+      "lastOneBasedExampleOrdinal": 11,
+      "category": "submitted_field_scaffold",
+      "rationale": "Claude submission tests whether an application newline scaffold is distinct from authored content."
+    },
+    {
+      "label": "claude_submitted_followup",
+      "firstOneBasedExampleOrdinal": 12,
+      "lastOneBasedExampleOrdinal": 12,
+      "category": "submitted_field_scaffold",
+      "rationale": "Claude follow-up tests a visible Write-a-message scaffold and selected pre-Return terminal evidence."
+    },
+    {
+      "label": "chatgpt_submitted_long",
+      "firstOneBasedExampleOrdinal": 50,
+      "lastOneBasedExampleOrdinal": 50,
+      "category": "submitted_single_write",
+      "rationale": "Long single ChatGPT prompt is a submitted-field positive control with richer content."
+    },
+    {
+      "label": "claude_grounded_paste_prompt",
+      "firstOneBasedExampleOrdinal": 84,
+      "lastOneBasedExampleOrdinal": 84,
+      "category": "mixed_authorship_submission",
+      "rationale": "Typed-paste-typed Claude prompt tests one grounded paste action inside a submitted composition."
+    },
+    {
+      "label": "gemini_corrective_submission",
+      "firstOneBasedExampleOrdinal": 100,
+      "lastOneBasedExampleOrdinal": 100,
+      "category": "submitted_single_write",
+      "rationale": "Gemini corrective instruction tests another transient submitted field and pre-Return recovery."
+    },
+    {
+      "label": "claude_grounded_paste_prompt_two",
+      "firstOneBasedExampleOrdinal": 130,
+      "lastOneBasedExampleOrdinal": 130,
+      "category": "mixed_authorship_submission",
+      "rationale": "Short typed-plus-document-paste Claude prompt is a second grounded paste control."
+    },
+    {
+      "label": "claude_mixed_paste_continuation",
+      "firstOneBasedExampleOrdinal": 133,
+      "lastOneBasedExampleOrdinal": 134,
+      "category": "mixed_authorship_submission",
+      "rationale": "Paste-backed Claude prompt followed by authored continuation tests mixed segments across several low-level WRITEs."
+    },
+    {
+      "label": "chatgpt_read_separated_independent",
+      "firstOneBasedExampleOrdinal": 176,
+      "lastOneBasedExampleOrdinal": 177,
+      "category": "causal_boundary_negative_control",
+      "rationale": "Two ChatGPT prompts separated by model output should be rejected as one episode by READ and continuity gates."
+    },
+    {
+      "label": "chatgpt_fragmented_long",
+      "firstOneBasedExampleOrdinal": 181,
+      "lastOneBasedExampleOrdinal": 185,
+      "category": "within_composition_fragmentation",
+      "rationale": "A long prompt continuation split by pauses and cursor boundaries tests reconstruction from a pre-existing authored prefix."
+    },
+    {
+      "label": "chatgpt_fragmented_temporal",
+      "firstOneBasedExampleOrdinal": 193,
+      "lastOneBasedExampleOrdinal": 196,
+      "category": "causal_boundary_mixed_case",
+      "rationale": "Fragmented ChatGPT writing includes a captured READ and tests whether the proposed bounds must be split."
+    },
+    {
+      "label": "claude_cursor_fragment",
+      "firstOneBasedExampleOrdinal": 168,
+      "lastOneBasedExampleOrdinal": 171,
+      "category": "within_composition_cursor_revision",
+      "rationale": "Claude prompt is assembled through several cursor-bounded fragments over visible input scaffolding."
+    },
+    {
+      "label": "chatgpt_causal_protocol",
+      "firstOneBasedExampleOrdinal": 62,
+      "lastOneBasedExampleOrdinal": 65,
+      "category": "within_composition_fragmentation",
+      "rationale": "Several contiguous ChatGPT fragments develop one causal evaluation protocol before submission."
+    },
+    {
+      "label": "obsidian_phase1_composition",
+      "firstOneBasedExampleOrdinal": 115,
+      "lastOneBasedExampleOrdinal": 119,
+      "category": "long_editor_composition",
+      "rationale": "Obsidian paragraph is written in several passes with cursor relocation inside one developing claim."
+    },
+    {
+      "label": "obsidian_independent_lines",
+      "firstOneBasedExampleOrdinal": 52,
+      "lastOneBasedExampleOrdinal": 53,
+      "category": "independent_thoughts_negative_control",
+      "rationale": "Two separate note lines test whether quiet same-document activity should remain two thoughts."
+    },
+    {
+      "label": "obsidian_disjoint_regions",
+      "firstOneBasedExampleOrdinal": 123,
+      "lastOneBasedExampleOrdinal": 125,
+      "category": "disjoint_editor_regions_negative_control",
+      "rationale": "Writes jump between distant regions of one note and include intervening READs; one completion should not be guessed."
+    },
+    {
+      "label": "obsidian_gtm_composition",
+      "firstOneBasedExampleOrdinal": 127,
+      "lastOneBasedExampleOrdinal": 128,
+      "category": "long_editor_ambiguous_boundary",
+      "rationale": "Two adjacent GTM-note writes test semantic continuity when raw editable identity or intervening evidence disagrees."
+    },
+    {
+      "label": "code_independent_commands",
+      "firstOneBasedExampleOrdinal": 186,
+      "lastOneBasedExampleOrdinal": 192,
+      "category": "independent_actions_negative_control",
+      "rationale": "A rapid sequence of terminal commands should remain independent actions rather than one concatenated thought."
+    }
+  ]
+}

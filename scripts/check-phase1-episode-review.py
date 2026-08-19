@@ -232,6 +232,100 @@ def check_deterministic_serialization(builder: ModuleType) -> None:
     )
 
 
+def check_development_selection(builder: ModuleType) -> None:
+    project = Path(__file__).resolve().parent.parent
+    path = project / "episode-review" / "phase1-episode-development-gold-v0.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    neighborhoods, loaded = builder.load_selection(path, manifest["corpusID"])
+    assert loaded["selectionID"] == "phase1-episode-development-gold-v0-20260819"
+    assert len(neighborhoods) == 20
+    assert len({value.label for value in neighborhoods}) == 20
+    assert all(value.category and value.rationale for value in neighborhoods)
+    categories = {value.category for value in neighborhoods}
+    assert "submitted_single_write" in categories
+    assert "within_composition_cursor_revision" in categories
+    assert "causal_boundary_negative_control" in categories
+    assert "independent_actions_negative_control" in categories
+
+
+def check_development_proposals(builder: ModuleType) -> None:
+    project = Path(__file__).resolve().parent.parent
+    selection_path = (
+        project / "episode-review" / "phase1-episode-development-gold-v0.json"
+    )
+    proposal_path = (
+        project
+        / "episode-review"
+        / "phase1-episode-development-gold-v0-proposals.json"
+    )
+    selection = json.loads(selection_path.read_text(encoding="utf-8"))
+    proposal = json.loads(proposal_path.read_text(encoding="utf-8"))
+    labels = {value["label"] for value in selection["neighborhoods"]}
+    loaded, by_label = builder.load_proposals(
+        proposal_path,
+        selection_id=selection["selectionID"],
+        candidate_labels=labels,
+    )
+    assert loaded["status"] == "assistant_proposals_pending_human_adjudication"
+    assert set(by_label) == labels
+    assert len(by_label) == 20
+    assert any(
+        value["decision"] == "merge_closed_episode"
+        for value in proposal["proposals"]
+    )
+    assert any(
+        value["decision"] == "split_into_independent_episodes"
+        for value in proposal["proposals"]
+    )
+    assert any(
+        value["decision"] == "defer_causal_ambiguity"
+        for value in proposal["proposals"]
+    )
+
+
+def check_structured_paste_proposal(builder: ModuleType) -> None:
+    paste = {
+        "type": "paste",
+        "clipboardSnapshotID": "clipboard",
+        "pasteCheckpointID": "checkpoint",
+    }
+    candidate = {
+        "candidateID": "candidate",
+        "label": "mixed",
+        "memberWriteEventIDs": ["one", "two"],
+        "members": [
+            {
+                "currentTarget": {
+                    "schemaVersion": 1,
+                    "resolvedContent": "before payload",
+                    "segments": [
+                        {"type": "authored_text", "content": "before "},
+                        paste,
+                    ],
+                }
+            },
+            {"currentTarget": None},
+        ],
+        "finalObservation": {"value": "before payload after"},
+        "singleCompletionDiagnostic": {},
+    }
+    resolved = builder.resolve_proposal(
+        candidate,
+        {
+            "decision": "merge_closed_episode",
+            "targetPolicy": "custom_structured_target",
+            "proposedMarkerTarget": "before <|paste|> after",
+            "closureAssessment": "submitted",
+            "representableAsSingleCompletion": True,
+            "notes": "fixture",
+        },
+    )
+    target = resolved["finalizedTarget"]
+    assert target["resolvedContent"] == "before payload after"
+    assert builder.marker_target(target) == "before <|paste|> after"
+    assert target["segments"][1] == paste
+
+
 def main() -> int:
     builder = load_builder()
     check_final_state_not_keystroke_concatenation(builder)
@@ -241,6 +335,9 @@ def main() -> int:
     check_reducer_selected_terminal_is_authoritative(builder)
     check_continuity_is_exact_gate(builder)
     check_deterministic_serialization(builder)
+    check_development_selection(builder)
+    check_development_proposals(builder)
+    check_structured_paste_proposal(builder)
     print("Phase 1 episode-review checks passed.")
     return 0
 
