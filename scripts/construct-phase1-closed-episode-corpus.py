@@ -18,8 +18,8 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-EPISODE_VERSION = "phase1-episode-v2"
-CONVERSION_VERSION = "phase1-episode-causal-v2"
+EPISODE_VERSION = "phase1-episode-v3"
+CONVERSION_VERSION = "phase1-episode-causal-v3"
 
 
 def canonical_bytes(value: Any) -> bytes:
@@ -191,6 +191,15 @@ def require_candidate_gate(
             f"closed episode lacks production evidence ({', '.join(failures)}): "
             f"{adjudication.get('label')}"
         )
+    onset = candidate.get("onsetEvidence") or {}
+    if (
+        onset.get("requiresProvenPromptOnset")
+        and onset.get("promptOnsetProven") is not True
+    ):
+        raise ValueError(
+            f"submitted episode does not begin at a proven prompt onset: "
+            f"{adjudication.get('label')}"
+        )
 
 
 def construct(
@@ -317,6 +326,7 @@ def construct(
             "memberWriteEventIDs": members,
             "closureReason": adjudication.get("closureReason"),
             "decision": adjudication["decision"],
+            "onsetEvidence": candidate.get("onsetEvidence"),
         }
         event = {
             "schemaVersion": 1,
@@ -453,6 +463,7 @@ def construct(
                 "candidateID": adjudication["candidateID"],
                 "closureReason": adjudication.get("closureReason"),
                 "conditioningSource": "candidate_episode_onset",
+                "onsetEvidence": candidate.get("onsetEvidence"),
             },
             "targetMetadata": {
                 "episodeVersion": EPISODE_VERSION,
@@ -529,6 +540,7 @@ def construct(
                     "no_novel_causally_available_read",
                     "no_overlapping_outside_write",
                     "observed_closure_boundary",
+                    "proven_empty_or_causally_partitioned_prompt_onset",
                 ],
                 "minimumTrimmedAuthoredCharacters": minimum_authored_characters,
                 "minimumAuthoredWords": minimum_words,

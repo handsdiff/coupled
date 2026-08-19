@@ -1436,3 +1436,63 @@ coupled-data/phase1-closed-episode-smoke-tinker-run-v2.json
 This closes the mechanical gate for episode v2. The next paid model operation
 should be the regenerated three-arm score-before-update experiment, not another
 memorization smoke.
+
+## Submitted-composition onset correction (episode v3)
+
+Episode v2 was mechanically sound but admitted several loss targets that began
+partway through an already active prompt. In those cases the conditioning query
+already contained the opening of the thought and the target contained only its
+suffix. That trains continuation after the human has begun composing rather
+than prediction of the next closed thought.
+
+Episode v3 makes candidate discovery operate over every semantic WRITE,
+including history-only transitions. For the validated ChatGPT, Claude, and
+Gemini prompt surfaces, an accepted episode onset must now be proven by either:
+
+- an empty, placeholder, or otherwise unpopulated prompt field; or
+- a causal partition after the immediately preceding same-surface composition:
+  a novel READ, an outside WRITE, or a prior submission.
+
+No pause threshold is used. The exhaustive shadow pass generated 3,753 onset
+probes and checked each against raw state continuity, logical editable identity,
+READ novelty, and overlapping WRITE evidence. Unobservable probes are skipped;
+an unexplained nonempty prompt onset is excluded rather than guessed. Return is
+treated as a submission closure only on the currently validated prompt surfaces,
+not every non-Obsidian editable.
+
+The five suffix cases identified during review were replayed. Four had no
+provable onset or causal partition and no longer receive loss. The remaining
+parenthetical continuation follows a genuinely novel ChatGPT READ and remains a
+separate loss target under the established rule that new inbound information
+partitions thoughts. Another continuation beginning `until this is proven...`
+is retained for the same reason. The complete earlier composition remains its
+own closed historical WRITE.
+
+Canonical artifacts:
+
+```text
+episode-review/phase1-full-episode-review-v3.json
+coupled-data/phase1-full-episode-review-v3-r6-final
+coupled-data/phase1-full-episode-adjudications-v3-r6.jsonl
+coupled-data/phase1-full-episode-production-candidates-v3-r6.jsonl
+coupled-data/phase1-closed-episode-corpus-v3-r6-final-20260819
+coupled-data/phase1-closed-episode-pack-v3-r6-final-20260819
+```
+
+The final `phase1-episode-v3` / `phase1-episode-causal-v3` projection contains:
+
+- 478 source semantic micro-WRITEs;
+- 206 closed model-facing WRITE episodes;
+- 110 loss-bearing substantive episodes;
+- 96 closed history-only episodes;
+- 196 conservatively excluded source WRITEs;
+- 31 multi-WRITE episodes, 29 of them loss-bearing;
+- 7 grounded paste actions and 4,514 target tokens after Qwen packing.
+
+The strict corpus audit independently verifies empty or causal-partition onset
+proofs against source event timing and identity. It also rejects the four known
+unproven suffix prefixes. Corpus construction is byte-identical on replay; the
+packed audit, causal-shift/mask tests, episode-review regressions, and full local
+check suite pass. The prior v2 corpus and pack remain the immutable mechanical
+smoke record but are superseded for the next three-arm experiment. No additional
+paid smoke is required.

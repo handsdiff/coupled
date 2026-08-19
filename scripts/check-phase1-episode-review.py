@@ -252,6 +252,70 @@ def check_deterministic_serialization(builder: ModuleType) -> None:
     )
 
 
+def check_prompt_onset_requires_empty_or_causal_partition(builder: ModuleType) -> None:
+    members = [{"application": "ChatGPT", "windowTitle": "ChatGPT"}]
+    previous = event(
+        "previous", "write", "2026-08-19T12:00:00Z", "2026-08-19T12:00:01Z",
+        application="ChatGPT", window="ChatGPT",
+    )
+    current = event(
+        "current", "write", "2026-08-19T12:00:10Z", "2026-08-19T12:00:11Z",
+        application="ChatGPT", window="ChatGPT",
+    )
+    began = dt.datetime.fromisoformat("2026-08-19T12:00:10+00:00")
+    suffix = builder.prompt_onset_evidence(
+        members=members,
+        initial_value="already authored prefix ",
+        initial_source="raw_before_value",
+        first_event=current,
+        events=[previous, current],
+        began=began,
+    )
+    assert suffix["requiresProvenPromptOnset"] is True
+    assert suffix["promptOnsetProven"] is False
+    assert suffix["proofReason"] is None
+
+    empty = builder.prompt_onset_evidence(
+        members=members,
+        initial_value="",
+        initial_source="raw_before_value",
+        first_event=current,
+        events=[previous, current],
+        began=began,
+    )
+    assert empty["promptOnsetProven"] is True
+    assert empty["proofReason"] == "empty_or_unpopulated_prompt"
+
+    novel_read = event(
+        "read", "read", "2026-08-19T12:00:04Z", "2026-08-19T12:00:05Z",
+        application="ChatGPT", window="ChatGPT",
+    )
+    partitioned = builder.prompt_onset_evidence(
+        members=members,
+        initial_value="closed prior thought ",
+        initial_source="raw_before_value",
+        first_event=current,
+        events=[previous, novel_read, current],
+        began=began,
+    )
+    assert partitioned["promptOnsetProven"] is True
+    assert partitioned["proofReason"] == (
+        "novel_causal_read_after_prior_surface_write"
+    )
+    assert partitioned["boundaryEventIDs"] == ["read"]
+
+    repeated_read = {**novel_read, "sourceEventID": "old-read", "beganAt": "2026-08-19T11:59:00Z", "availableAt": "2026-08-19T11:59:01Z"}
+    repeated = builder.prompt_onset_evidence(
+        members=members,
+        initial_value="closed prior thought ",
+        initial_source="raw_before_value",
+        first_event=current,
+        events=[repeated_read, previous, novel_read, current],
+        began=began,
+    )
+    assert repeated["promptOnsetProven"] is False
+
+
 def check_development_selection(builder: ModuleType) -> None:
     project = Path(__file__).resolve().parent.parent
     path = project / "episode-review" / "phase1-episode-development-gold-v0.json"
@@ -499,6 +563,7 @@ def main() -> int:
     check_reducer_selected_terminal_is_authoritative(builder)
     check_continuity_is_exact_gate(builder)
     check_deterministic_serialization(builder)
+    check_prompt_onset_requires_empty_or_causal_partition(builder)
     check_development_selection(builder)
     check_development_proposals(builder)
     check_structured_paste_proposal(builder)

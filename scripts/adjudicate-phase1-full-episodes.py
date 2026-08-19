@@ -42,13 +42,29 @@ def candidate_passes(candidate: dict[str, Any]) -> bool:
     return bool(candidate.get("mechanicalGates", {}).get("passed"))
 
 
+def prompt_onset_is_proven(candidate: dict[str, Any]) -> bool:
+    onset = candidate.get("onsetEvidence") or {}
+    return not onset.get("requiresProvenPromptOnset") or bool(
+        onset.get("promptOnsetProven")
+    )
+
+
 def closure_reason(candidate: dict[str, Any]) -> str | None:
     closure = candidate.get("closureEvidence", {})
     status = closure.get("status")
     bundle = candidate_app(candidate)
     if status == "objective_submission_observed":
         return "objective_submission_observed"
-    if closure.get("returnObserved") and bundle != "md.obsidian":
+    if closure.get("returnObserved") and prompt_onset_is_proven(candidate) and (
+        bundle == "com.openai.codex"
+        or (
+            bundle == "com.google.Chrome"
+            and any(
+                marker in str(candidate.get("members", [{}])[0].get("windowTitle") or "").lower()
+                for marker in ("chatgpt", "claude", "gemini")
+            )
+        )
+    ):
         return "return_observed_in_submission_surface"
     following = candidate.get("closureContext", {}).get("followingEvents", [])
     # Session termination says only that observation stopped. It does not prove
@@ -233,7 +249,12 @@ def main() -> int:
     for label in sorted(approved_prior):
         candidate = candidate_by_label.get("reviewed_" + label)
         target = old_targets.get(label)
-        if candidate is None or target is None or not candidate_passes(candidate):
+        if (
+            candidate is None
+            or target is None
+            or not candidate_passes(candidate)
+            or not prompt_onset_is_proven(candidate)
+        ):
             continue
         members = candidate["memberWriteEventIDs"]
         if claimed.intersection(members):
@@ -245,8 +266,12 @@ def main() -> int:
     # explicit reviewed structured authorship and are not auto-merged.
     automatic = [
         row for row in candidates
-        if row["label"].startswith("automatic_run_")
+        if (
+            row["label"].startswith("automatic_run_")
+            or row["label"].startswith("submission_onset_")
+        )
         and candidate_passes(row)
+        and prompt_onset_is_proven(row)
         and isinstance(
             row.get("singleCompletionDiagnostic", {}).get("proposedFinalizedTarget"), str
         )
@@ -301,7 +326,12 @@ def main() -> int:
         target = normalize_episode_target(example["target"])
         close = closure_reason(candidate)
         fragment = fragment_reason(target["resolvedContent"], candidate)
-        if candidate_passes(candidate) and close and fragment is None:
+        if (
+            candidate_passes(candidate)
+            and prompt_onset_is_proven(candidate)
+            and close
+            and fragment is None
+        ):
             selected.append((candidate, target, "automatic_closed_singleton"))
             claimed.add(event_id)
 
@@ -319,6 +349,7 @@ def main() -> int:
             "finalizedTarget": target,
             "closureReason": closure_reason(candidate),
             "classificationProvenance": provenance,
+            "onsetEvidence": candidate.get("onsetEvidence"),
             "minimumAuthoredCharacters": MIN_AUTHORED_CHARACTERS,
             "minimumWords": MIN_WORDS,
         })

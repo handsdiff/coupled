@@ -102,6 +102,7 @@ def require_compiled_dataset(
         "phase1-causal-v14",
         "phase1-episode-causal-v1",
         "phase1-episode-causal-v2",
+        "phase1-episode-causal-v3",
     }:
         raise ValueError(
             "packer requires a supported causal or episode-causal conversion"
@@ -673,7 +674,9 @@ def main() -> int:
                     raise ValueError(
                         f"example {example['exampleID']} has invalid episode lineage"
                     )
-                if source_manifest["conversionVersion"] == "phase1-episode-causal-v2":
+                if source_manifest["conversionVersion"] in {
+                    "phase1-episode-causal-v2", "phase1-episode-causal-v3"
+                }:
                     # v2 deliberately removes micro-WRITEs from model-facing
                     # events. Their IDs remain immutable audit lineage on the
                     # normalized episode event; resolved paste payloads live in

@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 
-BUILDER_VERSION = "phase1-episode-design-v1-shadow-r4"
+BUILDER_VERSION = "phase1-episode-design-v1-shadow-r6"
 SEMANTIC_ANCHOR_MINIMUM_CHARACTERS = 32
 
 
@@ -33,6 +33,13 @@ def sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def display_path(path: Path, project: Path) -> str:
+    try:
+        return str(path.relative_to(project))
+    except ValueError:
+        return str(path)
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -453,6 +460,25 @@ def logical_observation_value(observation: Any) -> str | None:
     return "" if represents_placeholder else value
 
 
+def effectively_empty_prompt_value(value: str | None) -> bool:
+    if not isinstance(value, str):
+        return False
+    return not value.replace("\u200b", "").replace("\ufeff", "").strip()
+
+
+def prompt_submission_surface(members: list[dict[str, Any]]) -> bool:
+    if not members:
+        return False
+    first = members[0]
+    application = str(first.get("application") or "").lower()
+    window = str(first.get("windowTitle") or "").lower()
+    if application == "chatgpt":
+        return True
+    return application == "google chrome" and any(
+        marker in window for marker in ("chatgpt", "claude", "gemini")
+    )
+
+
 def identity_projection(record: dict[str, Any]) -> dict[str, Any]:
     identity = record.get("targetIdentity")
     if not isinstance(identity, dict):
@@ -834,6 +860,116 @@ def event_review_projection(event: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def event_boundary_reason(event: dict[str, Any]) -> str | None:
+    try:
+        audit = json.loads(event.get("auditSerialized", "{}"))
+    except json.JSONDecodeError:
+        return None
+    return audit.get("boundaryReason")
+
+
+def prompt_onset_evidence(
+    *,
+    members: list[dict[str, Any]],
+    initial_value: str,
+    initial_source: str,
+    first_event: dict[str, Any],
+    events: list[dict[str, Any]],
+    began: dt.datetime,
+) -> dict[str, Any]:
+    requires_prompt_onset = prompt_submission_surface(members)
+    empty_prompt_onset = (
+        initial_source != "raw_before_value"
+        or effectively_empty_prompt_value(initial_value)
+    )
+    first_destination = serialized_destination(first_event)
+    prior_same_surface = [
+        event
+        for event in events
+        if event.get("kind") == "write"
+        and event.get("sessionID") == first_event.get("sessionID")
+        and serialized_destination(event) == first_destination
+        and timestamp(event["availableAt"]) < began
+    ]
+    previous_surface_write = max(
+        prior_same_surface,
+        key=lambda event: (event["availableAt"], event["sourceEventID"]),
+        default=None,
+    )
+    onset_boundary_events: list[dict[str, Any]] = []
+    onset_boundary_reason = None
+    if not empty_prompt_onset and previous_surface_write is not None:
+        previous_available = timestamp(previous_surface_write["availableAt"])
+        between = [
+            event
+            for event in events
+            if event["sourceEventID"] != previous_surface_write["sourceEventID"]
+            and previous_available < timestamp(event["availableAt"]) < began
+        ]
+        prior_read_serializations = {
+            event.get("serialized")
+            for event in events
+            if event.get("kind") == "read"
+            and timestamp(event["availableAt"])
+                <= timestamp(previous_surface_write["beganAt"])
+        }
+        novel_reads = [
+            event for event in between
+            if event.get("kind") == "read"
+            and event.get("serialized") not in prior_read_serializations
+        ]
+        outside_writes = [
+            event for event in between
+            if event.get("kind") == "write"
+            and serialized_destination(event) != first_destination
+        ]
+        if event_boundary_reason(previous_surface_write) in {
+            "return_pressed", "submission_boundary"
+        }:
+            onset_boundary_reason = "prior_submission"
+            onset_boundary_events = [previous_surface_write]
+        elif novel_reads:
+            onset_boundary_reason = "novel_causal_read_after_prior_surface_write"
+            onset_boundary_events = novel_reads
+        elif outside_writes:
+            onset_boundary_reason = "outside_write_after_prior_surface_write"
+            onset_boundary_events = outside_writes
+    prompt_onset_proven = empty_prompt_onset or onset_boundary_reason is not None
+    return {
+        "policy": (
+            "prompt_field_requires_empty_or_causal_partition_onset"
+            if requires_prompt_onset
+            else "ordinary_editable_onset"
+        ),
+        "requiresProvenPromptOnset": requires_prompt_onset,
+        "emptyOrUnpopulatedPromptProven": (
+            empty_prompt_onset if requires_prompt_onset else None
+        ),
+        "causalPartitionAfterPriorCompositionProven": (
+            onset_boundary_reason is not None if requires_prompt_onset else None
+        ),
+        "promptOnsetProven": (
+            prompt_onset_proven if requires_prompt_onset else None
+        ),
+        "proofReason": (
+            "empty_or_unpopulated_prompt"
+            if empty_prompt_onset else onset_boundary_reason
+        ),
+        "previousSameSurfaceWriteEventID": (
+            previous_surface_write.get("sourceEventID")
+            if previous_surface_write is not None else None
+        ),
+        "boundaryEventIDs": [
+            event["sourceEventID"] for event in onset_boundary_events
+        ],
+        "initialLogicalValueCharacters": len(initial_value),
+        "initialLogicalValueSHA256": hashlib.sha256(
+            initial_value.encode("utf-8")
+        ).hexdigest(),
+        "initialObservationSource": initial_source,
+    }
+
+
 def neighborhood_write_events(
     neighborhood: Neighborhood,
     examples: list[dict[str, Any]],
@@ -919,11 +1055,19 @@ def continuity_evidence(members: list[dict[str, Any]]) -> dict[str, Any]:
                 "fromObservationID": previous["selectedTerminalObservation"].get(
                     "observationID"
                 ),
-                "toObservationID": following["before"].get("observationID"),
+                "toObservationID": (
+                    following["before"].get("observationID")
+                    if isinstance(following.get("before"), dict)
+                    else None
+                ),
                 "fromValueSHA256": previous["selectedTerminalObservation"].get(
                     "valueSHA256"
                 ),
-                "toValueSHA256": following["before"].get("valueSHA256"),
+                "toValueSHA256": (
+                    following["before"].get("valueSHA256")
+                    if isinstance(following.get("before"), dict)
+                    else None
+                ),
             }
         )
     return {
@@ -1168,6 +1312,15 @@ def build_candidate(
         completion_status = alignment_status
     single_completion = alignment_proven and not gate_failures
 
+    onset_evidence = prompt_onset_evidence(
+        members=members,
+        initial_value=initial_value,
+        initial_source=initial_source,
+        first_event=first_event,
+        events=events,
+        began=began,
+    )
+
     chronologically_sorted = sorted(
         events,
         key=lambda event: (
@@ -1240,6 +1393,7 @@ def build_candidate(
         },
         "initialConditioningState": first_conditioning,
         "initialObservationSource": initial_source,
+        "onsetEvidence": onset_evidence,
         "initialObservation": observation_projection(initial_observation),
         "finalObservationSource": last_member["selectedTerminalObservationSource"],
         "finalObservation": last_member["selectedTerminalObservation"],
@@ -1955,18 +2109,28 @@ def main() -> int:
     semantic_events, semantic_sources = discover_semantic_sessions(
         project, manifest, session_ids
     )
-    candidates = [
-        build_candidate(
-            manifest["corpusID"],
-            neighborhood,
-            examples,
-            events,
-            raw_records,
-            semantic_events,
-            model_inputs_by_example,
-        )
-        for neighborhood in neighborhoods
-    ]
+    candidates = []
+    skipped_onset_probes = []
+    for neighborhood in neighborhoods:
+        try:
+            candidates.append(
+                build_candidate(
+                    manifest["corpusID"],
+                    neighborhood,
+                    examples,
+                    events,
+                    raw_records,
+                    semantic_events,
+                    model_inputs_by_example,
+                )
+            )
+        except ReviewError as error:
+            if neighborhood.category != "all_write_prompt_onset_probe":
+                raise
+            skipped_onset_probes.append({
+                "label": neighborhood.label,
+                "reason": str(error),
+            })
     proposal_manifest = None
     proposal_path = None
     proposals_by_label: dict[str, dict[str, Any]] = {}
@@ -2039,7 +2203,7 @@ def main() -> int:
                 "selection": (
                     {
                         "selectionID": selection_manifest.get("selectionID"),
-                        "path": str(selection_path.relative_to(project)),
+                        "path": display_path(selection_path, project),
                         "sha256": sha256(selection_path),
                     }
                     if selection_manifest is not None and selection_path is not None
@@ -2048,7 +2212,7 @@ def main() -> int:
                 "assistantProposals": (
                     {
                         "status": proposal_manifest.get("status"),
-                        "path": str(proposal_path.relative_to(project)),
+                        "path": display_path(proposal_path, project),
                         "sha256": sha256(proposal_path),
                     }
                     if proposal_manifest is not None and proposal_path is not None
@@ -2088,6 +2252,7 @@ def main() -> int:
             },
             "counts": {
                 "candidates": len(candidates),
+                "skippedUnobservableOnsetProbes": len(skipped_onset_probes),
                 "memberWrites": sum(len(value["members"]) for value in candidates),
                 "mechanicallyRepresentable": sum(
                     value["singleCompletionDiagnostic"]["status"].startswith(

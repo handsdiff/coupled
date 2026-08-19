@@ -43,21 +43,28 @@ def words(value: str) -> list[str]:
     return re.findall(r"[\w’']+", value, flags=re.UNICODE)
 
 
+def event_destination(event: dict[str, Any]) -> tuple[Any, Any]:
+    payload = json.loads(event.get("serialized", "{}"))
+    destination = payload.get("destination") or {}
+    return destination.get("application"), destination.get("window")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("corpus", type=Path)
     parser.add_argument("--expect-target-count", type=int)
     parser.add_argument("--expect-target-substring", action="append", default=[])
+    parser.add_argument("--reject-target-prefix", action="append", default=[])
     args = parser.parse_args()
 
     root = args.corpus.resolve()
     manifest = load_json(root / "corpus.json")
     if manifest.get("artifactType") != "phase1_episode_corpus":
         raise ValueError("not an episode corpus")
-    if manifest.get("conversionVersion") != "phase1-episode-causal-v2":
-        raise ValueError("audit requires phase1-episode-causal-v2")
-    if manifest.get("episodeVersion") != "phase1-episode-v2":
-        raise ValueError("audit requires phase1-episode-v2")
+    if manifest.get("conversionVersion") != "phase1-episode-causal-v3":
+        raise ValueError("audit requires phase1-episode-causal-v3")
+    if manifest.get("episodeVersion") != "phase1-episode-v3":
+        raise ValueError("audit requires phase1-episode-v3")
     objective = manifest.get("objective") or {}
     assert objective.get("predictionUnit") == "closed_composition_episode"
     assert objective.get("microWritesReceiveLoss") is False
@@ -82,6 +89,7 @@ def main() -> int:
             raise ValueError(f"source digest mismatch for {name}: {actual} != {expected}")
 
     source_events = load_jsonl(source / "events.jsonl")
+    source_event_by_id = {row["sourceEventID"]: row for row in source_events}
     source_write_ids = {
         row["sourceEventID"] for row in source_events if row.get("kind") == "write"
     }
@@ -113,7 +121,7 @@ def main() -> int:
         compact = json.loads(event["serialized"])
         audit = json.loads(event["auditSerialized"])
         assert compact["operation"] == "closed_composition_episode"
-        assert audit["episodeVersion"] == "phase1-episode-v2"
+        assert audit["episodeVersion"] == "phase1-episode-v3"
         assert audit["memberWriteEventIDs"] == members
         assert audit["resolvedCompletion"] == "".join(
             segment["content"] for segment in compact["authorshipSegments"]
@@ -126,7 +134,7 @@ def main() -> int:
     loss_members: set[str] = set()
     for ordinal, example in enumerate(examples):
         assert example["chronologicalOrdinal"] == ordinal
-        assert example["conversionVersion"] == "phase1-episode-causal-v2"
+        assert example["conversionVersion"] == "phase1-episode-causal-v3"
         assert example["targetUnitType"] == "closed_composition_episode"
         target_event = event_by_id[example["targetEventID"]]
         assert target_event["kind"] == "write"
@@ -153,6 +161,74 @@ def main() -> int:
                 assert event_by_id[value].get("episodeID")
 
         target = example["target"]
+        onset = example["episode"].get("onsetEvidence") or {}
+        if onset.get("requiresProvenPromptOnset"):
+            assert onset.get("promptOnsetProven") is True
+            cursor = example["conditioningState"].get("cursorContext") or {}
+            visible = "".join(
+                str(cursor.get(key) or "")
+                for key in ("leftContext", "selectedText", "rightContext")
+            )
+            if onset.get("emptyOrUnpopulatedPromptProven"):
+                assert not visible.replace("\u200b", "").replace("\ufeff", "").strip()
+            else:
+                assert onset.get("causalPartitionAfterPriorCompositionProven") is True
+                assert onset.get("proofReason") in {
+                    "prior_submission",
+                    "novel_causal_read_after_prior_surface_write",
+                    "outside_write_after_prior_surface_write",
+                }
+                member_ids = example["episode"]["memberWriteEventIDs"]
+                first_member = source_event_by_id[member_ids[0]]
+                previous_id = onset.get("previousSameSurfaceWriteEventID")
+                previous = source_event_by_id[previous_id]
+                same_surface_prior = [
+                    event for event in source_events
+                    if event.get("kind") == "write"
+                    and event.get("sessionID") == first_member.get("sessionID")
+                    and event_destination(event) == event_destination(first_member)
+                    and instant(event["availableAt"]) < began
+                ]
+                immediate_previous = max(
+                    same_surface_prior,
+                    key=lambda event: (event["availableAt"], event["sourceEventID"]),
+                )
+                assert immediate_previous["sourceEventID"] == previous_id
+                boundary_ids = onset.get("boundaryEventIDs") or []
+                assert boundary_ids
+                boundary_events = [source_event_by_id[value] for value in boundary_ids]
+                if onset["proofReason"] == "prior_submission":
+                    assert boundary_ids == [previous_id]
+                    audit = json.loads(previous.get("auditSerialized", "{}"))
+                    assert audit.get("boundaryReason") in {
+                        "return_pressed", "submission_boundary"
+                    }
+                elif onset["proofReason"] == "novel_causal_read_after_prior_surface_write":
+                    assert all(
+                        instant(previous["availableAt"])
+                        < instant(event["availableAt"])
+                        < began
+                        for event in boundary_events
+                    )
+                    assert all(event.get("kind") == "read" for event in boundary_events)
+                    old_reads = {
+                        event.get("serialized") for event in source_events
+                        if event.get("kind") == "read"
+                        and instant(event["availableAt"]) <= instant(previous["beganAt"])
+                    }
+                    assert all(event.get("serialized") not in old_reads for event in boundary_events)
+                else:
+                    assert all(
+                        instant(previous["availableAt"])
+                        < instant(event["availableAt"])
+                        < began
+                        for event in boundary_events
+                    )
+                    assert all(event.get("kind") == "write" for event in boundary_events)
+                    assert all(
+                        event_destination(event) != event_destination(first_member)
+                        for event in boundary_events
+                    )
         text = target["resolvedContent"]
         assert isinstance(text, str) and text
         assert "\u200b\n-\n\u200b" not in text
@@ -172,6 +248,8 @@ def main() -> int:
         assert len(examples) == args.expect_target_count
     for fragment in args.expect_target_substring:
         assert any(fragment in text for text in target_texts), fragment
+    for prefix in args.reject_target_prefix:
+        assert not any(text.startswith(prefix) for text in target_texts), prefix
 
     counts = manifest["counts"]
     assert counts["convertedEvents"] == len(events)
