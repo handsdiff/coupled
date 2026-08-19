@@ -61,7 +61,9 @@ python3 -m py_compile \
   "$project_dir/scripts/run-phase1-tinker-overfit.py" \
   "$project_dir/scripts/preflight-phase1-tinker-tokenizer.py" \
   "$project_dir/scripts/check-phase1-training-contract.py" \
-  "$project_dir/scripts/check-phase1-tinker-overfit-contract.py"
+  "$project_dir/scripts/check-phase1-tinker-overfit-contract.py" \
+  "$project_dir/scripts/phase1_cost_latency.py" \
+  "$project_dir/scripts/check-phase1-cost-latency.py"
 
 PYTHONPYCACHEPREFIX="$project_dir/.build/python-cache" \
 python3 "$project_dir/scripts/check-phase1-training-contract.py"
@@ -73,6 +75,7 @@ PYTHONPYCACHEPREFIX="$project_dir/.build/python-cache" \
 python3 "$project_dir/scripts/check-phase1-subscription-responses.py"
 python3 "$project_dir/scripts/check-phase1-real-runners.py"
 python3 "$project_dir/scripts/check-phase1-prediction-metrics.py"
+python3 "$project_dir/scripts/check-phase1-cost-latency.py"
 
 if [[ -x "$project_dir/.build/tinker-venv/bin/python" ]]; then
   PYTHONPYCACHEPREFIX="$project_dir/.build/python-cache" \

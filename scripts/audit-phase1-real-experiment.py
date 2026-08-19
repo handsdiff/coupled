@@ -10,6 +10,7 @@ import os
 import shutil
 import tempfile
 from collections import defaultdict
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -29,10 +30,16 @@ from phase1_prediction_metrics import (
     score_prediction,
     summarize_prediction_metrics,
 )
+from phase1_cost_latency import (
+    COST_LATENCY_VERSION,
+    build_cost_latency_report,
+    cost_latency_csv,
+    tinker_arm_cost,
+)
 from phase1_training_contract import TrainingContractError, sha256
 
 
-AUDIT_VERSION = "phase1-real-experiment-audit-v2"
+AUDIT_VERSION = "phase1-real-experiment-audit-v3"
 
 
 def target_profile(example: dict[str, Any]) -> dict[str, Any]:
@@ -82,6 +89,8 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--packed", required=True, type=Path)
     parser.add_argument("--frontier", required=True, type=Path)
     parser.add_argument("--tinker", required=True, type=Path)
+    parser.add_argument("--provider-plan", type=Path)
+    parser.add_argument("--verified-tinker-charge-usd", type=Decimal)
     parser.add_argument("--output", required=True, type=Path)
     return parser.parse_args()
 
@@ -92,6 +101,11 @@ def main() -> int:
     packed_path = arguments.packed.expanduser().resolve()
     frontier_path = arguments.frontier.expanduser().resolve()
     tinker_path = arguments.tinker.expanduser().resolve()
+    provider_plan_path = (
+        arguments.provider_plan.expanduser().resolve()
+        if arguments.provider_plan is not None
+        else None
+    )
     output = arguments.output.expanduser().resolve()
     if output.exists():
         raise TrainingContractError(f"output already exists: {output}")
@@ -108,6 +122,21 @@ def main() -> int:
     tinker_manifest = json.loads((tinker_path / "tinker.json").read_text())
     tinker_scores = load_jsonl(tinker_path / "scores.jsonl")
     updates = load_jsonl(tinker_path / "updates.jsonl")
+    provider_plan = None
+    if provider_plan_path is not None:
+        provider_plan = json.loads(provider_plan_path.read_text())
+        plan_digest = sha256(provider_plan_path)
+        if not (
+            tinker_manifest.get("source", {}).get("providerPlanSHA256") == plan_digest
+            and frontier_manifest.get("source", {}).get("providerPlanSHA256")
+            == plan_digest
+        ):
+            raise TrainingContractError("provider plan lineage differs")
+    if (
+        arguments.verified_tinker_charge_usd is not None
+        and arguments.verified_tinker_charge_usd < 0
+    ):
+        raise TrainingContractError("verified Tinker charge cannot be negative")
     if not (
         frontier_manifest.get("status") == "complete"
         and tinker_manifest.get("status") == "complete"
@@ -181,6 +210,13 @@ def main() -> int:
                 raise TrainingContractError("personalized score used the wrong checkpoint")
 
     comparisons = []
+    tinker_prices = (
+        provider_plan.get("tinker", {}).get("pricesPerMillionUSD")
+        if provider_plan is not None
+        else None
+    )
+    prefill_rate = Decimal(tinker_prices["prefill"]) if tinker_prices else None
+    sample_rate = Decimal(tinker_prices["sample"]) if tinker_prices else None
     for example in examples:
         example_id = example["exampleID"]
         frozen = by_arm[ARM_FROZEN_QWEN][example_id]
@@ -196,6 +232,19 @@ def main() -> int:
             "frozenQwen": {
                 "prediction": frozen["prediction"],
                 "meanNLL": frozen["meanNLL"],
+                "latencySeconds": frozen["latencySeconds"],
+                "latencySemantics": (
+                    "combined_sequential_target_logprob_scoring_and_generation"
+                ),
+                "estimatedCost": (
+                    tinker_arm_cost(
+                        [frozen],
+                        prefill_rate=prefill_rate,
+                        sample_rate=sample_rate,
+                    )
+                    if prefill_rate is not None and sample_rate is not None
+                    else None
+                ),
                 "predictionMetrics": prediction_metrics_by_arm[
                     ARM_FROZEN_QWEN
                 ][example_id],
@@ -205,6 +254,13 @@ def main() -> int:
             },
             "frontier": {
                 "prediction": frontier["prediction"],
+                "latencySeconds": frontier["latencySeconds"],
+                "latencySemantics": (
+                    "one_subscription_responses_generation_request_including_reasoning"
+                ),
+                "usage": frontier.get("usage"),
+                "experimentSpecificCostUSD": None,
+                "costReason": "subscription usage was not separately attributable",
                 "predictionMetrics": prediction_metrics_by_arm[
                     ARM_FROZEN_FRONTIER
                 ][example_id],
@@ -215,6 +271,19 @@ def main() -> int:
             "personalizedQwen": {
                 "prediction": personalized["prediction"],
                 "meanNLL": personalized["meanNLL"],
+                "latencySeconds": personalized["latencySeconds"],
+                "latencySemantics": (
+                    "combined_sequential_target_logprob_scoring_and_generation"
+                ),
+                "estimatedCost": (
+                    tinker_arm_cost(
+                        [personalized],
+                        prefill_rate=prefill_rate,
+                        sample_rate=sample_rate,
+                    )
+                    if prefill_rate is not None and sample_rate is not None
+                    else None
+                ),
                 "predictionMetrics": prediction_metrics_by_arm[
                     ARM_PERSONALIZED_QWEN
                 ][example_id],
@@ -250,6 +319,18 @@ def main() -> int:
         }
         for arm in (ARM_FROZEN_QWEN, ARM_FROZEN_FRONTIER, ARM_PERSONALIZED_QWEN)
     }
+    cost_latency = build_cost_latency_report(
+        frontier_rows=[by_arm[ARM_FROZEN_FRONTIER][value] for value in example_ids],
+        frozen_qwen_rows=[by_arm[ARM_FROZEN_QWEN][value] for value in example_ids],
+        personalized_qwen_rows=[
+            by_arm[ARM_PERSONALIZED_QWEN][value] for value in example_ids
+        ],
+        updates=updates,
+        frontier_manifest=frontier_manifest,
+        tinker_manifest=tinker_manifest,
+        provider_plan=provider_plan,
+        verified_tinker_charge_usd=arguments.verified_tinker_charge_usd,
+    )
     block_summaries = []
     for block in blocks:
         ids = block["exampleIDs"]
@@ -278,8 +359,12 @@ def main() -> int:
     temporary = Path(tempfile.mkdtemp(prefix=f".{output.name}.", dir=output.parent))
     try:
         write_jsonl(temporary / "comparisons.jsonl", comparisons)
+        (temporary / "cost-latency.json").write_bytes(canonical_bytes(cost_latency))
+        (temporary / "cost-latency.csv").write_text(
+            cost_latency_csv(cost_latency), encoding="utf-8"
+        )
         manifest = {
-            "schemaVersion": 2,
+            "schemaVersion": 3,
             "auditVersion": AUDIT_VERSION,
             "status": "passed_developmental_not_thesis_conclusion",
             "source": {
@@ -294,6 +379,12 @@ def main() -> int:
                 "auditImplementationSHA256": sha256(Path(__file__).resolve()),
                 "predictionMetricImplementationSHA256": sha256(
                     Path(__file__).with_name("phase1_prediction_metrics.py")
+                ),
+                "costLatencyImplementationSHA256": sha256(
+                    Path(__file__).with_name("phase1_cost_latency.py")
+                ),
+                "providerPlanSHA256": (
+                    sha256(provider_plan_path) if provider_plan_path is not None else None
                 ),
             },
             "protocol": {
@@ -332,6 +423,7 @@ def main() -> int:
                 ],
                 "personalizationPrimaryMetric": "paired_prequential_target_token_nll",
             },
+            "costLatencyReportVersion": COST_LATENCY_VERSION,
             "summaries": summaries,
             "generatedCompletionStrata": generated_completion_strata,
             "blockSummaries": block_summaries,
@@ -345,7 +437,9 @@ def main() -> int:
             },
         }
         manifest["artifactDigestsSHA256"] = {
-            "comparisons.jsonl": sha256(temporary / "comparisons.jsonl")
+            "comparisons.jsonl": sha256(temporary / "comparisons.jsonl"),
+            "cost-latency.json": sha256(temporary / "cost-latency.json"),
+            "cost-latency.csv": sha256(temporary / "cost-latency.csv"),
         }
         (temporary / "experiment.json").write_bytes(canonical_bytes(manifest))
         os.replace(temporary, output)

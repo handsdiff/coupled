@@ -333,7 +333,7 @@ def main() -> int:
         audit = json.loads((audit_output / "experiment.json").read_text())
         if not (
             audit["status"] == "passed_developmental_not_thesis_conclusion"
-            and audit["auditVersion"] == "phase1-real-experiment-audit-v2"
+            and audit["auditVersion"] == "phase1-real-experiment-audit-v3"
             and audit["protocol"]["examples"] == 200
             and audit["summaries"][ARM_FROZEN_FRONTIER]["generatedCompletion"][
                 "exactMatches"
@@ -344,6 +344,9 @@ def main() -> int:
             and audit["summaries"][ARM_FROZEN_QWEN]["generatedCompletion"][
                 "pasteActions"
             ]["recall"] == 1.0
+            and audit["costLatencyReportVersion"] == "phase1-cost-latency-v1"
+            and (audit_output / "cost-latency.json").is_file()
+            and (audit_output / "cost-latency.csv").is_file()
             and len(load_json_lines(audit_output / "comparisons.jsonl")) == 200
         ):
             raise AssertionError("synthetic final experiment audit failed")

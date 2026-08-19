@@ -803,13 +803,14 @@ and
 
 The offline three-arm audit passed all coverage, target, context-plan, causal
 ordering, checkpoint-lineage, and artifact-digest checks. A second offline audit
-added a versioned generated-completion scorecard without making provider calls
-or changing any prediction. The current immutable results are in
-`coupled-data/phase1-experiment-1-results-v2-scorecard-20260819`;
+added a versioned generated-completion scorecard and cost/latency accounting
+without making provider calls or changing any prediction. The current immutable
+results are in
+`coupled-data/phase1-experiment-1-results-v3-cost-latency-20260819`;
 `experiment.json` hashes to
-`3340877ed0d3cbd223271d1285b2162ae4e047eb07b578a84541c424582c5d7c`
+`a127e6121a4a22b527350731fcfa7e3b2153401c9f63b840fed946c9317c2d11`
 and `comparisons.jsonl` hashes to
-`439430cc1713ad82d9c9d41dee6e06886fa013d4bb36fff20ed22bff8f412ca9`.
+`ad2cc38b83c97b8695844dee05e9d83ad7cac1e00238bdfe4138312b70606600`.
 Audit v2 computes exact match, surrounding-whitespace-normalized exact match,
 exact longest correct prefix, unit-cost Unicode-code-point Levenshtein
 similarity in macro and micro forms, and per-example paste-action precision and
@@ -827,6 +828,27 @@ Headline developmental results:
 - Across all targets, personalized Qwen exact-matched 4/200 (5 normalized), with macro/micro similarity `0.1320`/`0.0333` and `1.03%` target-prefix coverage. On authored-only targets it exact-matched 2, with macro/micro similarity `0.1164`/`0.0369`. Frozen Qwen exact-matched none; its authored-only macro/micro similarity was `0.0264`/`0.0277`.
 - GPT paste-action precision/recall was `34.85%`/`95.83%`, personalized Qwen was `14.55%`/`33.33%`, and frozen Qwen was `0%`/`0%`. The separate paste score prevents trivial paste-only completions from dominating the textual headline.
 - Personalized Qwen lowered micro NLL in every observed application stratum: ChatGPT `4.1421 → 3.6359` (61 examples), Code `4.8006 → 3.4111` (24), Chrome `4.8746 → 3.3914` (82), and Obsidian `4.6064 → 3.8134` (33). These strata are too small for separate application-level claims.
+
+Audit v3 adds `cost-latency.json`, a shareable `cost-latency.csv`, and per-query
+timing/cost fields to `comparisons.jsonl`. Their hashes are respectively
+`27ffd8a212cdb76fdf9b501301c818f420ac67bd5ea9b8f34f8a459f25c3098f`
+and
+`ba004fc08cc2f02b7cab943cf87c91a1e857bf02090a04b10a5709a565750732`.
+GPT generation requests including reasoning had median/mean/p95 latency of
+`13.78`/`19.50`/`54.53` seconds. Frozen Qwen's combined likelihood-scoring plus
+generation operation measured `8.16`/`8.70`/`13.79` seconds; personalized Qwen
+measured `5.31`/`6.78`/`14.01` seconds. These are not a direct generation-latency
+comparison because the existing Tinker timing does not separate likelihood
+scoring from sampling.
+
+At the frozen Tinker rates, generation-only inference was estimated at
+`$4.216769` (`$0.021084` per example) for frozen Qwen and `$4.078217`
+(`$0.020391` per example) for personalized Qwen. Including target-likelihood
+scoring raises those totals to `$8.246167` and `$8.107614`. Cumulative training
+was estimated at `$21.341085`; the full frozen-rate subtotal was `$37.694867`,
+while the user-verified provider charge was `$30.10`. GPT used the existing
+ChatGPT subscription, so no experiment-specific or per-query dollar cost can
+be attributed honestly.
 
 This is a positive capacity and forward-generalization signal: weight updates on
 earlier personal actions reduced surprise on later actions. It is not yet a
