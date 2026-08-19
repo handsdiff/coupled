@@ -1431,12 +1431,15 @@ final class ActiveTapWriteCollector {
               !before.valueWasTruncated,
               !preReturn.valueWasTruncated else { return nil }
         return PostSubmissionProbe(
-            attemptID: pending.attemptID,
+            probeID: UUID().uuidString,
+            sourceWriteAttemptID: pending.attemptID,
             inputObservedAt: inputObservedAt,
             processIdentifier: target.app.processIdentifier,
             role: target.identity.role,
             bundleIdentifier: target.app.bundleIdentifier,
             fieldDescription: target.identity.fieldDescription,
+            preReturnObservation: preReturn,
+            preReturnAXErrors: checkpoint.axErrors,
             logicalBefore: logicalValue(before, target: target),
             logicalPreReturn: logicalValue(preReturn, target: target)
         )
@@ -1448,17 +1451,26 @@ final class ActiveTapWriteCollector {
             reason: "standalone_pre_return_submission_probe"
         )
         guard capture.isEligibleApplication,
-              capture.errors.isEmpty,
               let target = capture.target,
               let observation = capture.observation,
-              !observation.valueWasTruncated else { return }
+              capture.errors.isEmpty,
+              !observation.valueWasTruncated else {
+            persistFailedPostSubmissionProbe(
+                inputObservedAt: inputObservedAt,
+                capture: capture
+            )
+            return
+        }
         let probe = PostSubmissionProbe(
-            attemptID: "standalone-return-\(UUID().uuidString)",
+            probeID: UUID().uuidString,
+            sourceWriteAttemptID: nil,
             inputObservedAt: inputObservedAt,
             processIdentifier: target.app.processIdentifier,
             role: target.identity.role,
             bundleIdentifier: target.app.bundleIdentifier,
             fieldDescription: target.identity.fieldDescription,
+            preReturnObservation: observation,
+            preReturnAXErrors: capture.errors,
             logicalBefore: "",
             logicalPreReturn: logicalValue(observation, target: target)
         )
@@ -1510,19 +1522,66 @@ final class ActiveTapWriteCollector {
                 placeholderValue: observation.placeholderValue
             )
         }
-        guard let evidence = postSubmissionReadTriggerEvidence(
+        let evidence = postSubmissionReadTriggerEvidence(
             role: probe.role,
             logicalBefore: probe.logicalBefore,
             logicalPreReturn: probe.logicalPreReturn,
             logicalPostReturn: postValue,
             postReturnUnavailable: postReturnObservation == nil && !postReturnErrors.isEmpty
-        ) else { return }
+        )
+        do {
+            _ = try rawWriter.write(RawPostSubmissionReadProbe(
+                recordID: probe.probeID,
+                observedAt: nowTimestamp(),
+                inputObservedAt: probe.inputObservedAt,
+                sourceWriteAttemptID: probe.sourceWriteAttemptID,
+                processIdentifier: probe.processIdentifier,
+                role: probe.role,
+                bundleIdentifier: probe.bundleIdentifier,
+                fieldDescription: probe.fieldDescription,
+                preReturnObservation: probe.preReturnObservation,
+                postReturnObservation: postReturnObservation,
+                preReturnAXErrors: probe.preReturnAXErrors,
+                postReturnAXErrors: postReturnErrors,
+                disposition: evidence ?? "not_credible_submission"
+            ))
+        } catch {
+            writeDiagnostic("could not persist post-submission probe: \(error)")
+            return
+        }
+        guard let evidence else { return }
         postSubmissionObserver?(PostSubmissionReadTrigger(
-            attemptID: probe.attemptID,
+            attemptID: probe.sourceWriteAttemptID ?? probe.probeID,
             inputObservedAt: probe.inputObservedAt,
             processIdentifier: probe.processIdentifier,
             evidence: evidence
         ))
+    }
+
+    private func persistFailedPostSubmissionProbe(
+        inputObservedAt: String,
+        capture: TargetCapture
+    ) {
+        let target = capture.target
+        do {
+            _ = try rawWriter.write(RawPostSubmissionReadProbe(
+                recordID: UUID().uuidString,
+                observedAt: nowTimestamp(),
+                inputObservedAt: inputObservedAt,
+                sourceWriteAttemptID: nil,
+                processIdentifier: target?.app.processIdentifier,
+                role: target?.identity.role,
+                bundleIdentifier: target?.app.bundleIdentifier ?? capture.bundleIdentifier,
+                fieldDescription: target?.identity.fieldDescription,
+                preReturnObservation: capture.observation,
+                postReturnObservation: nil,
+                preReturnAXErrors: capture.errors,
+                postReturnAXErrors: [],
+                disposition: "pre_return_capture_failed"
+            ))
+        } catch {
+            writeDiagnostic("could not persist failed post-submission probe: \(error)")
+        }
     }
 
     private func logicalValue(
@@ -1796,14 +1855,35 @@ struct PostSubmissionReadTrigger {
 }
 
 private struct PostSubmissionProbe {
-    let attemptID: String
+    let probeID: String
+    let sourceWriteAttemptID: String?
     let inputObservedAt: String
     let processIdentifier: Int32
     let role: String
     let bundleIdentifier: String?
     let fieldDescription: String?
+    let preReturnObservation: ActiveTapEditableObservation
+    let preReturnAXErrors: [String]
     let logicalBefore: String
     let logicalPreReturn: String
+}
+
+private struct RawPostSubmissionReadProbe: Encodable {
+    let schemaVersion = 1
+    let recordType = "post_submission_read_probe"
+    let recordID: String
+    let observedAt: String
+    let inputObservedAt: String
+    let sourceWriteAttemptID: String?
+    let processIdentifier: Int32?
+    let role: String?
+    let bundleIdentifier: String?
+    let fieldDescription: String?
+    let preReturnObservation: ActiveTapEditableObservation?
+    let postReturnObservation: ActiveTapEditableObservation?
+    let preReturnAXErrors: [String]
+    let postReturnAXErrors: [String]
+    let disposition: String
 }
 
 private struct CapturedReturnCheckpoint {
