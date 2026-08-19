@@ -19,6 +19,7 @@ from phase1_experiment import (
     RUNNER_VERSION,
     canonical_bytes,
     load_jsonl,
+    prospective_example_ids,
     semantic_model_input,
     target_text,
     validate_inputs,
@@ -37,8 +38,8 @@ from phase1_training_contract import (
 )
 
 
-FRONTIER_RUNNER_VERSION = "phase1-frontier-arm-v2"
-EXPECTED_PLAN_VERSION = "phase1-provider-plan-v3"
+FRONTIER_RUNNER_VERSION = "phase1-frontier-arm-v3"
+EXPECTED_PLAN_VERSION = "phase1-provider-plan-v4"
 
 
 def iso8601() -> str:
@@ -348,10 +349,17 @@ def run() -> int:
     packed_path = arguments.packed.expanduser().resolve()
     plan_path = arguments.provider_plan.expanduser().resolve()
     output = arguments.output.expanduser().resolve()
-    corpus, examples, _, plans = validate_inputs(corpus_path, packed_path)
+    corpus, all_examples, _, plans = validate_inputs(corpus_path, packed_path)
+    evaluation_ids = prospective_example_ids(corpus["blocking"]["blocks"])
+    evaluation_id_set = set(evaluation_ids)
+    examples = [
+        example for example in all_examples if example["exampleID"] in evaluation_id_set
+    ]
+    if [example["exampleID"] for example in examples] != evaluation_ids:
+        raise TrainingContractError("prospective example order differs from corpus blocks")
     if arguments.maximum_calls != len(examples):
         raise TrainingContractError(
-            f"--maximum-calls must exactly equal frozen example count {len(examples)}"
+            f"--maximum-calls must exactly equal prospective example count {len(examples)}"
         )
     plan, plan_digest = validate_plan(
         plan_path,

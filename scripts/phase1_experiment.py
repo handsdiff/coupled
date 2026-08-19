@@ -22,12 +22,30 @@ from phase1_training_contract import (
 )
 
 
-RUNNER_VERSION = "phase1-prequential-v1"
+RUNNER_VERSION = "phase1-prequential-v2"
 ARM_FROZEN_QWEN = "frozen_qwen3.5_9b_base"
 ARM_FROZEN_FRONTIER = "frozen_gpt_5.6_sol_xhigh"
 ARM_PERSONALIZED_QWEN = "personalized_qwen3.5_9b_base"
 ARMS = (ARM_FROZEN_QWEN, ARM_FROZEN_FRONTIER, ARM_PERSONALIZED_QWEN)
 PASTE_MARKER = "<|paste|>"
+
+
+def prospective_blocks(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return blocks scored after the first training-only warm-up block."""
+
+    if len(blocks) < 2:
+        raise TrainingContractError(
+            "prospective evaluation requires one warm-up and one evaluation block"
+        )
+    return blocks[1:]
+
+
+def prospective_example_ids(blocks: list[dict[str, Any]]) -> list[str]:
+    return [
+        example_id
+        for block in prospective_blocks(blocks)
+        for example_id in block["exampleIDs"]
+    ]
 TINKER_TRAINING_CONTRACT = {
     "algorithm": "lora",
     "rank": 32,
@@ -291,44 +309,46 @@ def run_mock_experiment(
     cumulative_ids: list[str] = []
     presentations = {example["exampleID"]: 0 for example in examples}
 
+    evaluation_block_ids = {block["blockID"] for block in prospective_blocks(blocks)}
     for block in blocks:
         block_id = block["blockID"]
         block_ids = block["exampleIDs"]
-        for arm in ARMS:
-            arm_checkpoint = current_checkpoint if arm == ARM_PERSONALIZED_QWEN else None
-            for example_id in block_ids:
-                example = examples[next(
-                    index for index, value in enumerate(examples)
-                    if value["exampleID"] == example_id
-                )]
-                packed_row = packed_by_id[example_id]
-                score = backend.score(
-                    arm, example, packed_row, plan_by_id[example_id], arm_checkpoint
-                )
-                results.append({
-                    "schemaVersion": 1,
-                    "runnerVersion": RUNNER_VERSION,
-                    "blockID": block_id,
-                    "arm": arm,
-                    "exampleID": example_id,
-                    "targetEventID": example["targetEventID"],
-                    "target": example["target"],
-                    "prediction": score.prediction,
-                    "weightedNLLSum": score.weighted_nll_sum,
-                    "weightedTokenCount": score.weighted_token_count,
-                    "latencySeconds": score.latency_seconds,
-                    "costUSD": score.cost_usd,
-                    "finishReason": score.finish_reason,
-                    "checkpointID": arm_checkpoint,
-                    "semanticContextPlanSHA256": plan_by_id[example_id][
-                        "semanticModelInputSHA256"
-                    ],
-                    "application": example.get("conditioningState", {})
-                        .get("destination", {}).get("appName"),
-                })
-                if arm == ARM_PERSONALIZED_QWEN:
-                    scored_personalized.add(example_id)
-        if not set(block_ids).issubset(scored_personalized):
+        if block_id in evaluation_block_ids:
+            for arm in ARMS:
+                arm_checkpoint = current_checkpoint if arm == ARM_PERSONALIZED_QWEN else None
+                for example_id in block_ids:
+                    example = examples[next(
+                        index for index, value in enumerate(examples)
+                        if value["exampleID"] == example_id
+                    )]
+                    packed_row = packed_by_id[example_id]
+                    score = backend.score(
+                        arm, example, packed_row, plan_by_id[example_id], arm_checkpoint
+                    )
+                    results.append({
+                        "schemaVersion": 1,
+                        "runnerVersion": RUNNER_VERSION,
+                        "blockID": block_id,
+                        "arm": arm,
+                        "exampleID": example_id,
+                        "targetEventID": example["targetEventID"],
+                        "target": example["target"],
+                        "prediction": score.prediction,
+                        "weightedNLLSum": score.weighted_nll_sum,
+                        "weightedTokenCount": score.weighted_token_count,
+                        "latencySeconds": score.latency_seconds,
+                        "costUSD": score.cost_usd,
+                        "finishReason": score.finish_reason,
+                        "checkpointID": arm_checkpoint,
+                        "semanticContextPlanSHA256": plan_by_id[example_id][
+                            "semanticModelInputSHA256"
+                        ],
+                        "application": example.get("conditioningState", {})
+                            .get("destination", {}).get("appName"),
+                    })
+                    if arm == ARM_PERSONALIZED_QWEN:
+                        scored_personalized.add(example_id)
+        if block_id in evaluation_block_ids and not set(block_ids).issubset(scored_personalized):
             raise AssertionError("personalized update attempted before complete block scoring")
         cumulative_ids.extend(block_ids)
         cumulative_rows = [packed_by_id[value] for value in cumulative_ids]
@@ -393,6 +413,11 @@ def run_mock_experiment(
             "protocol": {
                 "arms": list(ARMS),
                 "blockCount": len(blocks),
+                "warmupBlockID": blocks[0]["blockID"],
+                "warmupBlocksAreTrainingOnly": True,
+                "prospectiveEvaluationBlockIDs": [
+                    block["blockID"] for block in prospective_blocks(blocks)
+                ],
                 "scoreCompleteBlockBeforeUpdate": True,
                 "personalizedUpdatePolicy": "warm_start_then_train_full_cumulative_corpus",
                 "epochsPerUpdate": epochs_per_update,
@@ -456,7 +481,7 @@ def audit_mock_experiment(
     scores = load_jsonl(directory / "scores.jsonl")
     updates = load_jsonl(directory / "updates.jsonl")
     expected_score_keys = []
-    for block in corpus["blocking"]["blocks"]:
+    for block in prospective_blocks(corpus["blocking"]["blocks"]):
         for arm in ARMS:
             expected_score_keys.extend(
                 (block["blockID"], arm, example_id)
@@ -507,8 +532,9 @@ def audit_mock_experiment(
         parent = checkpoint
     if len(updates) != len(corpus["blocking"]["blocks"]):
         raise TrainingContractError("update count differs from block count")
-    prior_checkpoint: str | None = None
-    for block in corpus["blocking"]["blocks"]:
+    all_blocks = corpus["blocking"]["blocks"]
+    prior_checkpoint: str | None = checkpoint_after_block[all_blocks[0]["blockID"]]
+    for block in prospective_blocks(all_blocks):
         personalized = [
             row for row in scores
             if row["blockID"] == block["blockID"] and row["arm"] == ARM_PERSONALIZED_QWEN

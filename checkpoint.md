@@ -846,7 +846,7 @@ GPT generation requests including reasoning had median/mean/p95 latency of
 likelihood-scoring plus generation operation measured `8.34`/`9.05`/`15.54`
 seconds; personalized Qwen measured `4.84`/`6.54`/`15.74` seconds. These are not a direct generation-latency
 comparison because the existing Tinker timing does not separate likelihood
-scoring from sampling. `phase1-tinker-prequential-v2` now records those request
+scoring from sampling. `phase1-tinker-prequential-v3` now records those request
 timings separately for future experiments; historical generation-only latency
 cannot be reconstructed.
 
@@ -863,6 +863,21 @@ input, `$0.50/M` cached input, and `$30/M` output—the 200 calls would have cos
 `$35.193554`. The 150 prospective calls would have cost `$28.884495`, or
 `$0.192563` per query. No call crossed the 272K-input premium threshold. This
 API-equivalent estimate is distinct from the actual subscription charge.
+
+The prospective-only rule applies to the entire comparison, not merely its
+cost and latency reporting. Exact match, correct prefix, character similarity,
+paste behavior, target NLL, and cumulative bits saved all exclude block 1.
+Protocol `phase1-prequential-v2` makes this operational for future runs: block 1
+is trained as the 50-example warm-up without issuing any model-scoring calls;
+blocks 2 onward are scored before their updates. Provider plan v4 therefore
+plans 150 GPT calls and 300 Tinker score operations for this four-block corpus,
+while retaining all four cumulative training updates over all 200 examples.
+The no-network mock produces 450 cross-arm scores, confirms that the first
+personalized score uses the checkpoint trained through block 1, and the real
+audit accepts both this prospective-only shape and the completed legacy run's
+200-call operational evidence. Re-auditing the legacy run leaves every
+150-example headline summary and the `3,630.6` prospective bits-saved result
+unchanged.
 
 This is a positive capacity and forward-generalization signal: weight updates on
 earlier personal actions reduced surprise on later actions. It is not yet a

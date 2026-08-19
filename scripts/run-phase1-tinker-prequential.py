@@ -26,6 +26,8 @@ from phase1_experiment import (
     TINKER_TRAINING_CONTRACT,
     canonical_bytes,
     load_jsonl,
+    prospective_blocks,
+    prospective_example_ids,
     target_text,
     validate_inputs,
 )
@@ -46,8 +48,8 @@ from phase1_training_contract import (
 )
 
 
-TINKER_RUNNER_VERSION = "phase1-tinker-prequential-v2"
-EXPECTED_PLAN_VERSION = "phase1-provider-plan-v3"
+TINKER_RUNNER_VERSION = "phase1-tinker-prequential-v3"
+EXPECTED_PLAN_VERSION = "phase1-provider-plan-v4"
 GENERATION_TOKEN_CEILING = 512
 EPOCHS_PER_UPDATE = 1
 
@@ -416,7 +418,7 @@ def expected_score_sequence(
 ) -> list[tuple[str, str, str]]:
     return [
         (block["blockID"], arm, example_id)
-        for block in blocks
+        for block in prospective_blocks(blocks)
         for arm in (ARM_FROZEN_QWEN, ARM_PERSONALIZED_QWEN)
         for example_id in block["exampleIDs"]
     ]
@@ -469,6 +471,7 @@ def run() -> int:
     output = arguments.output.expanduser().resolve()
     corpus, examples, packed, _ = validate_inputs(corpus_path, packed_path)
     example_ids = [value["exampleID"] for value in examples]
+    evaluation_example_ids = prospective_example_ids(corpus["blocking"]["blocks"])
     packed_by_id = {value["exampleID"]: value for value in packed.rows}
     example_by_id = {value["exampleID"]: value for value in examples}
     plan, plan_digest = validate_plan(
@@ -479,7 +482,7 @@ def run() -> int:
         arguments.dedicated_private_project_id,
     )
     frontier = validate_frontier(
-        frontier_path, corpus_path, packed_path, example_ids
+        frontier_path, corpus_path, packed_path, evaluation_example_ids
     )
     contracts = adapt_dataset_to_tinker(packed)
     datums, _, sdk_version = build_and_validate_sdk_datums(contracts)
@@ -625,58 +628,57 @@ def run() -> int:
     for block_ordinal, block in enumerate(corpus["blocking"]["blocks"], 1):
         prior_update = updates[block_ordinal - 2] if block_ordinal > 1 else None
         personalized_checkpoint = prior_update["samplerCheckpointPath"] if prior_update else None
-        personalized_sampler = (
-            service.create_sampling_client(model_path=personalized_checkpoint)
-            if personalized_checkpoint
-            else base_sampler
-        )
-        for arm, sampler in (
-            (ARM_FROZEN_QWEN, base_sampler),
-            (ARM_PERSONALIZED_QWEN, personalized_sampler),
-        ):
-            for example_id in block["exampleIDs"]:
-                key = (block["blockID"], arm, example_id)
-                if key in observed_scores:
-                    continue
-                row = packed_by_id[example_id]
-                manifest["inflightOperation"] = {
-                    "kind": "score_nll_and_generation",
-                    "blockID": block["blockID"],
-                    "arm": arm,
-                    "exampleID": example_id,
-                    "replayAllowedUnderCurrentPlan": False,
-                }
-                atomic_json(manifest_path, manifest)
-                score = score_example(
-                    sampler,
-                    remote_tokenizer,
-                    tinker,
-                    arm,
-                    block["blockID"],
-                    example_by_id[example_id],
-                    {**row, "eosTokenID": packed.eos_token_id},
-                    personalized_checkpoint if arm == ARM_PERSONALIZED_QWEN else None,
-                    usage,
-                )
-                score["fullSequenceTokenCount"] = len(row["inputIDs"])
-                append_jsonl(scores_path, score)
-                scores.append(score)
-                observed_scores.append(key)
-                manifest.pop("inflightOperation", None)
-                manifest["counts"]["completedScores"] = len(scores)
-                manifest["usage"] = usage.as_dict()
-                atomic_json(manifest_path, manifest)
-                print(
-                    f"tinker-score {len(scores):03d}/{len(expected_scores)} "
-                    f"block={block['blockID']} arm={arm} nll={score['meanNLL']:.4f}",
-                    flush=True,
-                )
+        if block_ordinal > 1:
+            personalized_sampler = service.create_sampling_client(
+                model_path=personalized_checkpoint
+            )
+            for arm, sampler in (
+                (ARM_FROZEN_QWEN, base_sampler),
+                (ARM_PERSONALIZED_QWEN, personalized_sampler),
+            ):
+                for example_id in block["exampleIDs"]:
+                    key = (block["blockID"], arm, example_id)
+                    if key in observed_scores:
+                        continue
+                    row = packed_by_id[example_id]
+                    manifest["inflightOperation"] = {
+                        "kind": "score_nll_and_generation",
+                        "blockID": block["blockID"],
+                        "arm": arm,
+                        "exampleID": example_id,
+                        "replayAllowedUnderCurrentPlan": False,
+                    }
+                    atomic_json(manifest_path, manifest)
+                    score = score_example(
+                        sampler,
+                        remote_tokenizer,
+                        tinker,
+                        arm,
+                        block["blockID"],
+                        example_by_id[example_id],
+                        {**row, "eosTokenID": packed.eos_token_id},
+                        personalized_checkpoint if arm == ARM_PERSONALIZED_QWEN else None,
+                        usage,
+                    )
+                    score["fullSequenceTokenCount"] = len(row["inputIDs"])
+                    append_jsonl(scores_path, score)
+                    scores.append(score)
+                    observed_scores.append(key)
+                    manifest.pop("inflightOperation", None)
+                    manifest["counts"]["completedScores"] = len(scores)
+                    manifest["usage"] = usage.as_dict()
+                    atomic_json(manifest_path, manifest)
+                    print(
+                        f"tinker-score {len(scores):03d}/{len(expected_scores)} "
+                        f"block={block['blockID']} arm={arm} nll={score['meanNLL']:.4f}",
+                        flush=True,
+                    )
 
         if len(updates) >= block_ordinal:
             continue
         expected_prefix = expected_scores[: 2 * sum(
             len(value["exampleIDs"])
-            for value in corpus["blocking"]["blocks"][:block_ordinal]
+            for value in corpus["blocking"]["blocks"][1:block_ordinal]
         )]
         if observed_scores != expected_prefix:
             raise TrainingContractError("attempted update before complete block scoring")

@@ -40,7 +40,7 @@ from phase1_cost_latency import (
 from phase1_training_contract import TrainingContractError, sha256
 
 
-AUDIT_VERSION = "phase1-real-experiment-audit-v5"
+AUDIT_VERSION = "phase1-real-experiment-audit-v6"
 
 
 def target_profile(example: dict[str, Any]) -> dict[str, Any]:
@@ -117,6 +117,14 @@ def main() -> int:
         row["exampleID"]: target_profile(row)
         for row in examples
     }
+    blocks = corpus["blocking"]["blocks"]
+    if len(blocks) < 2:
+        raise TrainingContractError("prospective evaluation requires a warm-up block")
+    warmup_example_ids = list(blocks[0]["exampleIDs"])
+    evaluation_example_ids = [
+        example_id for block in blocks[1:] for example_id in block["exampleIDs"]
+    ]
+    evaluation_example_id_set = set(evaluation_example_ids)
 
     frontier_manifest = json.loads((frontier_path / "frontier.json").read_text())
     frontier_scores = load_jsonl(frontier_path / "scores.jsonl")
@@ -157,8 +165,10 @@ def main() -> int:
             == sha256(packed_path / "packing.json")
         ):
             raise TrainingContractError("provider artifact lineage differs")
-    if [row["exampleID"] for row in frontier_scores] != example_ids:
+    scored_example_ids = [row["exampleID"] for row in frontier_scores]
+    if scored_example_ids not in (example_ids, evaluation_example_ids):
         raise TrainingContractError("frontier score coverage/order differs")
+    scored_example_id_set = set(scored_example_ids)
 
     by_arm: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
     for row in frontier_scores + tinker_scores:
@@ -177,7 +187,7 @@ def main() -> int:
             raise TrainingContractError("frontier score used a different context plan")
         by_arm[arm][example_id] = row
     for arm in (ARM_FROZEN_QWEN, ARM_FROZEN_FRONTIER, ARM_PERSONALIZED_QWEN):
-        if set(by_arm[arm]) != set(example_ids):
+        if set(by_arm[arm]) != scored_example_id_set:
             raise TrainingContractError(f"incomplete score coverage for {arm}")
 
     prediction_metrics_by_arm = {
@@ -187,33 +197,29 @@ def main() -> int:
                 by_arm[arm][example_id]["prediction"],
                 target_paste_actions=profile_by_id[example_id]["pasteActionCount"],
             )
-            for example_id in example_ids
+            for example_id in scored_example_ids
         }
         for arm in (ARM_FROZEN_QWEN, ARM_FROZEN_FRONTIER, ARM_PERSONALIZED_QWEN)
     }
 
-    blocks = corpus["blocking"]["blocks"]
-    if len(blocks) < 2:
-        raise TrainingContractError("prospective evaluation requires a warm-up block")
-    warmup_example_ids = list(blocks[0]["exampleIDs"])
-    evaluation_example_ids = [
-        example_id for block in blocks[1:] for example_id in block["exampleIDs"]
-    ]
-    evaluation_example_id_set = set(evaluation_example_ids)
     update_by_block = {row["afterBlockID"]: row for row in updates}
     if list(update_by_block) != [row["blockID"] for row in blocks]:
         raise TrainingContractError("update blocks differ from frozen protocol")
     for ordinal, block in enumerate(blocks):
         update = update_by_block[block["blockID"]]
+        scored_block_ids = [
+            example_id for example_id in block["exampleIDs"]
+            if example_id in scored_example_id_set
+        ]
         score_times = [
             by_arm[arm][example_id]["completedAt"]
             for arm in (ARM_FROZEN_QWEN, ARM_FROZEN_FRONTIER, ARM_PERSONALIZED_QWEN)
-            for example_id in block["exampleIDs"]
+            for example_id in scored_block_ids
         ]
-        if max(score_times) >= update["completedAt"]:
+        if score_times and max(score_times) >= update["completedAt"]:
             raise TrainingContractError("block update preceded a score")
         expected_checkpoint = updates[ordinal - 1]["samplerCheckpointPath"] if ordinal else None
-        for example_id in block["exampleIDs"]:
+        for example_id in scored_block_ids:
             if by_arm[ARM_PERSONALIZED_QWEN][example_id].get("checkpointID") != expected_checkpoint:
                 raise TrainingContractError("personalized score used the wrong checkpoint")
 
@@ -227,6 +233,8 @@ def main() -> int:
     sample_rate = Decimal(tinker_prices["sample"]) if tinker_prices else None
     for example in examples:
         example_id = example["exampleID"]
+        if example_id not in scored_example_id_set:
+            continue
         frozen = by_arm[ARM_FROZEN_QWEN][example_id]
         personalized = by_arm[ARM_PERSONALIZED_QWEN][example_id]
         frontier = by_arm[ARM_FROZEN_FRONTIER][example_id]
@@ -326,8 +334,11 @@ def main() -> int:
     }
     all_scored_operational_summaries = {
         arm: arm_summary(
-            [by_arm[arm][example_id] for example_id in example_ids],
-            [prediction_metrics_by_arm[arm][example_id] for example_id in example_ids],
+            [by_arm[arm][example_id] for example_id in scored_example_ids],
+            [
+                prediction_metrics_by_arm[arm][example_id]
+                for example_id in scored_example_ids
+            ],
         )
         for arm in (ARM_FROZEN_QWEN, ARM_FROZEN_FRONTIER, ARM_PERSONALIZED_QWEN)
     }
@@ -347,10 +358,14 @@ def main() -> int:
         for arm in (ARM_FROZEN_QWEN, ARM_FROZEN_FRONTIER, ARM_PERSONALIZED_QWEN)
     }
     cost_latency = build_cost_latency_report(
-        frontier_rows=[by_arm[ARM_FROZEN_FRONTIER][value] for value in example_ids],
-        frozen_qwen_rows=[by_arm[ARM_FROZEN_QWEN][value] for value in example_ids],
+        frontier_rows=[
+            by_arm[ARM_FROZEN_FRONTIER][value] for value in scored_example_ids
+        ],
+        frozen_qwen_rows=[
+            by_arm[ARM_FROZEN_QWEN][value] for value in scored_example_ids
+        ],
         personalized_qwen_rows=[
-            by_arm[ARM_PERSONALIZED_QWEN][value] for value in example_ids
+            by_arm[ARM_PERSONALIZED_QWEN][value] for value in scored_example_ids
         ],
         updates=updates,
         frontier_manifest=frontier_manifest,
@@ -361,15 +376,22 @@ def main() -> int:
     )
     block_summaries = []
     for block in blocks:
-        ids = block["exampleIDs"]
-        bits = sum(
-            by_arm[ARM_FROZEN_QWEN][value]["weightedNLLSum"]
-            - by_arm[ARM_PERSONALIZED_QWEN][value]["weightedNLLSum"]
-            for value in ids
-        ) / math.log(2)
+        ids = [
+            value for value in block["exampleIDs"] if value in scored_example_id_set
+        ]
+        bits = (
+            sum(
+                by_arm[ARM_FROZEN_QWEN][value]["weightedNLLSum"]
+                - by_arm[ARM_PERSONALIZED_QWEN][value]["weightedNLLSum"]
+                for value in ids
+            ) / math.log(2)
+            if ids
+            else None
+        )
         block_summaries.append({
             "blockID": block["blockID"],
-            "examples": len(ids),
+            "examples": len(block["exampleIDs"]),
+            "providerScoredExamples": len(ids),
             "evaluationRole": (
                 "warmup_excluded_from_headline"
                 if block is blocks[0]
@@ -380,13 +402,21 @@ def main() -> int:
                 for value in blocks[: blocks.index(block)]
             ),
             "personalizedBitsSavedVersusFrozen": bits,
-            "arms": {
-                arm: arm_summary(
-                    [by_arm[arm][value] for value in ids],
-                    [prediction_metrics_by_arm[arm][value] for value in ids],
-                )
-                for arm in (ARM_FROZEN_QWEN, ARM_FROZEN_FRONTIER, ARM_PERSONALIZED_QWEN)
-            },
+            "arms": (
+                {
+                    arm: arm_summary(
+                        [by_arm[arm][value] for value in ids],
+                        [prediction_metrics_by_arm[arm][value] for value in ids],
+                    )
+                    for arm in (
+                        ARM_FROZEN_QWEN,
+                        ARM_FROZEN_FRONTIER,
+                        ARM_PERSONALIZED_QWEN,
+                    )
+                }
+                if ids
+                else None
+            ),
         })
 
     temporary = Path(tempfile.mkdtemp(prefix=f".{output.name}.", dir=output.parent))
@@ -424,7 +454,10 @@ def main() -> int:
                 ),
             },
             "protocol": {
-                "providerScoredExamples": len(examples),
+                "providerScoredExamples": len(scored_example_ids),
+                "warmupProviderScored": bool(
+                    scored_example_id_set.intersection(warmup_example_ids)
+                ),
                 "warmupExamples": len(warmup_example_ids),
                 "prospectiveEvaluationExamples": len(evaluation_example_ids),
                 "blocks": len(blocks),

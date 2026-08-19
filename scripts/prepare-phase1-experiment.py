@@ -9,11 +9,16 @@ import json
 from decimal import Decimal
 from pathlib import Path
 
-from phase1_experiment import TINKER_TRAINING_CONTRACT, validate_inputs
+from phase1_experiment import (
+    TINKER_TRAINING_CONTRACT,
+    prospective_blocks,
+    prospective_example_ids,
+    validate_inputs,
+)
 from phase1_training_contract import TrainingContractError, sha256
 
 
-PLAN_VERSION = "phase1-provider-plan-v3"
+PLAN_VERSION = "phase1-provider-plan-v4"
 QWEN_MODEL = "Qwen/Qwen3.5-9B-Base"
 OPENAI_MODEL = "gpt-5.6-sol"
 OPENAI_REASONING_EFFORT = "xhigh"
@@ -74,6 +79,12 @@ def main() -> int:
         [packed_by_id[value] for value in block["exampleIDs"]]
         for block in corpus["blocking"]["blocks"]
     ]
+    evaluation_ids = prospective_example_ids(corpus["blocking"]["blocks"])
+    evaluation_id_set = set(evaluation_ids)
+    evaluation_rows = [row for row in packed.rows if row["exampleID"] in evaluation_id_set]
+    evaluation_examples = [
+        example for example in examples if example["exampleID"] in evaluation_id_set
+    ]
     cumulative: list[dict] = []
     update_plans = []
     total_training_positions = 0
@@ -102,13 +113,15 @@ def main() -> int:
             "lossBearingTokenPresentations": loss_presentations,
         })
 
-    qwen_model_input_tokens = sum(row["modelInputTokenCount"] for row in packed.rows)
-    qwen_full_sequence_tokens = sum(len(row["inputIDs"]) for row in packed.rows)
+    qwen_model_input_tokens = sum(
+        row["modelInputTokenCount"] for row in evaluation_rows
+    )
+    qwen_full_sequence_tokens = sum(len(row["inputIDs"]) for row in evaluation_rows)
     tinker_nll_prefill = 2 * qwen_full_sequence_tokens
     tinker_generation_prefill = 2 * qwen_model_input_tokens
     tinker_prefill = tinker_nll_prefill + tinker_generation_prefill
     tinker_sample_ceiling = (
-        2 * len(examples) * arguments.qwen_generation_token_ceiling
+        2 * len(evaluation_examples) * arguments.qwen_generation_token_ceiling
     )
     tinker_cost = {
         "trainingUSD": money(total_training_positions, TINKER_TRAIN_PER_MILLION),
@@ -130,7 +143,7 @@ def main() -> int:
     }
     semantic_utf8_bytes = 0
     semantic_characters = 0
-    for example in examples:
+    for example in evaluation_examples:
         plan = plans[example["exampleID"]]
         serialized = []
         for block in plan["retainedContextBlocks"]:
@@ -148,7 +161,7 @@ def main() -> int:
         semantic_utf8_bytes += len(semantic_input.encode())
         semantic_characters += len(semantic_input)
 
-    openai_output_ceiling = len(examples) * arguments.openai_max_output_tokens
+    openai_output_ceiling = len(evaluation_examples) * arguments.openai_max_output_tokens
     openai_proxy_input_tokens = qwen_model_input_tokens
     openai_proxy_cost = money(openai_proxy_input_tokens, OPENAI_INPUT_PER_MILLION)
     openai_output_cost = money(openai_output_ceiling, OPENAI_OUTPUT_PER_MILLION)
@@ -166,7 +179,7 @@ def main() -> int:
         "reasoningEffort": OPENAI_REASONING_EFFORT,
         "transport": arguments.frontier_transport,
         "operations": {
-            "responseCalls": len(examples),
+            "responseCalls": len(evaluation_examples),
             "semanticInputCharacters": semantic_characters,
             "semanticInputUTF8Bytes": semantic_utf8_bytes,
             "qwenTokenCountProxyNotBillingAuthority": openai_proxy_input_tokens,
@@ -253,7 +266,15 @@ def main() -> int:
         },
         "protocol": {
             "examples": len(examples),
+            "warmupExamples": len(examples) - len(evaluation_examples),
+            "providerScoredExamples": len(evaluation_examples),
             "blocks": len(block_rows),
+            "warmupBlockID": corpus["blocking"]["blocks"][0]["blockID"],
+            "prospectiveEvaluationBlockIDs": [
+                block["blockID"]
+                for block in prospective_blocks(corpus["blocking"]["blocks"])
+            ],
+            "warmupBlocksAreTrainingOnly": True,
             "arms": ["frozen_qwen", frontier_arm, "personalized_qwen"],
             "taskInstruction": packed.manifest["packing"]["taskInstruction"],
             "qwenGenerationTokenCeilingPerExample": (

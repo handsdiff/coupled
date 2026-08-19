@@ -16,6 +16,7 @@ from phase1_experiment import (
     ARM_FROZEN_QWEN,
     ARM_PERSONALIZED_QWEN,
     canonical_bytes,
+    prospective_example_ids,
     semantic_model_input,
     target_text,
     validate_inputs,
@@ -54,6 +55,7 @@ def main() -> int:
             raise AssertionError("semantic model input is empty")
         if not target_text(example["target"]):
             raise AssertionError("model target is empty")
+    evaluation_ids = prospective_example_ids(corpus["blocking"]["blocks"])
 
     with tempfile.TemporaryDirectory(prefix="phase1-real-runner-check-") as raw:
         temporary = Path(raw)
@@ -87,7 +89,7 @@ def main() -> int:
         )
         plan_digest = frontier.sha256(plan_path)
         plan, _ = frontier.validate_plan(
-            plan_path, plan_digest, corpus_path, packed_path, len(examples)
+            plan_path, plan_digest, corpus_path, packed_path, len(evaluation_ids)
         )
         tinker.validate_plan(
             plan_path,
@@ -99,8 +101,14 @@ def main() -> int:
         if plan["tinker"]["hardExecutionCeilingUSD"] != "40.00":
             raise AssertionError("hard Tinker ceiling is not frozen")
         sequence = tinker.expected_score_sequence(corpus["blocking"]["blocks"])
-        if len(sequence) != 400 or len(set(sequence)) != 400:
-            raise AssertionError("Tinker score plan is not 2 x 200 unique operations")
+        if len(sequence) != 300 or len(set(sequence)) != 300:
+            raise AssertionError("Tinker score plan is not 2 x 150 unique operations")
+        if not (
+            plan["protocol"]["warmupExamples"] == 50
+            and plan["protocol"]["providerScoredExamples"] == 150
+            and plan["openai"]["operations"]["responseCalls"] == 150
+        ):
+            raise AssertionError("provider plan did not exclude warm-up scoring")
         cumulative = [
             example_id
             for block in corpus["blocking"]["blocks"][:2]
@@ -267,7 +275,7 @@ def main() -> int:
             previous_plan_digest,
         )
         if not (
-            adopted["runnerVersion"] == "phase1-frontier-arm-v2"
+            adopted["runnerVersion"] == "phase1-frontier-arm-v3"
             and adopted["implementation"] == current_frontier_implementation
             and adopted["source"]["providerPlanSHA256"] == plan_digest
             and adopted["implementationHistory"][0]["completedPrefixCount"] == 1
@@ -313,10 +321,11 @@ def main() -> int:
         updates = []
         for block_index, block in enumerate(corpus["blocking"]["blocks"]):
             prior_checkpoint = updates[-1]["samplerCheckpointPath"] if updates else None
-            for example_id in block["exampleIDs"]:
-                example = example_by_id[example_id]
-                target = target_text(example["target"])
-                common = {
+            if block_index > 0:
+                for example_id in block["exampleIDs"]:
+                    example = example_by_id[example_id]
+                    target = target_text(example["target"])
+                    common = {
                     "blockID": block["blockID"],
                     "exampleID": example_id,
                     "target": target,
@@ -330,21 +339,21 @@ def main() -> int:
                     "characterSimilarity": 1.0,
                     "latencySeconds": 0.0,
                     "completedAt": f"2026-01-01T0{block_index + 1}:00:00Z",
-                }
-                frontier_scores.append({
-                    **common,
-                    "arm": ARM_FROZEN_FRONTIER,
-                    "semanticModelInputSHA256": plans_by_id[example_id][
-                        "semanticModelInputSHA256"
-                    ],
-                })
-            for arm in (ARM_FROZEN_QWEN, ARM_PERSONALIZED_QWEN):
-                for example_id in block["exampleIDs"]:
-                    example = example_by_id[example_id]
-                    row = packed_by_id[example_id]
-                    target = target_text(example["target"])
-                    per_token = 2.0 if arm == ARM_FROZEN_QWEN or block_index == 0 else 1.5
-                    tinker_scores.append({
+                    }
+                    frontier_scores.append({
+                        **common,
+                        "arm": ARM_FROZEN_FRONTIER,
+                        "semanticModelInputSHA256": plans_by_id[example_id][
+                            "semanticModelInputSHA256"
+                        ],
+                    })
+                for arm in (ARM_FROZEN_QWEN, ARM_PERSONALIZED_QWEN):
+                    for example_id in block["exampleIDs"]:
+                        example = example_by_id[example_id]
+                        row = packed_by_id[example_id]
+                        target = target_text(example["target"])
+                        per_token = 2.0 if arm == ARM_FROZEN_QWEN else 1.5
+                        tinker_scores.append({
                         "blockID": block["blockID"],
                         "arm": arm,
                         "exampleID": example_id,
@@ -363,7 +372,7 @@ def main() -> int:
                         "fullSequenceTokenCount": len(row["inputIDs"]),
                         "modelInputTokenCount": row["modelInputTokenCount"],
                         "predictionTokenIDs": [],
-                    })
+                        })
             updates.append({
                 "afterBlockID": block["blockID"],
                 "samplerCheckpointPath": f"tinker://fixture/block-{block_index + 1}",
@@ -417,9 +426,10 @@ def main() -> int:
         audit = json.loads((audit_output / "experiment.json").read_text())
         if not (
             audit["status"] == "passed_developmental_not_thesis_conclusion"
-            and audit["auditVersion"] == "phase1-real-experiment-audit-v5"
-            and audit["protocol"]["providerScoredExamples"] == 200
+            and audit["auditVersion"] == "phase1-real-experiment-audit-v6"
+            and audit["protocol"]["providerScoredExamples"] == 150
             and audit["protocol"]["warmupExamples"] == 50
+            and audit["protocol"]["warmupProviderScored"] is False
             and audit["protocol"]["prospectiveEvaluationExamples"] == 150
             and audit["summaries"][ARM_FROZEN_FRONTIER]["generatedCompletion"][
                 "exactMatches"
@@ -433,7 +443,7 @@ def main() -> int:
             and audit["costLatencyReportVersion"] == "phase1-cost-latency-v3"
             and (audit_output / "cost-latency.json").is_file()
             and (audit_output / "cost-latency.csv").is_file()
-            and len(load_json_lines(audit_output / "comparisons.jsonl")) == 200
+            and len(load_json_lines(audit_output / "comparisons.jsonl")) == 150
             and len(
                 load_json_lines(audit_output / "evaluation-comparisons.jsonl")
             ) == 150
