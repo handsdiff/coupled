@@ -1017,3 +1017,77 @@ until the content predictor has been evaluated and focus-triggered use supplies
 evidence that those additional capabilities are necessary. Before live
 prediction, complete the focus-time capture and drift measurements listed
 above; they do not block the offline capacity comparison.
+
+## Composition-episode shadow checkpoint (August 19)
+
+The first developmental experiment remains frozen as the lower-granularity
+formulation in which each eligible semantic WRITE becomes a separate loss
+target. It revealed a more important action-abstraction question: cursor-bounded
+and delay-bounded WRITEs faithfully describe editing mechanics, but the desired
+target is the closed authored completion that captures the user's next thought.
+
+No collector, semantic reducer, causal compiler, packed dataset, loss mask, or
+model result has been changed. A new non-authoritative diagnostic layer now
+implements:
+
+```text
+raw evidence
+→ unchanged semantic READ/WRITE events
+→ shadow composition-episode review
+→ human development annotations
+```
+
+Run it with:
+
+```bash
+python3 scripts/build-phase1-episode-review.py \
+  --corpus coupled-data/phase1-experiment-1-corpus-v2-unredacted-canonical-20260818 \
+  --output coupled-data/phase1-experiment-1-episode-review-v0-shadow-20260819 \
+  --neighborhood chatgpt_cursor_revision=32:41 \
+  --neighborhood obsidian_cursor_revision=152:158
+
+python3 scripts/check-phase1-episode-review.py
+```
+
+The artifact contains the complete member trajectory, including semantic
+history-only WRITEs omitted from the old loss-bearing examples; full initial,
+intermediate, and final AX values; exact raw lineage; cursor and selection
+evidence; causal events; a mechanical initial-to-final edit; and an unreviewed
+annotation sidecar. A causally available READ inside the interval is a hard
+merge boundary. Mechanical representability is deliberately not treated as
+episode closure or training authority.
+
+Two seeded neighborhoods expose the intended distinction:
+
+- ChatGPT examples 32–41 contain 12 semantic WRITEs, including two
+  history-only edits. The complete final prompt is representable as one
+  insertion from the initial empty prompt, but there is no objective submission
+  boundary in the selected interval, so closure remains ambiguous.
+- Obsidian examples 152–158 contain eight semantic WRITEs, including the
+  history-only `to` → `as` correction. Their final authored passage is
+  representable as one completion. Obsidian's numeric AX selection is wrong by
+  43 characters, but the independently captured semantic left/right ranges
+  uniquely meet at the observed edit boundary. The diagnostic preserves and
+  displays the numeric disagreement; it does not rewrite it.
+
+The semantic-anchor proof is conservative: after removing only whitespace,
+zero-width space, and BOM layout scaffolding, both anchors must contain at least
+32 characters, occur exactly once, and meet on opposite sides of the observed
+net edit. Regression checks cover final-state rather than keystroke-trace
+targets, unique-versus-ambiguous anchors, edits outside the conditioned region,
+history-only member inclusion, READ boundaries, and deterministic
+serialization. An independent replay produced byte-identical artifacts.
+
+Canonical shadow hashes:
+
+- `episode-review.json`: `177e5bb5519418f355b22817eba12eed1681a540738baa5decfbf1104bab6d39`
+- `episode-candidates.jsonl`: `b8c871ca75762dfdbb3a1477c2b0f8797fc75ce2adba95f3b5bce00583be77e5`
+- `review.md`: `1e742d5ffc6b5ea595c44dd0fd9eec2ba504e1bd77b45190cb0cfd495b6a89a6`
+
+The next checkpoint is review, not automation: adjudicate these two
+neighborhoods and roughly 18 additional submitted prompts, internal
+corrections, edits to older text, long pauses, multi-paragraph compositions,
+and clearly independent writes. Those annotations become a small development
+gold set. Only after conservative deterministic episode rules match it should a
+versioned episode layer become compiler authority and replace member WRITEs in
+model-facing history with one resolved episode.
