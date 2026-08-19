@@ -69,9 +69,19 @@ def extract_output_text(response: dict[str, Any]) -> str:
             if content.get("type") == "output_text" and isinstance(text, str):
                 pieces.append(text)
     result = "".join(pieces)
-    if not result:
-        raise SubscriptionResponseError("LiteLLM response contains no output text")
-    return result
+    if result:
+        return result
+    # A completed Responses result may legitimately contain no visible text
+    # after using its tokens for reasoning.  That is an empty model prediction,
+    # not a transport failure.  Fail closed unless the provider explicitly
+    # reports successful completion with usage evidence.
+    if (
+        response.get("status") == "completed"
+        and response.get("error") is None
+        and isinstance(response.get("usage"), dict)
+    ):
+        return ""
+    raise SubscriptionResponseError("LiteLLM response contains no output text")
 
 
 def decode_response(body: bytes) -> dict[str, Any]:

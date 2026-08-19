@@ -37,7 +37,7 @@ from phase1_training_contract import (
 )
 
 
-FRONTIER_RUNNER_VERSION = "phase1-frontier-arm-v1"
+FRONTIER_RUNNER_VERSION = "phase1-frontier-arm-v2"
 EXPECTED_PLAN_VERSION = "phase1-provider-plan-v3"
 
 
@@ -67,6 +67,8 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--endpoint", default="http://127.0.0.1:4000/v1/responses")
     parser.add_argument("--maximum-calls", required=True, type=int)
+    parser.add_argument("--adopt-interrupted-prefix-from-plan", type=Path)
+    parser.add_argument("--adopt-interrupted-prefix-plan-sha256")
     parser.add_argument("--confirm-personal-data-transfer", action="store_true")
     parser.add_argument("--confirm-subscription-usage", action="store_true")
     parser.add_argument("--execute", action="store_true")
@@ -79,6 +81,70 @@ def parse_arguments() -> argparse.Namespace:
         if not enabled:
             parser.error(f"{flag} is required")
     return arguments
+
+
+def plans_match_except_implementation(
+    previous: dict[str, Any], current: dict[str, Any]
+) -> bool:
+    previous = dict(previous)
+    current = dict(current)
+    previous.pop("implementation", None)
+    current.pop("implementation", None)
+    return previous == current
+
+
+def adopt_interrupted_prefix(
+    manifest: dict[str, Any],
+    scores_path: Path,
+    current_implementation: dict[str, Any],
+    current_plan: dict[str, Any],
+    current_plan_path: Path,
+    current_plan_digest: str,
+    previous_plan_path: Path | None,
+    previous_plan_digest: str | None,
+) -> dict[str, Any]:
+    if previous_plan_path is None or previous_plan_digest is None:
+        raise TrainingContractError(
+            "frontier resume implementation or Git revision changed"
+        )
+    previous_plan_path = previous_plan_path.expanduser().resolve()
+    if sha256(previous_plan_path) != previous_plan_digest:
+        raise TrainingContractError("previous provider plan SHA-256 differs")
+    previous_plan = json.loads(previous_plan_path.read_text(encoding="utf-8"))
+    previous_implementation = manifest.get("implementation")
+    if not (
+        manifest.get("status") == "interrupted"
+        and manifest.get("runnerVersion") == "phase1-frontier-arm-v1"
+        and manifest.get("source", {}).get("providerPlanSHA256")
+        == previous_plan_digest
+        and previous_implementation
+        and previous_implementation.get("fileDigestsSHA256")
+        == previous_plan.get("implementation", {}).get("fileDigestsSHA256")
+        and manifest.get("failure", {}).get("type") == "SubscriptionResponseError"
+        and manifest.get("failure", {}).get("message")
+        == "LiteLLM response contains no output text"
+        and plans_match_except_implementation(previous_plan, current_plan)
+        and scores_path.is_file()
+    ):
+        raise TrainingContractError("interrupted frontier prefix is not adoptable")
+    prefix_count = sum(1 for _ in scores_path.open("rb"))
+    if prefix_count != manifest.get("counts", {}).get("completedCalls"):
+        raise TrainingContractError("interrupted frontier prefix count differs")
+    manifest["implementationHistory"] = [{
+        "implementation": previous_implementation,
+        "providerPlanPath": str(previous_plan_path),
+        "providerPlanSHA256": previous_plan_digest,
+        "completedPrefixCount": prefix_count,
+        "scoresPrefixSHA256": sha256(scores_path),
+        "adoptionReason": "completed_empty_prediction_support",
+    }]
+    manifest["implementation"] = current_implementation
+    manifest["runnerVersion"] = FRONTIER_RUNNER_VERSION
+    manifest["source"]["providerPlanPath"] = str(current_plan_path)
+    manifest["source"]["providerPlanSHA256"] = current_plan_digest
+    manifest["adoptedAt"] = iso8601()
+    manifest.pop("failure", None)
+    return manifest
 
 
 def validate_plan(
@@ -206,6 +272,8 @@ def load_or_create(
     plan_digest: str,
     plan: dict[str, Any],
     examples: list[dict[str, Any]],
+    previous_plan_path: Path | None = None,
+    previous_plan_digest: str | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     manifest_path = output / "frontier.json"
     scores_path = output / "scores.jsonl"
@@ -221,6 +289,18 @@ def load_or_create(
         raise TrainingContractError("existing output lacks frontier.json")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     current_implementation = implementation_record(plan)
+    if manifest.get("implementation") != current_implementation:
+        manifest = adopt_interrupted_prefix(
+            manifest,
+            scores_path,
+            current_implementation,
+            plan,
+            plan_path,
+            plan_digest,
+            previous_plan_path,
+            previous_plan_digest,
+        )
+        atomic_json(manifest_path, manifest)
     validate_resume_implementation(manifest, current_implementation)
     if not (
         manifest.get("runnerVersion") == FRONTIER_RUNNER_VERSION
@@ -283,7 +363,16 @@ def run() -> int:
     if git_worktree_dirty(Path(__file__).resolve().parent.parent):
         raise TrainingContractError("frontier execution requires a clean working tree")
     manifest, scores = load_or_create(
-        output, corpus, corpus_path, packed_path, plan_path, plan_digest, plan, examples
+        output,
+        corpus,
+        corpus_path,
+        packed_path,
+        plan_path,
+        plan_digest,
+        plan,
+        examples,
+        arguments.adopt_interrupted_prefix_from_plan,
+        arguments.adopt_interrupted_prefix_plan_sha256,
     )
     manifest["status"] = "running"
     manifest["resumedAt"] = iso8601() if scores else None
@@ -320,6 +409,7 @@ def run() -> int:
                 for segment in example["target"].get("segments", [])
             ),
             "prediction": prediction,
+            "emptyCompletion": prediction == "",
             "predictionSHA256": hashlib.sha256(prediction.encode()).hexdigest(),
             "exactMatch": prediction == expected,
             "normalizedExactMatch": prediction.strip() == expected.strip(),

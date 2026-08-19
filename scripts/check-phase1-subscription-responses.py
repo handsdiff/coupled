@@ -35,6 +35,22 @@ class MockResponse:
         return self.body
 
 
+class MockCompletedEmptyResponse(MockResponse):
+    def __init__(self) -> None:
+        self.body = json.dumps({
+            "id": "mock-empty-response",
+            "model": MODEL,
+            "status": "completed",
+            "error": None,
+            "output": [],
+            "usage": {
+                "input_tokens": 12,
+                "output_tokens": 7,
+                "total_tokens": 19,
+            },
+        }).encode()
+
+
 def main() -> int:
     received: dict = {}
 
@@ -50,6 +66,26 @@ def main() -> int:
     )
     if output != "OK":
         raise AssertionError("mocked subscription output was not parsed")
+    empty, empty_response = request_completion(
+        "http://127.0.0.1:4000/v1/responses",
+        "public empty fixture",
+        urlopen=lambda request, timeout: MockCompletedEmptyResponse(),
+    )
+    if empty != "" or empty_response.get("status") != "completed":
+        raise AssertionError("completed empty prediction was not preserved")
+    incomplete = {
+        "status": "incomplete",
+        "error": None,
+        "output": [],
+        "usage": {"input_tokens": 12, "output_tokens": 7, "total_tokens": 19},
+    }
+    try:
+        from phase1_subscription_responses import extract_output_text
+        extract_output_text(incomplete)
+    except SubscriptionResponseError:
+        pass
+    else:
+        raise AssertionError("incomplete empty response was accepted")
     if received.get("model") != MODEL:
         raise AssertionError("subscription model route changed")
     if received.get("input") != [{

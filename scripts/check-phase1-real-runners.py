@@ -147,6 +147,76 @@ def main() -> int:
         else:
             raise AssertionError("frontier resume accepted changed dependency code")
 
+        previous_plan = deepcopy(plan)
+        previous_plan["implementation"]["fileDigestsSHA256"] = {
+            "scripts/run-phase1-frontier-arm.py": "old-runner-digest"
+        }
+        previous_plan_path = temporary / "previous-provider-plan.json"
+        previous_plan_path.write_bytes(canonical_bytes(previous_plan))
+        previous_plan_digest = sha256(previous_plan_path)
+        prefix_path = temporary / "frontier-prefix.jsonl"
+        write_jsonl(prefix_path, [{"exampleID": examples[0]["exampleID"]}])
+        previous_implementation = {
+            "codeRevision": "old-clean-revision",
+            "workingTreeDirtyAtStart": False,
+            "fileDigestsSHA256": previous_plan["implementation"][
+                "fileDigestsSHA256"
+            ],
+        }
+        current_frontier_implementation = {
+            "codeRevision": "new-clean-revision",
+            "workingTreeDirtyAtStart": False,
+            "fileDigestsSHA256": plan["implementation"]["fileDigestsSHA256"],
+        }
+        interrupted_frontier = {
+            "status": "interrupted",
+            "runnerVersion": "phase1-frontier-arm-v1",
+            "source": {"providerPlanSHA256": previous_plan_digest},
+            "implementation": previous_implementation,
+            "counts": {"completedCalls": 1},
+            "failure": {
+                "type": "SubscriptionResponseError",
+                "message": "LiteLLM response contains no output text",
+            },
+        }
+        adopted = frontier.adopt_interrupted_prefix(
+            deepcopy(interrupted_frontier),
+            prefix_path,
+            current_frontier_implementation,
+            plan,
+            plan_path,
+            plan_digest,
+            previous_plan_path,
+            previous_plan_digest,
+        )
+        if not (
+            adopted["runnerVersion"] == "phase1-frontier-arm-v2"
+            and adopted["implementation"] == current_frontier_implementation
+            and adopted["source"]["providerPlanSHA256"] == plan_digest
+            and adopted["implementationHistory"][0]["completedPrefixCount"] == 1
+            and adopted["implementationHistory"][0]["scoresPrefixSHA256"]
+            == sha256(prefix_path)
+            and "failure" not in adopted
+        ):
+            raise AssertionError("frontier interrupted-prefix adoption is incomplete")
+        altered_plan = deepcopy(plan)
+        altered_plan["protocol"]["examples"] = 199
+        try:
+            frontier.adopt_interrupted_prefix(
+                deepcopy(interrupted_frontier),
+                prefix_path,
+                current_frontier_implementation,
+                altered_plan,
+                plan_path,
+                plan_digest,
+                previous_plan_path,
+                previous_plan_digest,
+            )
+        except TrainingContractError:
+            pass
+        else:
+            raise AssertionError("frontier prefix adopted across a changed experiment")
+
         example_by_id = {value["exampleID"]: value for value in examples}
         packed_by_id = {value["exampleID"]: value for value in packed.rows}
         plans_by_id = {
