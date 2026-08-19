@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "policyVersion": "phase1-episode-today-policy-v1",
+  "approvedMerges": [
+    {"label": "chatgpt_scroll"},
+    {"label": "obsidian_qwen_finding"},
+    {"label": "chatgpt_best_model"},
+    {"label": "obsidian_best_examples", "notes": "Blind validation case near 2026-08-19T12:43:16.708Z; raw final field transition includes the cursor revision."},
+    {"label": "chatgpt_best_gpt"},
+    {"label": "code_cost_latency"},
+    {"label": "code_first_block"},
+    {"label": "chatgpt_brain_abstraction"},
+    {"label": "chatgpt_taste_definition"},
+    {"label": "chatgpt_liquid_disclosure"},
+    {"label": "chatgpt_portfolio_emphasis"},
+    {"label": "chrome_name_search"},
+    {"label": "obsidian_sft_reflection"},
+    {"label": "chatgpt_holistic_score"},
+    {"label": "chatgpt_restart_server"},
+    {"label": "code_bottom_crop"},
+    {"label": "code_reviewer_nonmerges", "targetPolicy": "concatenate_structured_member_targets"},
+    {"label": "code_post_submission", "notes": "Blind validation case near 2026-08-19T19:05:05.004Z."},
+    {"label": "code_episode_request"}
+  ]
+}

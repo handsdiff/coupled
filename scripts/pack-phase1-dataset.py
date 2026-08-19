@@ -100,9 +100,10 @@ def require_compiled_dataset(
         "phase1-causal-v12",
         "phase1-causal-v13",
         "phase1-causal-v14",
+        "phase1-episode-causal-v1",
     }:
         raise ValueError(
-            "packer requires conversionVersion phase1-causal-v11, v12, v13, or v14"
+            "packer requires a supported causal or episode-causal conversion"
         )
     if manifest.get("serialization", {}).get("contextVersion") != 3:
         raise ValueError("packer requires model-facing contextVersion 3")
@@ -122,7 +123,9 @@ def require_compiled_dataset(
         }
         if len(context_by_id) != len(context_blocks):
             raise ValueError("corpus contains duplicate contextBlockID values")
-        if manifest.get("artifactType") != "phase1_multi_session_corpus":
+        if manifest.get("artifactType") not in {
+            "phase1_multi_session_corpus", "phase1_episode_corpus"
+        }:
             raise ValueError("context-blocks.jsonl requires a multi-session corpus manifest")
         for event_id, event in events_by_id.items():
             block = context_by_id.get(event_id)
@@ -654,9 +657,38 @@ def main() -> int:
             target_event = events_by_id.get(example["targetEventID"])
             if target_event is None:
                 raise ValueError(f"example {example['exampleID']} has no compiled target event")
-            resolved_paste_payloads_preserved_in_history += verify_resolved_target_event(
-                example, target_event
-            )
+            episode = example.get("episode")
+            if episode is None:
+                resolved_paste_payloads_preserved_in_history += verify_resolved_target_event(
+                    example, target_event
+                )
+            else:
+                member_ids = episode.get("memberWriteEventIDs")
+                if (
+                    example.get("targetUnitType") != "closed_composition_episode"
+                    or not isinstance(member_ids, list)
+                    or not member_ids
+                    or any(value not in events_by_id for value in member_ids)
+                ):
+                    raise ValueError(
+                        f"example {example['exampleID']} has invalid episode lineage"
+                    )
+                # The episode target is intentionally not required to equal one
+                # micro-WRITE. Paste payloads remain available in the unchanged
+                # member WRITE history and are verified by their original events.
+                for member_id in member_ids:
+                    member = events_by_id[member_id]
+                    try:
+                        payload = json.loads(member["serialized"])
+                    except (KeyError, json.JSONDecodeError):
+                        continue
+                    history_segments = payload.get("authorshipSegments", [])
+                    resolved_paste_payloads_preserved_in_history += sum(
+                        1 for segment in history_segments
+                        if isinstance(segment, dict)
+                        and segment.get("type") == "paste"
+                        and isinstance(segment.get("content"), str)
+                    )
             packed_input = pack_model_input(
                 example, events_by_id, reloaded_plain, arguments.input_token_budget,
                 arguments.task_instruction,
@@ -664,9 +696,12 @@ def main() -> int:
             input_ids = packed_input["inputIDs"]
             query_ids = packed_input["queryIDs"]
             discarded = packed_input["completeTokenCount"] - len(input_ids)
-            target_ids, segment_spans, paste_count = pack_target(
-                segments, reloaded_plain, paste_marker_token_ids, eos_token_id
-            )
+            try:
+                target_ids, segment_spans, paste_count = pack_target(
+                    segments, reloaded_plain, paste_marker_token_ids, eos_token_id
+                )
+            except ValueError as error:
+                raise ValueError(f"example {example.get('exampleID')}: {error}") from error
             combined_ids = input_ids + target_ids
             labels = [IGNORE_LABEL] * len(input_ids) + target_ids
             attention_mask = [1] * len(combined_ids)
@@ -685,6 +720,12 @@ def main() -> int:
                 "exampleID": example["exampleID"],
                 "sessionID": example["sessionID"],
                 "targetEventID": example["targetEventID"],
+                **(
+                    {"targetUnitID": example["targetUnitID"],
+                     "targetUnitType": example["targetUnitType"],
+                     "targetMemberEventIDs": example["episode"]["memberWriteEventIDs"]}
+                    if example.get("targetUnitType") == "closed_composition_episode" else {}
+                ),
                 "experimentBlockID": example.get("experimentBlockID"),
                 "inputIDs": combined_ids,
                 "labels": labels,
