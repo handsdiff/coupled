@@ -802,13 +802,20 @@ and
 `d164420cfa43a347b02a5aa029017c6c1adbe29b52e6d69c5f9f8c0517cb0a6b`.
 
 The offline three-arm audit passed all coverage, target, context-plan, causal
-ordering, checkpoint-lineage, and artifact-digest checks. The immutable results
-are in
-`coupled-data/phase1-experiment-1-results-v1-unredacted-20260818`;
+ordering, checkpoint-lineage, and artifact-digest checks. A second offline audit
+added a versioned generated-completion scorecard without making provider calls
+or changing any prediction. The current immutable results are in
+`coupled-data/phase1-experiment-1-results-v2-scorecard-20260819`;
 `experiment.json` hashes to
-`e6d2a9cd92beff26ee4bfc296faedca6b3b008ba8a2973c175a699023f79f867`
+`3340877ed0d3cbd223271d1285b2162ae4e047eb07b578a84541c424582c5d7c`
 and `comparisons.jsonl` hashes to
-`ee0e2144008b1c786e763998f1200e1a0f8efa51c0509c391b8500164772c3be`.
+`439430cc1713ad82d9c9d41dee6e06886fa013d4bb36fff20ed22bff8f412ca9`.
+Audit v2 computes exact match, surrounding-whitespace-normalized exact match,
+exact longest correct prefix, unit-cost Unicode-code-point Levenshtein
+similarity in macro and micro forms, and per-example paste-action precision and
+recall directly from frozen targets and predictions. It reports authored-only,
+mixed authored/paste, and paste-only strata. The original provider-recorded
+`SequenceMatcher` value remains only as a legacy provenance metric.
 
 Headline developmental results:
 
@@ -816,8 +823,9 @@ Headline developmental results:
 - Personalized Qwen saved `3,630.6` prequential bits versus frozen Qwen on future human WRITE tokens.
 - Block 1 correctly saved zero bits with no prior personal training. Blocks 2, 3, and 4 saved `1,099.5`, `1,350.6`, and `1,180.5` bits after 50, 100, and 150 preceding examples.
 - Future-block micro NLL changed from frozen/personalized `4.1270 → 3.1849`, `4.4580 → 3.1685`, and `5.2195 → 3.6549` on blocks 2–4.
-- `gpt-5.6-sol` exact-matched 21/200 targets (23 after surrounding-whitespace normalization) with mean character similarity `0.3408`.
-- Personalized Qwen exact-matched 4/200 targets (5 normalized) with mean character similarity `0.1661`; frozen Qwen exact-matched none and had mean similarity `0.0064`.
+- Across all targets, `gpt-5.6-sol` exact-matched 21/200 (23 after surrounding-whitespace normalization), with macro/micro Levenshtein similarity `0.2871`/`0.2077` and `3.54%` micro target-prefix coverage. Thirteen exact matches were the 13 paste-only targets; on the 176 authored-only targets it exact-matched 8 (9 normalized), with macro/micro similarity `0.2332`/`0.2014` and `2.50%` target-prefix coverage.
+- Across all targets, personalized Qwen exact-matched 4/200 (5 normalized), with macro/micro similarity `0.1320`/`0.0333` and `1.03%` target-prefix coverage. On authored-only targets it exact-matched 2, with macro/micro similarity `0.1164`/`0.0369`. Frozen Qwen exact-matched none; its authored-only macro/micro similarity was `0.0264`/`0.0277`.
+- GPT paste-action precision/recall was `34.85%`/`95.83%`, personalized Qwen was `14.55%`/`33.33%`, and frozen Qwen was `0%`/`0%`. The separate paste score prevents trivial paste-only completions from dominating the textual headline.
 - Personalized Qwen lowered micro NLL in every observed application stratum: ChatGPT `4.1421 → 3.6359` (61 examples), Code `4.8006 → 3.4111` (24), Chrome `4.8746 → 3.3914` (82), and Obsidian `4.6064 → 3.8134` (33). These strata are too small for separate application-level claims.
 
 This is a positive capacity and forward-generalization signal: weight updates on

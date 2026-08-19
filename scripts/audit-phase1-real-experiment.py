@@ -23,22 +23,47 @@ from phase1_experiment import (
     validate_inputs,
     write_jsonl,
 )
+from phase1_prediction_metrics import (
+    METRIC_CONTRACT_VERSION,
+    PASTE_MARKER,
+    score_prediction,
+    summarize_prediction_metrics,
+)
 from phase1_training_contract import TrainingContractError, sha256
 
 
-AUDIT_VERSION = "phase1-real-experiment-audit-v1"
+AUDIT_VERSION = "phase1-real-experiment-audit-v2"
 
 
-def arm_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+def target_profile(example: dict[str, Any]) -> dict[str, Any]:
+    segments = example["target"].get("segments", [])
+    paste_actions = sum(segment.get("type") == "paste" for segment in segments)
+    has_authored_text = any(
+        segment.get("type") == "authored_text" and bool(segment.get("content"))
+        for segment in segments
+    )
+    if not paste_actions:
+        stratum = "authored_only"
+    elif has_authored_text:
+        stratum = "mixed_authored_and_paste"
+    else:
+        stratum = "paste_only"
+    return {"pasteActionCount": paste_actions, "targetStratum": stratum}
+
+
+def arm_summary(
+    rows: list[dict[str, Any]], prediction_metrics: list[dict[str, Any]]
+) -> dict[str, Any]:
     weighted = sum(int(row.get("weightedTokenCount") or 0) for row in rows)
     nll_sum = sum(float(row.get("weightedNLLSum") or 0.0) for row in rows)
     return {
         "examples": len(rows),
-        "exactMatches": sum(bool(row["exactMatch"]) for row in rows),
-        "normalizedExactMatches": sum(bool(row["normalizedExactMatch"]) for row in rows),
-        "exactMatchRate": sum(bool(row["exactMatch"]) for row in rows) / len(rows),
-        "meanCharacterSimilarity": sum(float(row["characterSimilarity"]) for row in rows)
-        / len(rows),
+        "generatedCompletion": summarize_prediction_metrics(prediction_metrics),
+        "legacyProviderSequenceMatcher": {
+            "meanCharacterSimilarity": sum(
+                float(row["characterSimilarity"]) for row in rows
+            ) / len(rows),
+        },
         "weightedTokens": weighted or None,
         "microTargetTokenNLL": nll_sum / weighted if weighted else None,
         "macroExampleAverageNLL": (
@@ -73,6 +98,10 @@ def main() -> int:
     corpus, examples, _, plans = validate_inputs(corpus_path, packed_path)
     example_ids = [row["exampleID"] for row in examples]
     example_by_id = {row["exampleID"]: row for row in examples}
+    profile_by_id = {
+        row["exampleID"]: target_profile(row)
+        for row in examples
+    }
 
     frontier_manifest = json.loads((frontier_path / "frontier.json").read_text())
     frontier_scores = load_jsonl(frontier_path / "scores.jsonl")
@@ -110,6 +139,8 @@ def main() -> int:
         expected = target_text(example_by_id[example_id]["target"])
         if row["target"] != expected:
             raise TrainingContractError("provider score target differs from frozen corpus")
+        if row.get("pasteActionCount") != profile_by_id[example_id]["pasteActionCount"]:
+            raise TrainingContractError("provider paste count differs from frozen corpus")
         if arm == ARM_FROZEN_FRONTIER and row.get("semanticModelInputSHA256") != plans[
             example_id
         ]["semanticModelInputSHA256"]:
@@ -118,6 +149,18 @@ def main() -> int:
     for arm in (ARM_FROZEN_QWEN, ARM_FROZEN_FRONTIER, ARM_PERSONALIZED_QWEN):
         if set(by_arm[arm]) != set(example_ids):
             raise TrainingContractError(f"incomplete score coverage for {arm}")
+
+    prediction_metrics_by_arm = {
+        arm: {
+            example_id: score_prediction(
+                by_arm[arm][example_id]["target"],
+                by_arm[arm][example_id]["prediction"],
+                target_paste_actions=profile_by_id[example_id]["pasteActionCount"],
+            )
+            for example_id in example_ids
+        }
+        for arm in (ARM_FROZEN_QWEN, ARM_FROZEN_FRONTIER, ARM_PERSONALIZED_QWEN)
+    }
 
     blocks = corpus["blocking"]["blocks"]
     update_by_block = {row["afterBlockID"]: row for row in updates}
@@ -149,19 +192,35 @@ def main() -> int:
             "application": frozen.get("application"),
             "target": frozen["target"],
             "pasteActionCount": frozen["pasteActionCount"],
+            "targetStratum": profile_by_id[example_id]["targetStratum"],
             "frozenQwen": {
                 "prediction": frozen["prediction"],
                 "meanNLL": frozen["meanNLL"],
-                "characterSimilarity": frozen["characterSimilarity"],
+                "predictionMetrics": prediction_metrics_by_arm[
+                    ARM_FROZEN_QWEN
+                ][example_id],
+                "legacySequenceMatcherCharacterSimilarity": frozen[
+                    "characterSimilarity"
+                ],
             },
             "frontier": {
                 "prediction": frontier["prediction"],
-                "characterSimilarity": frontier["characterSimilarity"],
+                "predictionMetrics": prediction_metrics_by_arm[
+                    ARM_FROZEN_FRONTIER
+                ][example_id],
+                "legacySequenceMatcherCharacterSimilarity": frontier[
+                    "characterSimilarity"
+                ],
             },
             "personalizedQwen": {
                 "prediction": personalized["prediction"],
                 "meanNLL": personalized["meanNLL"],
-                "characterSimilarity": personalized["characterSimilarity"],
+                "predictionMetrics": prediction_metrics_by_arm[
+                    ARM_PERSONALIZED_QWEN
+                ][example_id],
+                "legacySequenceMatcherCharacterSimilarity": personalized[
+                    "characterSimilarity"
+                ],
                 "checkpointID": personalized["checkpointID"],
             },
             "personalizedBitsSavedVersusFrozen": (
@@ -170,7 +229,25 @@ def main() -> int:
         })
 
     summaries = {
-        arm: arm_summary([by_arm[arm][example_id] for example_id in example_ids])
+        arm: arm_summary(
+            [by_arm[arm][example_id] for example_id in example_ids],
+            [prediction_metrics_by_arm[arm][example_id] for example_id in example_ids],
+        )
+        for arm in (ARM_FROZEN_QWEN, ARM_FROZEN_FRONTIER, ARM_PERSONALIZED_QWEN)
+    }
+    generated_completion_strata = {
+        arm: {
+            stratum: summarize_prediction_metrics([
+                prediction_metrics_by_arm[arm][example_id]
+                for example_id in example_ids
+                if profile_by_id[example_id]["targetStratum"] == stratum
+            ])
+            for stratum in (
+                "authored_only",
+                "mixed_authored_and_paste",
+                "paste_only",
+            )
+        }
         for arm in (ARM_FROZEN_QWEN, ARM_FROZEN_FRONTIER, ARM_PERSONALIZED_QWEN)
     }
     block_summaries = []
@@ -190,7 +267,10 @@ def main() -> int:
             ),
             "personalizedBitsSavedVersusFrozen": bits,
             "arms": {
-                arm: arm_summary([by_arm[arm][value] for value in ids])
+                arm: arm_summary(
+                    [by_arm[arm][value] for value in ids],
+                    [prediction_metrics_by_arm[arm][value] for value in ids],
+                )
                 for arm in (ARM_FROZEN_QWEN, ARM_FROZEN_FRONTIER, ARM_PERSONALIZED_QWEN)
             },
         })
@@ -199,7 +279,7 @@ def main() -> int:
     try:
         write_jsonl(temporary / "comparisons.jsonl", comparisons)
         manifest = {
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "auditVersion": AUDIT_VERSION,
             "status": "passed_developmental_not_thesis_conclusion",
             "source": {
@@ -211,6 +291,10 @@ def main() -> int:
                 "tinkerManifestSHA256": sha256(tinker_path / "tinker.json"),
                 "tinkerScoresSHA256": sha256(tinker_path / "scores.jsonl"),
                 "tinkerUpdatesSHA256": sha256(tinker_path / "updates.jsonl"),
+                "auditImplementationSHA256": sha256(Path(__file__).resolve()),
+                "predictionMetricImplementationSHA256": sha256(
+                    Path(__file__).with_name("phase1_prediction_metrics.py")
+                ),
             },
             "protocol": {
                 "examples": len(examples),
@@ -219,7 +303,37 @@ def main() -> int:
                 "frontierHasComparableTokenNLL": False,
                 "personalizedUpdatePolicy": "warm_start_then_train_full_cumulative_corpus",
             },
+            "generatedCompletionMetricContract": {
+                "version": METRIC_CONTRACT_VERSION,
+                "characterUnit": "unicode_code_point",
+                "unicodeNormalization": "none",
+                "normalizedExactMatch": "strip_surrounding_unicode_whitespace_only",
+                "characterSimilarity": {
+                    "distance": "unit_cost_levenshtein",
+                    "macro": "mean_of_per_example_one_minus_distance_over_max_length",
+                    "micro": "one_minus_summed_distance_over_summed_max_length",
+                },
+                "correctPrefix": "exact_raw_longest_common_prefix",
+                "pasteAction": {
+                    "representation": PASTE_MARKER,
+                    "matching": "per_example_minimum_of_target_and_prediction_marker_counts",
+                },
+                "targetStrata": [
+                    "authored_only",
+                    "mixed_authored_and_paste",
+                    "paste_only",
+                ],
+                "primaryCrossModelMetrics": [
+                    "exact_match",
+                    "surrounding_whitespace_normalized_exact_match",
+                    "correct_prefix",
+                    "macro_and_micro_normalized_levenshtein_similarity",
+                    "paste_action_precision_and_recall",
+                ],
+                "personalizationPrimaryMetric": "paired_prequential_target_token_nll",
+            },
             "summaries": summaries,
+            "generatedCompletionStrata": generated_completion_strata,
             "blockSummaries": block_summaries,
             "personalizedCumulativeBitsSavedVersusFrozen": sum(
                 row["personalizedBitsSavedVersusFrozen"] for row in comparisons

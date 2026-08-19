@@ -243,6 +243,10 @@ def main() -> int:
                     "blockID": block["blockID"],
                     "exampleID": example_id,
                     "target": target,
+                    "pasteActionCount": sum(
+                        segment.get("type") == "paste"
+                        for segment in example["target"].get("segments", [])
+                    ),
                     "prediction": target,
                     "exactMatch": True,
                     "normalizedExactMatch": True,
@@ -329,7 +333,17 @@ def main() -> int:
         audit = json.loads((audit_output / "experiment.json").read_text())
         if not (
             audit["status"] == "passed_developmental_not_thesis_conclusion"
+            and audit["auditVersion"] == "phase1-real-experiment-audit-v2"
             and audit["protocol"]["examples"] == 200
+            and audit["summaries"][ARM_FROZEN_FRONTIER]["generatedCompletion"][
+                "exactMatches"
+            ] == 200
+            and audit["summaries"][ARM_PERSONALIZED_QWEN]["generatedCompletion"][
+                "correctPrefix"
+            ]["microTargetCoverage"] == 1.0
+            and audit["summaries"][ARM_FROZEN_QWEN]["generatedCompletion"][
+                "pasteActions"
+            ]["recall"] == 1.0
             and len(load_json_lines(audit_output / "comparisons.jsonl")) == 200
         ):
             raise AssertionError("synthetic final experiment audit failed")
