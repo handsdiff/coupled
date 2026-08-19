@@ -9,8 +9,21 @@ from decimal import Decimal
 from typing import Any
 
 
-COST_LATENCY_VERSION = "phase1-cost-latency-v1"
+COST_LATENCY_VERSION = "phase1-cost-latency-v2"
 MILLION = Decimal(1_000_000)
+OPENAI_API_EQUIVALENT_PRICE_CONTRACT = {
+    "model": "gpt-5.6-sol",
+    "pricingAsOf": "2026-08-19",
+    "pricingSource": "https://developers.openai.com/api/docs/models/gpt-5.6-sol",
+    "pricesPerMillionUSD": {
+        "input": "5.00",
+        "cachedInput": "0.50",
+        "cacheWrite": "6.25",
+        "output": "30.00",
+    },
+    "highContextThresholdInputTokens": 272_000,
+    "highContextMultipliers": {"input": "2.0", "output": "1.5"},
+}
 
 
 def percentile(values: list[float], fraction: float) -> float:
@@ -23,8 +36,10 @@ def percentile(values: list[float], fraction: float) -> float:
     return ordered[lower] + (ordered[upper] - ordered[lower]) * (position - lower)
 
 
-def latency_summary(rows: list[dict[str, Any]], semantics: str) -> dict[str, Any]:
-    values = [float(row["latencySeconds"]) for row in rows]
+def latency_summary(
+    rows: list[dict[str, Any]], semantics: str, *, field: str = "latencySeconds"
+) -> dict[str, Any]:
+    values = [float(row[field]) for row in rows]
     if not values:
         return {"observations": 0, "semantics": semantics}
     return {
@@ -46,6 +61,116 @@ def priced_tokens(tokens: int, rate_per_million: Decimal) -> Decimal:
 
 def decimal_string(value: Decimal) -> str:
     return str(value.quantize(Decimal("0.000001")))
+
+
+def openai_api_equivalent_query_cost(row: dict[str, Any]) -> dict[str, Any]:
+    usage = row.get("usage") or {}
+    details = usage.get("input_tokens_details") or {}
+    input_tokens = int(usage.get("input_tokens") or 0)
+    cached_tokens = int(details.get("cached_tokens") or 0)
+    cache_write_tokens = int(details.get("cache_write_tokens") or 0)
+    output_tokens = int(usage.get("output_tokens") or 0)
+    uncached_tokens = input_tokens - cached_tokens - cache_write_tokens
+    if uncached_tokens < 0:
+        raise ValueError("OpenAI input-token detail exceeds total input tokens")
+
+    prices = OPENAI_API_EQUIVALENT_PRICE_CONTRACT["pricesPerMillionUSD"]
+    high_context = (
+        input_tokens
+        > OPENAI_API_EQUIVALENT_PRICE_CONTRACT["highContextThresholdInputTokens"]
+    )
+    input_multiplier = Decimal(
+        OPENAI_API_EQUIVALENT_PRICE_CONTRACT["highContextMultipliers"]["input"]
+        if high_context
+        else "1"
+    )
+    output_multiplier = Decimal(
+        OPENAI_API_EQUIVALENT_PRICE_CONTRACT["highContextMultipliers"]["output"]
+        if high_context
+        else "1"
+    )
+    uncached_cost = priced_tokens(
+        uncached_tokens, Decimal(prices["input"]) * input_multiplier
+    )
+    cached_cost = priced_tokens(
+        cached_tokens, Decimal(prices["cachedInput"]) * input_multiplier
+    )
+    cache_write_cost = priced_tokens(
+        cache_write_tokens, Decimal(prices["cacheWrite"]) * input_multiplier
+    )
+    output_cost = priced_tokens(
+        output_tokens, Decimal(prices["output"]) * output_multiplier
+    )
+    total = uncached_cost + cached_cost + cache_write_cost + output_cost
+    return {
+        "pricingBasis": "api_equivalent_frozen_official_rates",
+        "highContextPricingApplied": high_context,
+        "tokens": {
+            "inputTotal": input_tokens,
+            "inputUncached": uncached_tokens,
+            "inputCached": cached_tokens,
+            "inputCacheWrite": cache_write_tokens,
+            "outputIncludingReasoning": output_tokens,
+        },
+        "estimatedUSD": {
+            "inputUncached": decimal_string(uncached_cost),
+            "inputCached": decimal_string(cached_cost),
+            "inputCacheWrite": decimal_string(cache_write_cost),
+            "outputIncludingReasoning": decimal_string(output_cost),
+            "total": decimal_string(total),
+        },
+    }
+
+
+def summarize_openai_api_equivalent_cost(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    queries = [openai_api_equivalent_query_cost(row) for row in rows]
+    total = sum(
+        (Decimal(value["estimatedUSD"]["total"]) for value in queries),
+        Decimal(0),
+    )
+    return {
+        "pricingBasis": "api_equivalent_frozen_official_rates",
+        "priceContract": OPENAI_API_EQUIVALENT_PRICE_CONTRACT,
+        "queries": len(rows),
+        "highContextQueries": sum(value["highContextPricingApplied"] for value in queries),
+        "estimatedUSD": {
+            "total": decimal_string(total),
+            "meanPerQuery": decimal_string(total / len(rows)),
+        },
+    }
+
+
+def tinker_latency(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    has_components = all(
+        "generationLatencySeconds" in row
+        and "targetLikelihoodLatencySeconds" in row
+        for row in rows
+    )
+    if not has_components:
+        return {
+            "primary": latency_summary(
+                rows,
+                "combined_sequential_target_logprob_scoring_and_generation",
+            ),
+            "componentsAvailable": False,
+        }
+    return {
+        "primary": latency_summary(
+            rows,
+            "generation_sampling_request_only",
+            field="generationLatencySeconds",
+        ),
+        "componentsAvailable": True,
+        "targetLikelihood": latency_summary(
+            rows,
+            "target_logprob_scoring_request_only",
+            field="targetLikelihoodLatencySeconds",
+        ),
+        "combined": latency_summary(
+            rows,
+            "combined_sequential_target_logprob_scoring_and_generation",
+        ),
+    }
 
 
 def tinker_arm_cost(
@@ -111,6 +236,9 @@ def build_cost_latency_report(
         if field in recorded_usage and int(recorded_usage[field]) != observed:
             raise ValueError(f"Tinker {field} differs from operation records")
 
+    frozen_latency = tinker_latency(frozen_qwen_rows)
+    personalized_latency = tinker_latency(personalized_qwen_rows)
+    api_equivalent = summarize_openai_api_equivalent_cost(frontier_rows)
     arms: dict[str, Any] = {
         "frozen_gpt_5.6_sol_xhigh": {
             "latency": latency_summary(
@@ -120,23 +248,19 @@ def build_cost_latency_report(
             "cost": {
                 "billingBasis": "existing_chatgpt_monthly_subscription",
                 "experimentSpecificChargeUSD": None,
-                "perQueryCostUSD": None,
                 "reason": "subscription usage was not separately metered or attributable",
                 "usage": frontier_manifest.get("summary", {}).get("usage"),
+                "apiEquivalent": api_equivalent,
             },
         },
         "frozen_qwen3.5_9b_base": {
-            "latency": latency_summary(
-                frozen_qwen_rows,
-                "combined_sequential_target_logprob_scoring_and_generation",
-            ),
+            "latency": frozen_latency["primary"],
+            "latencyComponents": frozen_latency,
             "cost": None,
         },
         "personalized_qwen3.5_9b_base": {
-            "latency": latency_summary(
-                personalized_qwen_rows,
-                "combined_sequential_target_logprob_scoring_and_generation",
-            ),
+            "latency": personalized_latency["primary"],
+            "latencyComponents": personalized_latency,
             "cost": None,
         },
     }
@@ -175,10 +299,14 @@ def build_cost_latency_report(
         "schemaVersion": 1,
         "reportVersion": COST_LATENCY_VERSION,
         "comparability": {
-            "generationLatencyDirectlyComparableAcrossArms": False,
+            "generationLatencyDirectlyComparableAcrossArms": (
+                frozen_latency["componentsAvailable"]
+                and personalized_latency["componentsAvailable"]
+            ),
             "reason": (
-                "GPT rows time generation requests, while Tinker rows combine target-"
-                "likelihood scoring and generation; existing evidence cannot separate them"
+                "historical Tinker rows combine target-likelihood scoring and generation"
+                if not frozen_latency["componentsAvailable"]
+                else "all primary arm latency summaries time generation requests"
             ),
             "futureInstrumentation": (
                 "record target-likelihood and generation request latency independently"
@@ -237,6 +365,16 @@ def cost_latency_csv(report: dict[str, Any]) -> str:
         latency = value["latency"]
         cost = value.get("cost") or {}
         estimated = cost.get("estimatedUSD") or {}
+        api_equivalent = cost.get("apiEquivalent") or {}
+        if api_equivalent:
+            estimated = {
+                "combinedScoringAndGeneration": api_equivalent["estimatedUSD"]["total"],
+                "generationOnly": api_equivalent["estimatedUSD"]["total"],
+                "combinedMeanPerExample": api_equivalent["estimatedUSD"]["meanPerQuery"],
+                "generationOnlyMeanPerExample": api_equivalent["estimatedUSD"][
+                    "meanPerQuery"
+                ],
+            }
         writer.writerow({
             "component": arm,
             "observations": latency.get("observations"),

@@ -806,11 +806,11 @@ ordering, checkpoint-lineage, and artifact-digest checks. A second offline audit
 added a versioned generated-completion scorecard and cost/latency accounting
 without making provider calls or changing any prediction. The current immutable
 results are in
-`coupled-data/phase1-experiment-1-results-v3-cost-latency-20260819`;
+`coupled-data/phase1-experiment-1-results-v4-api-equivalent-cost-20260819`;
 `experiment.json` hashes to
-`a127e6121a4a22b527350731fcfa7e3b2153401c9f63b840fed946c9317c2d11`
+`e69c315cb6a70f3a56a15cb3894fe431ca3364be3b7f0c73c8b09665ac780154`
 and `comparisons.jsonl` hashes to
-`ad2cc38b83c97b8695844dee05e9d83ad7cac1e00238bdfe4138312b70606600`.
+`5d15daccd82f476a420431e3ab319905c0380f365e419887e94468674a3863cb`.
 Audit v2 computes exact match, surrounding-whitespace-normalized exact match,
 exact longest correct prefix, unit-cost Unicode-code-point Levenshtein
 similarity in macro and micro forms, and per-example paste-action precision and
@@ -829,17 +829,19 @@ Headline developmental results:
 - GPT paste-action precision/recall was `34.85%`/`95.83%`, personalized Qwen was `14.55%`/`33.33%`, and frozen Qwen was `0%`/`0%`. The separate paste score prevents trivial paste-only completions from dominating the textual headline.
 - Personalized Qwen lowered micro NLL in every observed application stratum: ChatGPT `4.1421 → 3.6359` (61 examples), Code `4.8006 → 3.4111` (24), Chrome `4.8746 → 3.3914` (82), and Obsidian `4.6064 → 3.8134` (33). These strata are too small for separate application-level claims.
 
-Audit v3 adds `cost-latency.json`, a shareable `cost-latency.csv`, and per-query
+Audit v4 adds `cost-latency.json`, a shareable `cost-latency.csv`, and per-query
 timing/cost fields to `comparisons.jsonl`. Their hashes are respectively
-`27ffd8a212cdb76fdf9b501301c818f420ac67bd5ea9b8f34f8a459f25c3098f`
+`566817e25527163a89180b671cdf4e9ef1c648b1bcb712c9d678a2022fd8b1bd`
 and
-`ba004fc08cc2f02b7cab943cf87c91a1e857bf02090a04b10a5709a565750732`.
+`c2b5b2de1d50eff4071c21ca75e80c000aac0abacee1c61d5982d05e9524e27c`.
 GPT generation requests including reasoning had median/mean/p95 latency of
 `13.78`/`19.50`/`54.53` seconds. Frozen Qwen's combined likelihood-scoring plus
 generation operation measured `8.16`/`8.70`/`13.79` seconds; personalized Qwen
 measured `5.31`/`6.78`/`14.01` seconds. These are not a direct generation-latency
 comparison because the existing Tinker timing does not separate likelihood
-scoring from sampling.
+scoring from sampling. `phase1-tinker-prequential-v2` now records those request
+timings separately for future experiments; historical generation-only latency
+cannot be reconstructed.
 
 At the frozen Tinker rates, generation-only inference was estimated at
 `$4.216769` (`$0.021084` per example) for frozen Qwen and `$4.078217`
@@ -847,8 +849,12 @@ At the frozen Tinker rates, generation-only inference was estimated at
 scoring raises those totals to `$8.246167` and `$8.107614`. Cumulative training
 was estimated at `$21.341085`; the full frozen-rate subtotal was `$37.694867`,
 while the user-verified provider charge was `$30.10`. GPT used the existing
-ChatGPT subscription, so no experiment-specific or per-query dollar cost can
-be attributed honestly.
+ChatGPT subscription, but its recorded usage can be priced as though it used the
+API. At the official GPT-5.6 Sol rates frozen on August 19, 2026—`$5/M` uncached
+input, `$0.50/M` cached input, and `$30/M` output—the 200 calls would have cost
+`$35.193554`, or `$0.175968` per query. No call crossed the 272K-input premium
+threshold. This API-equivalent estimate is distinct from the actual subscription
+charge.
 
 This is a positive capacity and forward-generalization signal: weight updates on
 earlier personal actions reduced surprise on later actions. It is not yet a

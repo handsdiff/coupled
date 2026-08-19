@@ -46,7 +46,7 @@ from phase1_training_contract import (
 )
 
 
-TINKER_RUNNER_VERSION = "phase1-tinker-prequential-v1"
+TINKER_RUNNER_VERSION = "phase1-tinker-prequential-v2"
 EXPECTED_PLAN_VERSION = "phase1-provider-plan-v3"
 GENERATION_TOKEN_CEILING = 512
 EPOCHS_PER_UPDATE = 1
@@ -340,14 +340,17 @@ def score_example(
     usage: Usage,
 ) -> dict[str, Any]:
     started = time.monotonic()
+    likelihood_started = time.monotonic()
     usage.nll_calls += 1
     usage.prefill_tokens += len(row["inputIDs"])
     logprobs = sampling_client.compute_logprobs(
         tinker.ModelInput.from_ints(tokens=row["inputIDs"])
     ).result()
+    target_likelihood_latency = time.monotonic() - likelihood_started
     nll_sum, weighted = weighted_nll(row, logprobs)
 
     prompt_ids = row["inputIDs"][: row["modelInputTokenCount"]]
+    generation_started = time.monotonic()
     usage.sample_calls += 1
     usage.prefill_tokens += len(prompt_ids)
     usage.sampled_tokens_reserved += GENERATION_TOKEN_CEILING
@@ -361,6 +364,7 @@ def score_example(
             stop=[row["eosTokenID"]],
         ),
     ).result()
+    generation_latency = time.monotonic() - generation_started
     if len(response.sequences) != 1:
         raise TrainingContractError("Tinker returned an unexpected sample count")
     sequence = response.sequences[0]
@@ -370,7 +374,7 @@ def score_example(
     prediction = tokenizer.decode(without_eos, skip_special_tokens=True)
     expected = target_text(example["target"])
     return {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "runnerVersion": TINKER_RUNNER_VERSION,
         "blockID": block_id,
         "arm": arm,
@@ -399,6 +403,9 @@ def score_example(
         "exactMatch": prediction == expected,
         "normalizedExactMatch": prediction.strip() == expected.strip(),
         "characterSimilarity": SequenceMatcher(None, expected, prediction).ratio(),
+        "latencyInstrumentationVersion": "tinker-score-latency-v2-split-requests",
+        "targetLikelihoodLatencySeconds": target_likelihood_latency,
+        "generationLatencySeconds": generation_latency,
         "latencySeconds": time.monotonic() - started,
         "completedAt": iso8601(),
     }

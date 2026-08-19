@@ -34,12 +34,13 @@ from phase1_cost_latency import (
     COST_LATENCY_VERSION,
     build_cost_latency_report,
     cost_latency_csv,
+    openai_api_equivalent_query_cost,
     tinker_arm_cost,
 )
 from phase1_training_contract import TrainingContractError, sha256
 
 
-AUDIT_VERSION = "phase1-real-experiment-audit-v3"
+AUDIT_VERSION = "phase1-real-experiment-audit-v4"
 
 
 def target_profile(example: dict[str, Any]) -> dict[str, Any]:
@@ -261,6 +262,7 @@ def main() -> int:
                 "usage": frontier.get("usage"),
                 "experimentSpecificCostUSD": None,
                 "costReason": "subscription usage was not separately attributable",
+                "apiEquivalentCost": openai_api_equivalent_query_cost(frontier),
                 "predictionMetrics": prediction_metrics_by_arm[
                     ARM_FROZEN_FRONTIER
                 ][example_id],

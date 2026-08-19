@@ -58,7 +58,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="phase1-real-runner-check-") as raw:
         temporary = Path(raw)
         plan_path = temporary / "provider-plan.json"
-        subprocess.run(
+        prepare_run = subprocess.run(
             [
                 sys.executable,
                 str(project / "scripts/prepare-phase1-experiment.py"),
@@ -71,10 +71,12 @@ def main() -> int:
                 "--openai-max-output-tokens", "8192",
                 "--frontier-transport", "litellm_chatgpt_subscription",
             ],
-            check=True,
+            check=False,
             capture_output=True,
             text=True,
         )
+        if prepare_run.returncode != 0:
+            raise AssertionError(f"provider plan preparation failed: {prepare_run.stderr}")
         frontier = load_script(
             "phase1_frontier_runner_check",
             project / "scripts/run-phase1-frontier-arm.py",
@@ -111,6 +113,81 @@ def main() -> int:
             != tinker.deterministic_order(cumulative, 2)
         ):
             raise AssertionError("cumulative training order is not deterministic")
+
+        class Immediate:
+            def __init__(self, value):
+                self.value = value
+
+            def result(self):
+                return self.value
+
+        class Sequence:
+            tokens = [9, 2]
+            stop_reason = "stop"
+
+        class Response:
+            sequences = [Sequence()]
+
+        class SamplingClient:
+            def compute_logprobs(self, _):
+                return Immediate([None, -0.5])
+
+            def sample(self, **_):
+                return Immediate(Response())
+
+        class ModelInput:
+            @staticmethod
+            def from_ints(*, tokens):
+                return tokens
+
+        class SamplingParams:
+            def __init__(self, **_):
+                pass
+
+        class Tinker:
+            pass
+
+        Tinker.ModelInput = ModelInput
+        Tinker.SamplingParams = SamplingParams
+
+        class Tokenizer:
+            def decode(self, _, **__):
+                return "x"
+
+        timing_record = tinker.score_example(
+            SamplingClient(),
+            Tokenizer(),
+            Tinker,
+            ARM_FROZEN_QWEN,
+            "fixture-block",
+            {
+                "exampleID": "fixture-example",
+                "targetEventID": "fixture-event",
+                "target": {
+                    "segments": [{"type": "authored_text", "content": "x"}]
+                },
+            },
+            {
+                "inputIDs": [1, 2],
+                "labels": [tinker.IGNORE_LABEL, 9],
+                "targetTokenCount": 1,
+                "modelInputTokenCount": 1,
+                "eosTokenID": 2,
+                "pasteActionCount": 0,
+            },
+            None,
+            tinker.Usage(),
+        )
+        if not (
+            timing_record["latencyInstrumentationVersion"]
+            == "tinker-score-latency-v2-split-requests"
+            and timing_record["targetLikelihoodLatencySeconds"] >= 0
+            and timing_record["generationLatencySeconds"] >= 0
+            and timing_record["latencySeconds"]
+            >= timing_record["targetLikelihoodLatencySeconds"]
+            + timing_record["generationLatencySeconds"]
+        ):
+            raise AssertionError("Tinker score latency components were not retained")
 
         clean_implementation = {
             "codeRevision": "fixture-revision",
@@ -283,11 +360,16 @@ def main() -> int:
                         "weightedTokenCount": row["targetTokenCount"],
                         "weightedNLLSum": per_token * row["targetTokenCount"],
                         "meanNLL": per_token,
+                        "fullSequenceTokenCount": len(row["inputIDs"]),
+                        "modelInputTokenCount": row["modelInputTokenCount"],
+                        "predictionTokenIDs": [],
                     })
             updates.append({
                 "afterBlockID": block["blockID"],
                 "samplerCheckpointPath": f"tinker://fixture/block-{block_index + 1}",
                 "completedAt": f"2026-01-01T0{block_index + 1}:59:00Z",
+                "latencySeconds": 0.0,
+                "submittedPositions": 0,
             })
         write_jsonl(frontier_directory / "scores.jsonl", frontier_scores)
         write_jsonl(tinker_directory / "scores.jsonl", tinker_scores)
@@ -316,7 +398,7 @@ def main() -> int:
         (frontier_directory / "frontier.json").write_bytes(canonical_bytes(frontier_manifest))
         (tinker_directory / "tinker.json").write_bytes(canonical_bytes(tinker_manifest))
         audit_output = temporary / "audit"
-        subprocess.run(
+        audit_run = subprocess.run(
             [
                 sys.executable,
                 str(project / "scripts/audit-phase1-real-experiment.py"),
@@ -326,14 +408,16 @@ def main() -> int:
                 "--tinker", str(tinker_directory),
                 "--output", str(audit_output),
             ],
-            check=True,
+            check=False,
             capture_output=True,
             text=True,
         )
+        if audit_run.returncode != 0:
+            raise AssertionError(f"synthetic final audit failed: {audit_run.stderr}")
         audit = json.loads((audit_output / "experiment.json").read_text())
         if not (
             audit["status"] == "passed_developmental_not_thesis_conclusion"
-            and audit["auditVersion"] == "phase1-real-experiment-audit-v3"
+            and audit["auditVersion"] == "phase1-real-experiment-audit-v4"
             and audit["protocol"]["examples"] == 200
             and audit["summaries"][ARM_FROZEN_FRONTIER]["generatedCompletion"][
                 "exactMatches"
@@ -344,7 +428,7 @@ def main() -> int:
             and audit["summaries"][ARM_FROZEN_QWEN]["generatedCompletion"][
                 "pasteActions"
             ]["recall"] == 1.0
-            and audit["costLatencyReportVersion"] == "phase1-cost-latency-v1"
+            and audit["costLatencyReportVersion"] == "phase1-cost-latency-v2"
             and (audit_output / "cost-latency.json").is_file()
             and (audit_output / "cost-latency.csv").is_file()
             and len(load_json_lines(audit_output / "comparisons.jsonl")) == 200
