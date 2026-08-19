@@ -1946,57 +1946,6 @@ do {
 }
 expect(schema15LegacyWasRejected, "schema 15 cannot use the legacy compiler importer")
 
-expect(
-    postSubmissionReadTriggerEvidence(
-        role: "AXTextField",
-        logicalBefore: "",
-        logicalPreReturn: "search terms",
-        logicalPostReturn: nil,
-        postReturnUnavailable: false
-    ) == "single_line_return",
-    "a changed nonempty single-line field is a credible submission trigger"
-)
-expect(
-    postSubmissionReadTriggerEvidence(
-        role: "AXTextArea",
-        logicalBefore: "",
-        logicalPreReturn: "submitted prompt",
-        logicalPostReturn: "",
-        postReturnUnavailable: false
-    ) == "field_cleared_after_return",
-    "a multiline field that clears after Return is a credible submission trigger"
-)
-expect(
-    postSubmissionReadTriggerEvidence(
-        role: "AXTextArea",
-        logicalBefore: "",
-        logicalPreReturn: "submitted prompt",
-        logicalPostReturn: nil,
-        postReturnUnavailable: true
-    ) == "field_unavailable_after_return",
-    "a multiline field that disappears after Return is a credible submission trigger"
-)
-expect(
-    postSubmissionReadTriggerEvidence(
-        role: "AXTextArea",
-        logicalBefore: "existing",
-        logicalPreReturn: "existing plus line",
-        logicalPostReturn: "existing plus line\n",
-        postReturnUnavailable: false
-    ) == nil,
-    "an ordinary multiline newline does not create a submission READ trigger"
-)
-expect(
-    postSubmissionReadTriggerEvidence(
-        role: "AXTextArea",
-        logicalBefore: "same",
-        logicalPreReturn: "same",
-        logicalPostReturn: "",
-        postReturnUnavailable: false
-    ) == nil,
-    "Return without a meaningful pre-Return change does not create a trigger"
-)
-
 try! FileManager.default.removeItem(at: fixtureRoot)
 
 print("CoupledCore checks passed")

@@ -12,7 +12,6 @@ final class ActiveTapWriteCollector {
     private let rawWriter: JSONLWriter
     private let eventWriter: JSONLWriter
     private let mutatingInputObserver: ((MutatingWriteInput) -> Void)?
-    private let postSubmissionObserver: ((PostSubmissionReadTrigger) -> Void)?
     private let systemWideElement = AXUIElementCreateSystemWide()
 
     private var eventTap: CFMachPort?
@@ -27,14 +26,12 @@ final class ActiveTapWriteCollector {
         configuration: Configuration,
         rawWriter: JSONLWriter,
         eventWriter: JSONLWriter,
-        mutatingInputObserver: ((MutatingWriteInput) -> Void)? = nil,
-        postSubmissionObserver: ((PostSubmissionReadTrigger) -> Void)? = nil
+        mutatingInputObserver: ((MutatingWriteInput) -> Void)? = nil
     ) {
         self.configuration = configuration
         self.rawWriter = rawWriter
         self.eventWriter = eventWriter
         self.mutatingInputObserver = mutatingInputObserver
-        self.postSubmissionObserver = postSubmissionObserver
     }
 
     func start() throws {
@@ -213,13 +210,6 @@ final class ActiveTapWriteCollector {
                 if let returnCheckpoint {
                     appendReturnCheckpoint(returnCheckpoint.record)
                 }
-                let submissionProbe = returnCheckpoint.flatMap {
-                    makePostSubmissionProbe(
-                        pending: pending,
-                        checkpoint: $0.record,
-                        inputObservedAt: inputObservedAt
-                    )
-                }
                 extendPending(
                     with: classification,
                     event: event,
@@ -241,24 +231,8 @@ final class ActiveTapWriteCollector {
                         event: event,
                         inputObservedAt: inputObservedAt
                     )
-                } else if classification.isUnmodifiedReturn,
-                          let submissionProbe,
-                          !shouldFinalizeBeforeReturn(
-                            classification: classification,
-                            pending: pending
-                          ) {
-                    scheduleMutationCheckpoint(
-                        event: event,
-                        inputObservedAt: inputObservedAt,
-                        submissionProbe: submissionProbe
-                    )
                 }
                 if shouldFinalizeBeforeReturn(classification: classification, pending: pending) {
-                    emitPostSubmissionTriggerIfCredible(
-                        probe: submissionProbe,
-                        postReturnObservation: nil,
-                        postReturnErrors: []
-                    )
                     completeCapture(
                         boundaryReason: "return_pressed",
                         deferPersistence: true,
@@ -302,10 +276,6 @@ final class ActiveTapWriteCollector {
             return
         }
 
-        if classification.isUnmodifiedReturn {
-            observeReturnWithoutActiveWrite(inputObservedAt: inputObservedAt)
-            return
-        }
         guard classification.canStartWrite else { return }
         let beforeStarted = DispatchTime.now().uptimeNanoseconds
         let before = captureFocusedTarget(includeValue: true, reason: "write_before")
@@ -1370,11 +1340,7 @@ final class ActiveTapWriteCollector {
         self.pending = pending
     }
 
-    private func scheduleMutationCheckpoint(
-        event: CGEvent,
-        inputObservedAt: String,
-        submissionProbe: PostSubmissionProbe? = nil
-    ) {
+    private func scheduleMutationCheckpoint(event: CGEvent, inputObservedAt: String) {
         guard let pending else { return }
         mutationCheckpointTimer?.invalidate()
         let attemptID = pending.attemptID
@@ -1398,209 +1364,18 @@ final class ActiveTapWriteCollector {
                     captureRequestedAt: requestedAt,
                     observation: capture.observation,
                     axErrors: capture.errors
-                ),
-                submissionProbe: submissionProbe
+                )
             )
         }
     }
 
     private func completeMutationCheckpoint(
         attemptID: String,
-        checkpoint: ActiveTapMutationCheckpoint,
-        submissionProbe: PostSubmissionProbe?
+        checkpoint: ActiveTapMutationCheckpoint
     ) {
         guard var pending, pending.attemptID == attemptID else { return }
         pending.mutationCheckpoints.append(checkpoint)
         self.pending = pending
-        emitPostSubmissionTriggerIfCredible(
-            probe: submissionProbe,
-            postReturnObservation: checkpoint.observation,
-            postReturnErrors: checkpoint.axErrors
-        )
-    }
-
-    private func makePostSubmissionProbe(
-        pending: PendingActiveTapWrite,
-        checkpoint: ActiveTapReturnCheckpoint,
-        inputObservedAt: String
-    ) -> PostSubmissionProbe? {
-        guard let target = pending.target,
-              let before = pending.before,
-              let preReturn = checkpoint.observation,
-              checkpoint.axErrors.isEmpty,
-              !before.valueWasTruncated,
-              !preReturn.valueWasTruncated else { return nil }
-        return PostSubmissionProbe(
-            probeID: UUID().uuidString,
-            sourceWriteAttemptID: pending.attemptID,
-            inputObservedAt: inputObservedAt,
-            processIdentifier: target.app.processIdentifier,
-            role: target.identity.role,
-            bundleIdentifier: target.app.bundleIdentifier,
-            fieldDescription: target.identity.fieldDescription,
-            preReturnObservation: preReturn,
-            preReturnAXErrors: checkpoint.axErrors,
-            logicalBefore: logicalValue(before, target: target),
-            logicalPreReturn: logicalValue(preReturn, target: target)
-        )
-    }
-
-    private func observeReturnWithoutActiveWrite(inputObservedAt: String) {
-        let capture = captureFocusedTarget(
-            includeValue: true,
-            reason: "standalone_pre_return_submission_probe"
-        )
-        guard capture.isEligibleApplication,
-              let target = capture.target,
-              let observation = capture.observation,
-              capture.errors.isEmpty,
-              !observation.valueWasTruncated else {
-            persistFailedPostSubmissionProbe(
-                inputObservedAt: inputObservedAt,
-                capture: capture
-            )
-            return
-        }
-        let probe = PostSubmissionProbe(
-            probeID: UUID().uuidString,
-            sourceWriteAttemptID: nil,
-            inputObservedAt: inputObservedAt,
-            processIdentifier: target.app.processIdentifier,
-            role: target.identity.role,
-            bundleIdentifier: target.app.bundleIdentifier,
-            fieldDescription: target.identity.fieldDescription,
-            preReturnObservation: observation,
-            preReturnAXErrors: capture.errors,
-            logicalBefore: "",
-            logicalPreReturn: logicalValue(observation, target: target)
-        )
-        if target.identity.role == (kAXTextFieldRole as String)
-            || target.identity.role == (kAXComboBoxRole as String) {
-            emitPostSubmissionTriggerIfCredible(
-                probe: probe,
-                postReturnObservation: nil,
-                postReturnErrors: []
-            )
-            return
-        }
-
-        Timer.scheduledTimer(
-            withTimeInterval: configuration.postInputCheckpointDelay,
-            repeats: false
-        ) { [weak self] _ in
-            guard let self else { return }
-            let postReturn = self.captureHeldTarget(
-                target,
-                reason: "standalone_post_return_submission_probe"
-            )
-            self.emitPostSubmissionTriggerIfCredible(
-                probe: probe,
-                postReturnObservation: postReturn.observation,
-                postReturnErrors: postReturn.errors
-            )
-        }
-    }
-
-    private func emitPostSubmissionTriggerIfCredible(
-        probe: PostSubmissionProbe?,
-        postReturnObservation: ActiveTapEditableObservation?,
-        postReturnErrors: [String]
-    ) {
-        guard let probe else { return }
-        let postValue = postReturnObservation.map { observation in
-            if unpopulatedSurfacePrompt(
-                bundleIdentifier: probe.bundleIdentifier,
-                fieldDescription: probe.fieldDescription,
-                value: observation.value,
-                placeholderValue: observation.placeholderValue,
-                valueRepresentedPlaceholder: observation.valueRepresentedPlaceholder
-            ) != nil {
-                return ""
-            }
-            return logicalEditableValue(
-                observation.value,
-                placeholderValue: observation.placeholderValue
-            )
-        }
-        let evidence = postSubmissionReadTriggerEvidence(
-            role: probe.role,
-            logicalBefore: probe.logicalBefore,
-            logicalPreReturn: probe.logicalPreReturn,
-            logicalPostReturn: postValue,
-            postReturnUnavailable: postReturnObservation == nil && !postReturnErrors.isEmpty
-        )
-        do {
-            _ = try rawWriter.write(RawPostSubmissionReadProbe(
-                recordID: probe.probeID,
-                observedAt: nowTimestamp(),
-                inputObservedAt: probe.inputObservedAt,
-                sourceWriteAttemptID: probe.sourceWriteAttemptID,
-                processIdentifier: probe.processIdentifier,
-                role: probe.role,
-                bundleIdentifier: probe.bundleIdentifier,
-                fieldDescription: probe.fieldDescription,
-                preReturnObservation: probe.preReturnObservation,
-                postReturnObservation: postReturnObservation,
-                preReturnAXErrors: probe.preReturnAXErrors,
-                postReturnAXErrors: postReturnErrors,
-                disposition: evidence ?? "not_credible_submission"
-            ))
-        } catch {
-            writeDiagnostic("could not persist post-submission probe: \(error)")
-            return
-        }
-        guard let evidence else { return }
-        postSubmissionObserver?(PostSubmissionReadTrigger(
-            attemptID: probe.sourceWriteAttemptID ?? probe.probeID,
-            inputObservedAt: probe.inputObservedAt,
-            processIdentifier: probe.processIdentifier,
-            evidence: evidence
-        ))
-    }
-
-    private func persistFailedPostSubmissionProbe(
-        inputObservedAt: String,
-        capture: TargetCapture
-    ) {
-        let target = capture.target
-        do {
-            _ = try rawWriter.write(RawPostSubmissionReadProbe(
-                recordID: UUID().uuidString,
-                observedAt: nowTimestamp(),
-                inputObservedAt: inputObservedAt,
-                sourceWriteAttemptID: nil,
-                processIdentifier: target?.app.processIdentifier,
-                role: target?.identity.role,
-                bundleIdentifier: target?.app.bundleIdentifier ?? capture.bundleIdentifier,
-                fieldDescription: target?.identity.fieldDescription,
-                preReturnObservation: capture.observation,
-                postReturnObservation: nil,
-                preReturnAXErrors: capture.errors,
-                postReturnAXErrors: [],
-                disposition: "pre_return_capture_failed"
-            ))
-        } catch {
-            writeDiagnostic("could not persist failed post-submission probe: \(error)")
-        }
-    }
-
-    private func logicalValue(
-        _ observation: ActiveTapEditableObservation,
-        target: HeldEditableTarget
-    ) -> String {
-        if unpopulatedSurfacePrompt(
-            bundleIdentifier: target.app.bundleIdentifier,
-            fieldDescription: target.identity.fieldDescription,
-            value: observation.value,
-            placeholderValue: observation.placeholderValue,
-            valueRepresentedPlaceholder: observation.valueRepresentedPlaceholder
-        ) != nil {
-            return ""
-        }
-        return logicalEditableValue(
-            observation.value,
-            placeholderValue: observation.placeholderValue
-        )
     }
 
     private func shouldFinalizeBeforeReturn(
@@ -1845,45 +1620,6 @@ private struct PendingActiveTapWrite {
     var firstCallbackDurationMilliseconds: Double?
     var maximumCallbackDurationMilliseconds: Double
     let tapTimeoutCountAtStart: UInt64
-}
-
-struct PostSubmissionReadTrigger {
-    let attemptID: String
-    let inputObservedAt: String
-    let processIdentifier: Int32
-    let evidence: String
-}
-
-private struct PostSubmissionProbe {
-    let probeID: String
-    let sourceWriteAttemptID: String?
-    let inputObservedAt: String
-    let processIdentifier: Int32
-    let role: String
-    let bundleIdentifier: String?
-    let fieldDescription: String?
-    let preReturnObservation: ActiveTapEditableObservation
-    let preReturnAXErrors: [String]
-    let logicalBefore: String
-    let logicalPreReturn: String
-}
-
-private struct RawPostSubmissionReadProbe: Encodable {
-    let schemaVersion = 1
-    let recordType = "post_submission_read_probe"
-    let recordID: String
-    let observedAt: String
-    let inputObservedAt: String
-    let sourceWriteAttemptID: String?
-    let processIdentifier: Int32?
-    let role: String?
-    let bundleIdentifier: String?
-    let fieldDescription: String?
-    let preReturnObservation: ActiveTapEditableObservation?
-    let postReturnObservation: ActiveTapEditableObservation?
-    let preReturnAXErrors: [String]
-    let postReturnAXErrors: [String]
-    let disposition: String
 }
 
 private struct CapturedReturnCheckpoint {

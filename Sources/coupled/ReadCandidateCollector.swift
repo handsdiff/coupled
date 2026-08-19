@@ -114,32 +114,6 @@ final class ReadCandidateCollector {
         }
     }
 
-    func observePostSubmission(_ trigger: PostSubmissionReadTrigger) {
-        guard captureScreenText, !configuration.isPaused() else { return }
-        // Let the application process Return before resolving the surface. The
-        // normal READ delay begins only after this observation, and capture
-        // still revalidates the visible surface at settlement and completion.
-        Timer.scheduledTimer(withTimeInterval: 0.1, repeats: false) { [weak self] _ in
-            guard let self,
-                  !self.configuration.isPaused(),
-                  let application = NSWorkspace.shared.frontmostApplication else { return }
-            let pointerPoint = CGEvent(source: nil)?.location
-            guard let window = primaryContentWindow(
-                ownedBy: application.processIdentifier,
-                near: pointerPoint
-            ) else { return }
-            let point = pointerPoint.flatMap { window.bounds.contains($0) ? $0 : nil }
-                ?? CGPoint(x: window.bounds.midX, y: window.bounds.midY)
-            guard let surface = self.eligibleSurface(window: window, at: point) else { return }
-            self.beginSurfaceTransitionInterval(
-                surface,
-                point: point,
-                trigger: "post_submission_\(trigger.evidence)",
-                replacementReason: "read_candidate_replaced_by_post_submission_surface"
-            )
-        }
-    }
-
     private func installEventTap() -> Bool {
         let types: [CGEventType] = [
             .mouseMoved,
