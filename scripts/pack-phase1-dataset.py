@@ -101,6 +101,7 @@ def require_compiled_dataset(
         "phase1-causal-v13",
         "phase1-causal-v14",
         "phase1-episode-causal-v1",
+        "phase1-episode-causal-v2",
     }:
         raise ValueError(
             "packer requires a supported causal or episode-causal conversion"
@@ -668,16 +669,28 @@ def main() -> int:
                     example.get("targetUnitType") != "closed_composition_episode"
                     or not isinstance(member_ids, list)
                     or not member_ids
-                    or any(value not in events_by_id for value in member_ids)
                 ):
                     raise ValueError(
                         f"example {example['exampleID']} has invalid episode lineage"
                     )
-                # The episode target is intentionally not required to equal one
-                # micro-WRITE. Paste payloads remain available in the unchanged
-                # member WRITE history and are verified by their original events.
-                for member_id in member_ids:
-                    member = events_by_id[member_id]
+                if source_manifest["conversionVersion"] == "phase1-episode-causal-v2":
+                    # v2 deliberately removes micro-WRITEs from model-facing
+                    # events. Their IDs remain immutable audit lineage on the
+                    # normalized episode event; resolved paste payloads live in
+                    # that event's historical projection.
+                    if target_event.get("memberWriteEventIDs") != member_ids:
+                        raise ValueError(
+                            f"example {example['exampleID']} has mismatched episode lineage"
+                        )
+                    lineage_events = [target_event]
+                else:
+                    if any(value not in events_by_id for value in member_ids):
+                        raise ValueError(
+                            f"example {example['exampleID']} has invalid episode lineage"
+                        )
+                    # v1 retained the original semantic micro-WRITEs.
+                    lineage_events = [events_by_id[value] for value in member_ids]
+                for member in lineage_events:
                     try:
                         payload = json.loads(member["serialized"])
                     except (KeyError, json.JSONDecodeError):

@@ -4,7 +4,7 @@ import Foundation
 public struct Phase1SemanticReducerConfiguration: Sendable {
     public let reducerVersion: String
 
-    public init(reducerVersion: String = "phase1-semantic-v7") {
+    public init(reducerVersion: String = "phase1-semantic-v8") {
         self.reducerVersion = reducerVersion
     }
 }
@@ -1328,7 +1328,7 @@ private func reduceWrite(
             usedObservation: selection.observation, observedEdit: resolvedEdit
         )
     let unresolvedPasteReason: String?
-    let authorship: ReducerAuthorship
+    let unnormalizedAuthorship: ReducerAuthorship
     if interpretedAuthorship.resolution != "resolved", hints.contains("paste") {
         unresolvedPasteReason = interpretedAuthorship.resolution
         let contextSegments = resolvedEdit.inserted.isEmpty
@@ -1337,7 +1337,7 @@ private func reduceWrite(
                 type: "unresolved_paste_transition",
                 content: resolvedEdit.inserted
             )]
-        authorship = ReducerAuthorship(
+        unnormalizedAuthorship = ReducerAuthorship(
             segments: contextSegments,
             resolution: "unresolved",
             resolvedCompletion: resolvedEdit.inserted,
@@ -1351,8 +1351,15 @@ private func reduceWrite(
         guard interpretedAuthorship.resolution == "resolved" else {
             return fail(interpretedAuthorship.resolution, rule: "paste_authorship_v1")
         }
-        authorship = interpretedAuthorship
+        unnormalizedAuthorship = interpretedAuthorship
     }
+    let authorship = normalizeObsidianListScaffolding(
+        unnormalizedAuthorship,
+        bundleIdentifier: stringValue(raw["bundleIdentifier"])
+            ?? stringValue((raw["targetIdentity"] as? [String: Any])?["bundleIdentifier"]),
+        inputHints: hints,
+        fallbackEdit: resolvedEdit
+    )
     guard !authorship.segments.contains(where: {
         $0.type == "authored_text" && $0.content.contains("\u{200B}")
     }) else {
@@ -1476,6 +1483,73 @@ private func reduceWrite(
     // JSONSerialization cannot encode Swift optionals hidden in Any.
     event = removeNullOptionals(event)
     return .success(event)
+}
+
+/// Obsidian exposes its internal list continuation markers as literal AX text:
+/// zero-width-space-only lines, an optional tab line, and the next bullet. The
+/// markers are a rendered editor transition, not characters authored by the
+/// person. Keep the exact BEFORE/AFTER transition in `observedNetEdit`, while
+/// removing only this proven scaffold from the semantic completion.
+///
+/// This deliberately applies only to resolved, typed Return bursts in
+/// Obsidian. A zero-width character anywhere else remains unresolved.
+private func normalizeObsidianListScaffolding(
+    _ authorship: ReducerAuthorship,
+    bundleIdentifier: String?,
+    inputHints: Set<String>,
+    fallbackEdit: TextEdit
+) -> ReducerAuthorship {
+    guard bundleIdentifier == "md.obsidian",
+          authorship.resolution == "resolved",
+          inputHints.contains("typed"), inputHints.contains("return"),
+          authorship.segments.contains(where: {
+              $0.type == "authored_text" && $0.content.contains("\u{200B}")
+          }) else { return authorship }
+
+    let scaffold = "\n\u{200B}(?:\\t)?\n\u{200B}\n-\n\u{200B} "
+    guard let expression = try? NSRegularExpression(pattern: scaffold) else {
+        return authorship
+    }
+    var changed = false
+    let segments = authorship.segments.map { segment -> WriteAuthorshipSegment in
+        guard segment.type == "authored_text" else { return segment }
+        let range = NSRange(segment.content.startIndex..., in: segment.content)
+        var content = expression.stringByReplacingMatches(
+            in: segment.content, range: range, withTemplate: "\n"
+        )
+        if content != segment.content { changed = true }
+        // A trailing generated bullet is represented by the replacement's
+        // final newline. It is not part of the completed thought.
+        if content.hasSuffix("\n"), segment.content.hasSuffix("\u{200B} ") {
+            content.removeLast()
+        }
+        // Starting a fresh Obsidian bullet also exposes one structural newline.
+        if content.hasPrefix("\n") { content.removeFirst() }
+        return WriteAuthorshipSegment(type: segment.type, content: content,
+                                      clipboardSnapshotID: segment.clipboardSnapshotID,
+                                      pasteCheckpointID: segment.pasteCheckpointID)
+    }
+    guard changed,
+          !segments.contains(where: {
+              $0.type == "authored_text" && $0.content.contains("\u{200B}")
+          }) else { return authorship }
+    let resolved = segments.map(\.content).joined()
+    let sourceEdit = authorship.semanticEdit ?? fallbackEdit
+    let semanticEdit = TextEdit(
+        operation: sourceEdit.operation,
+        characterOffset: sourceEdit.characterOffset,
+        removed: sourceEdit.removed,
+        inserted: resolved
+    )
+    return ReducerAuthorship(
+        segments: segments,
+        resolution: authorship.resolution,
+        resolvedCompletion: resolved,
+        stateContinuity: authorship.stateContinuity,
+        evidence: "obsidian_list_scaffold_normalized_v1",
+        evidenceObservationID: authorship.evidenceObservationID,
+        semanticEdit: semanticEdit
+    )
 }
 
 private func sensitiveWriteFieldCategory(_ raw: [String: Any]) -> String? {

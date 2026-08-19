@@ -739,6 +739,10 @@ def member_projection(
         "application": audit.get("appName"),
         "windowTitle": audit.get("windowTitle"),
         "sourceRecordID": record.get("recordID"),
+        "sourceRecordIDs": raw_entry.get("sourceRecordIDs", [record.get("recordID")]),
+        "terminalSourceRecordID": raw_entry.get(
+            "terminalSourceRecordID", record.get("recordID")
+        ),
         "rawPath": raw_entry["rawPath"],
         "rawLine": raw_entry["rawLine"],
         "targetIdentity": identity_projection(record),
@@ -764,6 +768,35 @@ def member_projection(
                 "usedObservationCapturedAt"
             ),
         },
+    }
+
+
+def composite_raw_entry(entries: list[dict[str, Any]]) -> dict[str, Any]:
+    """Project a reducer-composed semantic WRITE as one reviewable transition."""
+    if len(entries) == 1:
+        return {**entries[0], "sourceRecordIDs": [entries[0]["record"]["recordID"]]}
+    first = entries[0]["record"]
+    last = entries[-1]["record"]
+    record = dict(last)
+    record["recordID"] = first["recordID"]
+    record["before"] = first.get("before")
+    record["beforeAXErrors"] = first.get("beforeAXErrors", [])
+    record["conditioningState"] = first.get("conditioningState")
+    record["beganAt"] = first.get("beganAt")
+    record["inputHints"] = sorted({
+        hint
+        for entry in entries
+        for hint in entry["record"].get("inputHints", [])
+    })
+    record["inputEventCount"] = sum(
+        entry["record"].get("inputEventCount", 0) for entry in entries
+    )
+    return {
+        "record": record,
+        "rawPath": entries[0]["rawPath"],
+        "rawLine": entries[0]["rawLine"],
+        "sourceRecordIDs": [entry["record"]["recordID"] for entry in entries],
+        "terminalSourceRecordID": last["recordID"],
     }
 
 
@@ -1000,11 +1033,9 @@ def build_candidate(
         ordinal = ordinal_and_example[0] if ordinal_and_example else None
         example = ordinal_and_example[1] if ordinal_and_example else None
         lineage = event.get("sourceRecordIDs", [])
-        if len(lineage) != 1:
-            raise ReviewError(
-                f"v0 shadow review requires one raw attempt per member: {event_id}"
-            )
-        raw_entry = raw_records[lineage[0]]
+        if not lineage:
+            raise ReviewError(f"semantic WRITE has no raw lineage: {event_id}")
+        raw_entry = composite_raw_entry([raw_records[value] for value in lineage])
         semantic_event = semantic_events[event["sessionID"]].get(event_id)
         if semantic_event is None:
             raise ReviewError(f"missing bound semantic event: {event_id}")
@@ -1019,7 +1050,7 @@ def build_candidate(
     first_member = members[0]
     last_member = members[-1]
     first_raw = raw_records[first_member["sourceRecordID"]]["record"]
-    last_raw = raw_records[last_member["sourceRecordID"]]["record"]
+    last_raw = raw_records[last_member["terminalSourceRecordID"]]["record"]
     initial_observation = first_raw.get("before")
     if not isinstance(initial_observation, dict):
         raise ReviewError("first member has no complete BEFORE observation")

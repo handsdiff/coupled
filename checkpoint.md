@@ -157,7 +157,7 @@ rectangular screenshot.
 ## Implemented semantic reduction and causal compilation
 
 Current compiler: `phase1-causal-v14`
-Current reducer: `phase1-semantic-v7`
+Current reducer: `phase1-semantic-v8`
 
 The reducer consumes only `session.json` and `raw.jsonl`; deleting or corrupting
 `events.preview.jsonl` produces byte-identical finalized events. Event IDs are
@@ -904,11 +904,12 @@ comparable target-token NLL through the subscription interface.
 
 ### Before the next authoritative collection
 
-Treat `phase1-semantic-v7`, `phase1-causal-v14`, and the current three-second
-delays/crop configuration as the candidate baseline.
+Treat `phase1-semantic-v8`, `phase1-causal-v14`, the one-second READ delay,
+three-second WRITE delay, and ten-percent top/side/bottom crop configuration as
+the candidate baseline.
 
 1. Run normal work without changing collector rules mid-session.
-2. Reduce the raw session with `phase1-semantic-v7`; inspect finalized events and every non-event disposition.
+2. Reduce the raw session with `phase1-semantic-v8`; inspect finalized events and every non-event disposition.
 3. Compile the finalized reduction with `phase1-causal-v14`, supplying the raw session directory for hash and lineage verification.
 4. Manually sample the temporal trace against the actual work and record Phase 1's fidelity categories: missing events, temporal-ordering errors, incorrect content inclusion, authorship errors, write-boundary disagreement, destination ambiguity, and future leakage.
 5. Quantify reducer unresolved reasons plus target/context exclusions. Fix only recurrent material errors demonstrated by that trace; otherwise freeze the collector/reducer/compiler versions.
@@ -1339,3 +1340,72 @@ checkpoint storage; provider billing was still pending when the report closed.
 The next paid step is not another smoke. Inspect the changed episode targets,
 freeze the episode policy/version, then regenerate the full Phase 1
 score-before-update experiment over these closed composition units.
+
+## Episode-normalized training candidate (v2)
+
+The v1 prototype proved that several micro-WRITEs could reconstruct one useful
+target, but it left the original micro-WRITEs in model-facing history and
+treated 133 unreviewed eligible WRITEs as presumptively closed. That corpus is
+superseded. The current training-candidate architecture is:
+
+```text
+raw evidence
+→ phase1-semantic-v8 faithful READ/WRITE transitions
+→ phase1-episode-v2 closed composition episodes
+→ phase1-episode-causal-v2 examples
+→ phase1-token-pack-v7
+```
+
+Semantic micro-WRITEs now exist only as immutable lineage and audit evidence.
+Every model-facing historical WRITE is a closed episode, and every loss target
+is a closed, substantive episode. No source micro-WRITE is serialized into a
+model prompt. An unresolved or unclosed transition is conservatively omitted
+from the cognitive history rather than presented as if it were an independent
+thought.
+
+Every accepted episode must bind to candidate evidence proving:
+
+- continuously replayable editable state;
+- stable logical editable identity;
+- no novel causal READ between members;
+- no overlapping outside WRITE;
+- an observed closure boundary.
+
+An exact READ already present at episode onset may be crossed and is suppressed
+from the normalized stream; a novel READ partitions episodes. Submission,
+focus/destination change, or a verified post-settlement observation can close
+an episode. Session termination alone does not prove closure. Existing
+application prompts, intermediate cursor corrections, typos, and Obsidian's
+zero-width list scaffolding receive no content loss.
+
+Closed episodes with fewer than 40 trimmed authored characters or six authored
+words remain history-only. Paste actions do not bypass this substantiveness
+gate. Paste payloads remain resolved and provenance-marked in later history,
+while the current target contains the grounded paste action without payload
+loss.
+
+The six compatible sessions through `2026-08-19T20:14:13.255Z` contain 1,462
+semantic events and 478 source micro-WRITEs. Episode v2 partitions the WRITEs
+into:
+
+- 115 loss-bearing closed substantive episodes;
+- 101 closed history-only episodes;
+- 175 conservatively excluded/unclosed micro-WRITEs;
+- 35 multi-WRITE episodes, of which 33 receive loss;
+- 303 absorbed source micro-WRITEs.
+
+The normalized stream contains 216 model-facing WRITEs and suppresses one exact
+repeated READ inside a merged episode. The strict audit proves exact source
+WRITE coverage, unique episode ownership, raw lineage, causal context cutoffs,
+zero target-member leakage, zero micro-WRITEs in history, grounded paste
+masking, 40-character/six-word eligibility, and the two user-supplied blind
+reconstructions around `2026-08-19T12:43:16.708Z` and
+`2026-08-19T19:05:05.004Z`. A second construction was byte-identical.
+
+The complete 115-example pack passes the ordinary token audit. It contains
+4,780 loss-bearing target tokens and seven grounded paste actions; EOS is added
+once by the tokenizer-specific loader. A three-example local smoke subset
+(multi-WRITE, grounded paste, and longest ordinary episode) also passes packing,
+causal-shift, mask, paste-marker, and EOS checks. A new paid Qwen smoke remains
+the final mechanical gate before rerunning the three-arm experiment; the prior
+v1 paid smoke remains useful evidence about the harness but not this v2 corpus.

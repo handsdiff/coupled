@@ -1573,6 +1573,26 @@ ambiguousShortcutWrite["inputEvents"] = [
      "hint": "typed", "mutationCapable": true],
 ]
 
+let obsidianScaffoldBefore = "existing note"
+let obsidianScaffoldAfter = "existing note\nfirst thought\n\u{200B}\t\n\u{200B}\n-\n\u{200B} second thought\n\u{200B}\t\n\u{200B}\n-\n\u{200B} "
+var obsidianScaffoldWrite = schema15WriteFixture(
+    id: "obsidian-list-scaffold",
+    beforeValue: obsidianScaffoldBefore,
+    afterValue: obsidianScaffoldAfter,
+    beganAt: "2026-01-01T00:01:00.000Z",
+    terminalAt: "2026-01-01T00:01:03.000Z",
+    inputHints: ["typed", "return"]
+)
+obsidianScaffoldWrite["bundleIdentifier"] = "md.obsidian"
+var obsidianTarget = obsidianScaffoldWrite["targetIdentity"] as! [String: Any]
+obsidianTarget["bundleIdentifier"] = "md.obsidian"
+obsidianScaffoldWrite["targetIdentity"] = obsidianTarget
+var obsidianConditioning = obsidianScaffoldWrite["conditioningState"] as! [String: Any]
+var obsidianDestination = obsidianConditioning["destination"] as! [String: Any]
+obsidianDestination["bundleIdentifier"] = "md.obsidian"
+obsidianConditioning["destination"] = obsidianDestination
+obsidianScaffoldWrite["conditioningState"] = obsidianConditioning
+
 // Deliberately append the READ captured at t=3 before the WRITE which began at
 // t=2 but settled at t=4. Raw-order overlap would incorrectly emit only gamma.
 writeFixtureJSONL([
@@ -1602,6 +1622,7 @@ writeFixtureJSONL([
     autocompleteFour, autocompleteFive,
     cursorMoveOne, cursorMoveTwo,
     selectedReplacementWrite, unpopulatedPromptWrite, ambiguousShortcutWrite,
+    obsidianScaffoldWrite,
 ], to: motivatingInput.appendingPathComponent("raw.jsonl"))
 
 _ = try! reducer.reduce(
@@ -1736,6 +1757,19 @@ expect(
                 == "shortcut_changed_semantic_position_without_observation"
     },
     "unobserved shortcut between mutations remains unresolved"
+)
+let obsidianScaffoldEvent = motivatingEvents.first {
+    ($0["sourceRecordIDs"] as? [String]) == ["obsidian-list-scaffold"]
+}
+expect(
+    obsidianScaffoldEvent?["content"] as? String == "first thought\nsecond thought"
+        && obsidianScaffoldEvent?["resolvedCompletion"] as? String
+            == "first thought\nsecond thought"
+        && obsidianScaffoldEvent?["authorshipEvidence"] as? String
+            == "obsidian_list_scaffold_normalized_v1"
+        && (obsidianScaffoldEvent?["observedNetEdit"] as? [String: Any])?["content"]
+            as? String == "\nfirst thought\n\u{200B}\t\n\u{200B}\n-\n\u{200B} second thought\n\u{200B}\t\n\u{200B}\n-\n\u{200B} ",
+    "Obsidian list scaffolding remains observed evidence but not human-authored content"
 )
 expect(
     motivatingDispositions.contains {

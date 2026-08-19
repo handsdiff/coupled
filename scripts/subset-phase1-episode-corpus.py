@@ -40,7 +40,10 @@ def main() -> int:
     examples = rows(args.input / "examples.jsonl")
     selected = [
         row for row in examples
-        if row.get("episode", {}).get("adjudicationLabel") == args.adjudication_label
+        if (
+            row.get("episode", {}).get("label")
+            or row.get("episode", {}).get("adjudicationLabel")
+        ) == args.adjudication_label
     ]
     if len(selected) != 1:
         raise ValueError("adjudication label must select exactly one example")
@@ -74,6 +77,10 @@ def main() -> int:
     corpus_id = "episode_smoke_" + hashlib.sha256(
         json.dumps([x["exampleID"] for x in selected], sort_keys=True).encode()
     ).hexdigest()
+    artifact_names = ["events.jsonl", "context-blocks.jsonl", "examples.jsonl"]
+    for name in ("gaps.jsonl", "privacy-policy.json"):
+        if (args.output / name).exists():
+            artifact_names.append(name)
     manifest = {
         **source_manifest,
         "artifactType": "phase1_episode_corpus",
@@ -85,6 +92,9 @@ def main() -> int:
             "schemaVersion": 1,
             "policy": "named_multi_write_episode_plus_shortest_grounded_paste_plus_longest_ordinary",
             "exampleIDs": [x["exampleID"] for x in selected],
+        },
+        "artifactDigestsSHA256": {
+            name: digest(args.output / name) for name in artifact_names
         },
     }
     write_json(args.output / "corpus.json", manifest)
