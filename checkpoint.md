@@ -682,20 +682,20 @@ Ready from the current data and packer:
 - **Behavioral-cloning target:** current labels implement authored text, grounded paste markers, and EOS only.
 
 The substrate, local token/label validator, authenticated Tinker tokenizer
-comparison, LoRA training path, exact-generation audit, and checkpoint/reload
-path are mechanically validated. The missing layer is the prequential
-chronological-block and cross-model scoring harness, not basic remote training:
+comparison, LoRA training path, exact-generation audit, checkpoint/reload path,
+and provider-backed prequential chronological-block/cross-model scoring harness
+are now executed and audited:
 
 - **Learning objective:** `resolvedContent`, structured paste actions, and target lineage support either token NLL or a resolved-content semantic reward, but GRPO/RLOO and reward execution are not implemented.
 - **Checkpoint recency:** event chronology supports identical daily scoring, but immutable daily model lineage, replay, and `d`, `d-1`, `d-3`, `d-7` scoring are not implemented.
 - **Sliding window versus retrieval:** every causally available event remains addressable by ID, but BM25 query preprocessing, retrieval selection, and a frozen retrieval-plan artifact are not implemented.
 - **Direct versus private reasoning:** the same input and final target can be reused, but scratchpad generation, final-answer isolation, latency accounting, and scoring are not implemented.
-- **Continual Qwen versus closed ICL:** the Qwen LoRA path and provider-neutral prequential protocol rehearsal are mechanically implemented, but the paid personalized-Qwen block adapter and frontier-model adapter are not yet authorized or executed.
+- **Continual Qwen versus closed ICL:** the paid personalized-Qwen block adapter and subscription-backed frontier-model adapter have completed the initial 200-example developmental comparison. Larger prospective blocks remain necessary for a thesis-level conclusion.
 - **Open- and closed-model scaling:** packer v7 freezes one shared semantic context plan containing the retained block IDs, any exact oldest-block rewrite, exact query digest, full semantic-input digest, and paste-action instruction. Every arm must reconstruct this same plan; no model tokenizer may select extra history. The current authorized experiment uses the complete unredacted 200-example corpus.
 
 Every scored example must retain its individual pre-update NLL when exposed by the model interface. Block reports distinguish macro example-average NLL, in which every WRITE contributes equally, from micro target-token NLL, in which longer targets contribute more loss-bearing tokens. The completed Tinker overfit reports the latter as its headline aggregate; the two statistics must not be conflated.
 
-No ablation requires changing the collector schema. Deterministic multi-session assembly, shared context plans, fixed block lineage, and a no-network three-arm score-before-update rehearsal are implemented. The remaining foundational layer is provider-backed scoring, sampling, cumulative Tinker updates, and immutable actual latency/cost/checkpoint results. Daily boundaries, retrieval plans, and replay belong to later prospective or ablation work. Phase 2 will require a new conversion admitting displayed model proposals into the appropriate history; Phase 3 will additionally need stronger resource/world-state identity, which is not a Phase 1 collection blocker.
+No ablation requires changing the collector schema. Deterministic multi-session assembly, shared context plans, fixed block lineage, provider-backed scoring/sampling, cumulative Tinker updates, immutable checkpoint lineage, and actual usage/latency results are implemented. Daily boundaries, retrieval plans, and replay belong to later prospective or ablation work. Phase 2 will require a new conversion admitting displayed model proposals into the appropriate history; Phase 3 will additionally need stronger resource/world-state identity, which is not a Phase 1 collection blocker.
 
 ## Multi-session corpus assembly
 
@@ -755,6 +755,77 @@ corpus. Across the four blocks, 2,782 loss-bearing target-token occurrences
 become 7,298 presentations across updates. This is an exposure
 choice recorded for later comparison, not additional unique human data.
 
+## Initial Phase 1 developmental experiment
+
+The first real provider-backed comparison completed on August 18–19, 2026 from
+Git revision `04917014d19e896a538f4115b3b1e09ed12d1fc0`. It used the canonical
+unredacted 200-example corpus, four chronological blocks of 50, one shared 32K
+semantic context plan, and the frozen score-complete-block-before-update
+protocol. Frozen Qwen and subscription-backed `gpt-5.6-sol` remained unchanged.
+Personalized Qwen warm-started the previous rank-32 checkpoint and trained one
+deterministic cumulative epoch after each block with seed 17, batch size one,
+and Adam at `2e-4`.
+
+The subscription scorer stopped after 177 examples because a completed
+Responses result contained no visible output. An explicitly authorized
+structure-only retransmission showed a successful completed response with
+5,703 output tokens, 5,696 of them reasoning tokens, but an empty visible
+completion. Runner v2 therefore treats only an explicitly `completed`,
+error-free response with usage evidence as a valid empty prediction; incomplete
+or malformed empty responses still fail closed. The exact 177-score prefix was
+adopted rather than replayed, with its old implementation, old provider-plan
+hash, prefix count, and prefix digest retained in the final frontier manifest.
+The migration and negative cases are covered by the no-network runner checks.
+
+The superseding provider plan is
+`coupled-data/phase1-experiment-1-provider-plan-local-v8-empty-completion-resume.json`
+with SHA-256
+`cb55175d8bd5d0e54833a38f46867a5b2abde973b3b1842b2b03689501995105`.
+It is byte-identical to reviewed plan v7 outside implementation hashes. The
+frontier artifact contains all 200 predictions, including three legitimate
+empty completions. Its manifest and score hashes are respectively
+`6e9a2c3e8e425f4c30cea12cacb397563b453d6040a021f05c8c1b1090b62796`
+and
+`0a2ea25b350607c112589132c860c6cda690ca8c5550467f1b6be04e1aa28785`.
+
+Tinker completed 400 NLL calls, 400 samples, 500 optimizer steps, 14,587,208
+training positions, 24,415,028 prefill tokens, 120,232 observed sampled tokens,
+and eight checkpoint saves (sampler plus optimizer state after each block).
+Training NLL at the four update boundaries fell from `3.3493` to `2.5777`,
+`1.9438`, and `1.4444`. The frozen-price estimate before checkpoint storage is
+`$37.694867`, below the authorized `$40.00` ceiling; actual provider billing
+must be read from Tinker rather than inferred from this estimate. The Tinker
+manifest, score, and update hashes are respectively
+`bbba0c7ae35e2552ebfe30c474df8ad1c500c1c754151405a3e69da5899341a1`,
+`2c3322ae1de0b245d6b436a9bd165f870956c1a86c94b5610bc9371dccfd2815`,
+and
+`d164420cfa43a347b02a5aa029017c6c1adbe29b52e6d69c5f9f8c0517cb0a6b`.
+
+The offline three-arm audit passed all coverage, target, context-plan, causal
+ordering, checkpoint-lineage, and artifact-digest checks. The immutable results
+are in
+`coupled-data/phase1-experiment-1-results-v1-unredacted-20260818`;
+`experiment.json` hashes to
+`e6d2a9cd92beff26ee4bfc296faedca6b3b008ba8a2973c175a699023f79f867`
+and `comparisons.jsonl` hashes to
+`ee0e2144008b1c786e763998f1200e1a0f8efa51c0509c391b8500164772c3be`.
+
+Headline developmental results:
+
+- Frozen Qwen micro target-token NLL: `4.4824`; personalized prequential Qwen: `3.5778` over the same 2,782 unique scored target tokens.
+- Personalized Qwen saved `3,630.6` prequential bits versus frozen Qwen on future human WRITE tokens.
+- Block 1 correctly saved zero bits with no prior personal training. Blocks 2, 3, and 4 saved `1,099.5`, `1,350.6`, and `1,180.5` bits after 50, 100, and 150 preceding examples.
+- Future-block micro NLL changed from frozen/personalized `4.1270 → 3.1849`, `4.4580 → 3.1685`, and `5.2195 → 3.6549` on blocks 2–4.
+- `gpt-5.6-sol` exact-matched 21/200 targets (23 after surrounding-whitespace normalization) with mean character similarity `0.3408`.
+- Personalized Qwen exact-matched 4/200 targets (5 normalized) with mean character similarity `0.1661`; frozen Qwen exact-matched none and had mean similarity `0.0064`.
+- Personalized Qwen lowered micro NLL in every observed application stratum: ChatGPT `4.1421 → 3.6359` (61 examples), Code `4.8006 → 3.4111` (24), Chrome `4.8746 → 3.3914` (82), and Obsidian `4.6064 → 3.8134` (33). These strata are too small for separate application-level claims.
+
+This is a positive capacity and forward-generalization signal: weight updates on
+earlier personal actions reduced surprise on later actions. It is not yet a
+thesis conclusion. The corpus is small, cumulative replay gives early examples
+more presentations, examples are temporally correlated, and GPT lacks directly
+comparable target-token NLL through the subscription interface.
+
 ## Remaining requirements
 
 ### Before the next authoritative collection
@@ -802,30 +873,31 @@ than behavioral evidence.
 
 ## Next step
 
-With the prior mechanical provider charge audited at `$14.37`, retain that
-memorization result as a harness gate. The immediate next gate is a no-data-transfer
-provider preflight for the new 200-example, four-block corpus. It must calculate
-exact Tinker training/scoring positions and verify the subscription-backed
-LiteLLM route, pin
-model and project identities, and produce an immutable reviewed plan before any
-paid call. Evaluate the corpus prequentially rather than with a random or
-permanently held-out train/validation/test split. For each
-chronological block, use only the model trained through the preceding block to
-score every eligible example and preserve its pre-update loss and samples; only
-after the complete block has been scored may its examples enter the next model
-update. The initial implementation uses full cumulative eligible examples;
-replay begins only when that becomes impractical.
+Retain the prior `$14.37` memorization run as a harness gate and the completed
+200-example prequential experiment as the first developmental capacity result.
+Continue frozen-pipeline ordinary-work collection and append compatible sessions
+as prospective chronological blocks. Score each new block with the last frozen
+personalized checkpoint before updating it, so the learning curve extends
+without turning future data into a retrospective holdout.
 
-The initial capacity check runs frozen base Qwen3.5-9B, frozen
-`gpt-5.6-sol` at `xhigh` using ICL, and the current personalized Qwen3.5-9B over
-the same shared semantic context plan. Record every prediction and available
-per-example NLL, macro example-average and micro target-token aggregates, the
-chronological trace, latency, cost, and per-application results. Reduced-history,
-no-history, and broader ablation controls follow only after this three-condition
-result is interpretable. Any change to conversion, context construction, or
-training starts a new versioned lineage rather than retroactively turning
-already observed data into a prospective result. Run 8's memorization remains a
-mechanical result, not a behavioral one.
+The next measurement gates are approximately 300 and 600 eligible WRITEs. At
+300, rerun the complete pipeline as a replication/systems check. At 600, perform
+the first more meaningful comparison and add the inexpensive central context
+ablation on the same frozen substrate: current/reduced state versus the complete
+causal READ/WRITE stream. This begins separating the value of temporal context
+from the value of personal weight updates. If the forward NLL advantage remains,
+continue the scaling curve through roughly 1,000 and 3,000 examples before
+making stronger judgment-distillation claims. Keep subsequent chronological
+blocks prospective and report unique human targets separately from repeated
+training presentations.
+
+Before the next paid run, read actual Tinker billing for this experiment,
+freeze the next appended corpus and context plans, generate a new reviewed
+provider plan, and decide whether to retain cumulative replay or add a
+new-block-only training arm. Reduced-history, timestamp, context-length,
+retrieval, rank, and model-scale ablations remain downstream of this first
+replication. Any change to conversion, context construction, or training starts
+a new versioned lineage rather than modifying the completed result.
 
 The superseding unredacted provider plan calculates 14,587,208 cumulative Tinker
 training positions and a `$38.863580` Tinker projection including a `$1` checkpoint
@@ -853,8 +925,8 @@ tokens, of which 74 were reasoning tokens. The authenticated report is
 SHA-256 `448dcc399d4cc3dc58873deebbd1864607ce69616ecfd8ac083bd87a274e27df`.
 This proves the shared paste instruction is understood on one real example; it
 is a transport/serialization gate, not behavioral evidence. Complete-corpus
-scoring was subsequently authorized, including the restored Inkling material,
-but remains paused until the regenerated artifacts and real runners are reviewed.
+scoring was subsequently authorized and completed, including the restored
+Inkling material, as documented in the initial developmental experiment section.
 
 Provider-plan v3 closes the final execution-review gaps. It freezes the actual
 Qwen training contract in the reviewed artifact: rank-32 LoRA over attention,
@@ -871,10 +943,13 @@ cost-authorized plan rather than silently omitting prior spend. A no-network
 regression constructs all 600 synthetic arm scores, exercises safe resume plus
 in-flight/partial-update/revision/dependency rejection, passes the final
 three-arm audit, and proves the audit rejects a personalized checkpoint that has
-already seen its scored block. The frozen provider plan is
+already seen its scored block. The original frozen provider plan was
 `coupled-data/phase1-experiment-1-provider-plan-local-v7-unredacted-frozen-runner.json`
 with SHA-256
 `b70be648abfd744b1e6af51a2aa4e2d80bba0a0693cff24e5f1f68b41e23710a`.
+The completed execution supersedes it with plan v8 solely to add the
+provider-completed empty-prediction rule and exact interrupted-prefix migration;
+all non-implementation plan content remained identical.
 
 Keep the initial task content-only given causal history plus known destination,
 semantic cursor context, and clipboard state. Idle-triggered sampling,
