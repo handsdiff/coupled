@@ -1989,6 +1989,11 @@ v4 baseline at `http://127.0.0.1:8768/`. The default view shows the four new
 example identities, including the corrected replacement target; it also
 reports the one superseded v4 example.
 
+The user reviewed all four target deltas on August 20 and accepted them. Raw
+episode v6 is therefore the frozen dataset-construction baseline for the next
+ordinary-work collection and Phase 1 comparison. Later interpretation changes
+must use a new version and preserve v6 artifacts rather than rewriting them.
+
 ### Qwen mechanical smoke for raw episode v6
 
 A three-example private-project Tinker smoke exercised the corrected
