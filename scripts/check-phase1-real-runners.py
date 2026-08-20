@@ -16,6 +16,7 @@ from phase1_experiment import (
     ARM_FROZEN_FRONTIER,
     ARM_FROZEN_QWEN,
     ARM_PERSONALIZED_QWEN,
+    QWEN_GENERATION_CONTRACT,
     canonical_bytes,
     prospective_example_ids,
     semantic_model_input,
@@ -109,6 +110,11 @@ def main() -> int:
             plan["protocol"]["warmupExamples"] == 50
             and plan["protocol"]["providerScoredExamples"] == 150
             and plan["openai"]["operations"]["responseCalls"] == 150
+            and plan["protocol"]["qwenGenerationContract"]
+            == QWEN_GENERATION_CONTRACT
+            and plan["protocol"]["terminalBlockReceivesPostScoreUpdate"] is False
+            and len(plan["protocol"]["updates"]) == 3
+            and plan["tinker"]["operations"]["samplerCheckpointSaves"] == 3
         ):
             raise AssertionError("provider plan did not exclude warm-up scoring")
         cumulative = [
@@ -150,9 +156,11 @@ def main() -> int:
             def from_ints(*, tokens):
                 return tokens
 
+        observed_sampling_params = {}
+
         class SamplingParams:
-            def __init__(self, **_):
-                pass
+            def __init__(self, **values):
+                observed_sampling_params.update(values)
 
         class Tinker:
             pass
@@ -188,6 +196,13 @@ def main() -> int:
             None,
             tinker.Usage(),
         )
+        if not (
+            observed_sampling_params.get("temperature") == 0.6
+            and observed_sampling_params.get("seed") == 17
+            and timing_record.get("generationTemperature") == 0.6
+            and timing_record.get("generationSeed") == 17
+        ):
+            raise AssertionError("Qwen generation sampling contract changed")
         if not (
             timing_record["latencyInstrumentationVersion"]
             == "tinker-score-latency-v2-split-requests"
@@ -374,14 +389,19 @@ def main() -> int:
                         "fullSequenceTokenCount": len(row["inputIDs"]),
                         "modelInputTokenCount": row["modelInputTokenCount"],
                         "predictionTokenIDs": [],
+                        "generationTemperature": QWEN_GENERATION_CONTRACT[
+                            "temperature"
+                        ],
+                        "generationSeed": QWEN_GENERATION_CONTRACT["seed"],
                         })
-            updates.append({
-                "afterBlockID": block["blockID"],
-                "samplerCheckpointPath": f"tinker://fixture/block-{block_index + 1}",
-                "completedAt": f"2026-01-01T0{block_index + 1}:59:00Z",
-                "latencySeconds": 0.0,
-                "submittedPositions": 0,
-            })
+            if block_index < len(corpus["blocking"]["blocks"]) - 1:
+                updates.append({
+                    "afterBlockID": block["blockID"],
+                    "samplerCheckpointPath": f"tinker://fixture/block-{block_index + 1}",
+                    "completedAt": f"2026-01-01T0{block_index + 1}:59:00Z",
+                    "latencySeconds": 0.0,
+                    "submittedPositions": 0,
+                })
         write_jsonl(frontier_directory / "scores.jsonl", frontier_scores)
         write_jsonl(tinker_directory / "scores.jsonl", tinker_scores)
         write_jsonl(tinker_directory / "updates.jsonl", updates)
@@ -428,7 +448,7 @@ def main() -> int:
         audit = json.loads((audit_output / "experiment.json").read_text())
         if not (
             audit["status"] == "passed_developmental_not_thesis_conclusion"
-            and audit["auditVersion"] == "phase1-real-experiment-audit-v6"
+            and audit["auditVersion"] == "phase1-real-experiment-audit-v7"
             and audit["protocol"]["providerScoredExamples"] == 150
             and audit["protocol"]["warmupExamples"] == 50
             and audit["protocol"]["warmupProviderScored"] is False

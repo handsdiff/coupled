@@ -22,6 +22,7 @@ from typing import Any
 from phase1_experiment import (
     ARM_FROZEN_QWEN,
     ARM_PERSONALIZED_QWEN,
+    QWEN_GENERATION_CONTRACT,
     RUNNER_VERSION,
     TINKER_TRAINING_CONTRACT,
     canonical_bytes,
@@ -29,6 +30,7 @@ from phase1_experiment import (
     prospective_blocks,
     prospective_example_ids,
     target_text,
+    update_blocks,
     validate_inputs,
 )
 from phase1_tinker_overfit_contract import (
@@ -48,8 +50,8 @@ from phase1_training_contract import (
 )
 
 
-TINKER_RUNNER_VERSION = "phase1-tinker-prequential-v3"
-EXPECTED_PLAN_VERSION = "phase1-provider-plan-v6"
+TINKER_RUNNER_VERSION = "phase1-tinker-prequential-v4"
+EXPECTED_PLAN_VERSION = "phase1-provider-plan-v7"
 GENERATION_TOKEN_CEILING = 512
 EPOCHS_PER_UPDATE = 1
 
@@ -206,7 +208,11 @@ def validate_plan(
         == GENERATION_TOKEN_CEILING
         and plan.get("protocol", {}).get("scoreCompleteBlockBeforeUpdate") is True
         and plan.get("protocol", {}).get("personalizedUpdatePolicy")
-        == "warm_start_then_train_full_cumulative_corpus"
+        == "warm_start_then_train_full_cumulative_corpus_except_terminal_block"
+        and plan.get("protocol", {}).get("terminalBlockReceivesPostScoreUpdate")
+        is False
+        and plan.get("protocol", {}).get("qwenGenerationContract")
+        == QWEN_GENERATION_CONTRACT
         and tinker_plan.get("trainingContract") == TINKER_TRAINING_CONTRACT
         and Decimal(tinker_plan.get("hardExecutionCeilingUSD")) == maximum_usd
         and tinker_plan.get("projectedCostWithinHardCeiling") is True
@@ -373,8 +379,8 @@ def score_example(
         num_samples=1,
         sampling_params=tinker.SamplingParams(
             max_tokens=GENERATION_TOKEN_CEILING,
-            temperature=0.0,
-            seed=TINKER_TRAINING_CONTRACT["seed"],
+            temperature=QWEN_GENERATION_CONTRACT["temperature"],
+            seed=QWEN_GENERATION_CONTRACT["seed"],
             stop=[row["eosTokenID"]],
         ),
     ).result()
@@ -413,6 +419,8 @@ def score_example(
         "pasteActionCount": row["pasteActionCount"],
         "prediction": prediction,
         "predictionTokenIDs": observed,
+        "generationTemperature": QWEN_GENERATION_CONTRACT["temperature"],
+        "generationSeed": QWEN_GENERATION_CONTRACT["seed"],
         "stopReason": normalize_stop_reason(sequence.stop_reason),
         "exactMatch": prediction == expected,
         "normalizedExactMatch": prediction.strip() == expected.strip(),
@@ -544,6 +552,7 @@ def run() -> int:
                 "projectID": arguments.dedicated_private_project_id,
                 "model": BASE_MODEL,
                 "trainingContract": plan["tinker"]["trainingContract"],
+                "generationContract": plan["protocol"]["qwenGenerationContract"],
                 "epochsPerCumulativeUpdate": EPOCHS_PER_UPDATE,
             },
             "counts": {"completedScores": 0, "completedUpdates": 0},
@@ -577,7 +586,7 @@ def run() -> int:
     if observed_scores != expected_scores[: len(observed_scores)]:
         raise TrainingContractError("Tinker scores are not an ordered protocol prefix")
     expected_update_blocks = [
-        value["blockID"] for value in corpus["blocking"]["blocks"]
+        value["blockID"] for value in update_blocks(corpus["blocking"]["blocks"])
     ]
     if [value["afterBlockID"] for value in updates] != expected_update_blocks[: len(updates)]:
         raise TrainingContractError("Tinker updates are not an ordered block prefix")
@@ -687,6 +696,8 @@ def run() -> int:
                         flush=True,
                     )
 
+        if block_ordinal == len(corpus["blocking"]["blocks"]):
+            continue
         if len(updates) >= block_ordinal:
             continue
         expected_prefix = expected_scores[: 2 * sum(
@@ -794,7 +805,9 @@ def run() -> int:
             "samplerCheckpointPath": sampler_path,
             "optimizerStatePath": state_path,
             "checkpointTTLSeconds": training_contract["checkpointTTLSeconds"],
-            "trainingPolicy": "warm_start_then_train_full_cumulative_corpus",
+            "trainingPolicy": (
+                "warm_start_then_train_full_cumulative_corpus_except_terminal_block"
+            ),
             "epochsOverCumulativeCorpus": EPOCHS_PER_UPDATE,
             "cumulativeExampleCount": len(cumulative_ids),
             "cumulativeExampleIDsSHA256": hashlib.sha256(canonical_bytes(cumulative_ids)).hexdigest(),

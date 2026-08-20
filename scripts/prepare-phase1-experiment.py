@@ -10,15 +10,17 @@ from decimal import Decimal
 from pathlib import Path
 
 from phase1_experiment import (
+    QWEN_GENERATION_CONTRACT,
     TINKER_TRAINING_CONTRACT,
     prospective_blocks,
     prospective_example_ids,
+    update_blocks,
     validate_inputs,
 )
 from phase1_training_contract import TrainingContractError, sha256
 
 
-PLAN_VERSION = "phase1-provider-plan-v6"
+PLAN_VERSION = "phase1-provider-plan-v7"
 QWEN_MODEL = "Qwen/Qwen3.5-9B-Base"
 OPENAI_MODEL = "gpt-5.6-sol"
 OPENAI_REASONING_EFFORT = "xhigh"
@@ -97,8 +99,9 @@ def main() -> int:
     total_training_positions = 0
     total_loss_presentations = 0
     presentation_counts = {example["exampleID"]: 0 for example in examples}
+    training_blocks = update_blocks(corpus["blocking"]["blocks"])
     for ordinal, (block, rows) in enumerate(
-        zip(corpus["blocking"]["blocks"], block_rows, strict=True), 1
+        zip(training_blocks, block_rows[: len(training_blocks)], strict=True), 1
     ):
         cumulative.extend(rows)
         positions = arguments.epochs_per_update * sum(
@@ -294,11 +297,15 @@ def main() -> int:
             "qwenGenerationTokenCeilingPerExample": (
                 arguments.qwen_generation_token_ceiling
             ),
+            "qwenGenerationContract": QWEN_GENERATION_CONTRACT,
             "openAIMaxOutputTokensPerExampleIncludingReasoning": (
                 arguments.openai_max_output_tokens
             ),
             "scoreCompleteBlockBeforeUpdate": True,
-            "personalizedUpdatePolicy": "warm_start_then_train_full_cumulative_corpus",
+            "personalizedUpdatePolicy": (
+                "warm_start_then_train_full_cumulative_corpus_except_terminal_block"
+            ),
+            "terminalBlockReceivesPostScoreUpdate": False,
             "updates": update_plans,
             "finalPerExamplePresentationCounts": presentation_counts,
         },
@@ -320,8 +327,8 @@ def main() -> int:
                 "maximumSampledTokens": tinker_sample_ceiling,
                 "trainingSubmittedPositions": total_training_positions,
                 "lossBearingTokenPresentations": total_loss_presentations,
-                "samplerCheckpointSaves": len(block_rows),
-                "optimizerStateCheckpointSaves": len(block_rows),
+                "samplerCheckpointSaves": len(update_plans),
+                "optimizerStateCheckpointSaves": len(update_plans),
             },
             "projectedCostUSD": {
                 **{key: decimal_string(value) for key, value in tinker_cost.items()},

@@ -18,9 +18,11 @@ from phase1_experiment import (
     ARM_FROZEN_FRONTIER,
     ARM_FROZEN_QWEN,
     ARM_PERSONALIZED_QWEN,
+    QWEN_GENERATION_CONTRACT,
     canonical_bytes,
     load_jsonl,
     target_text,
+    update_blocks,
     validate_inputs,
     write_jsonl,
 )
@@ -40,7 +42,7 @@ from phase1_cost_latency import (
 from phase1_training_contract import TrainingContractError, sha256
 
 
-AUDIT_VERSION = "phase1-real-experiment-audit-v6"
+AUDIT_VERSION = "phase1-real-experiment-audit-v7"
 
 
 def target_profile(example: dict[str, Any]) -> dict[str, Any]:
@@ -185,6 +187,12 @@ def main() -> int:
             example_id
         ]["semanticModelInputSHA256"]:
             raise TrainingContractError("frontier score used a different context plan")
+        if arm in {ARM_FROZEN_QWEN, ARM_PERSONALIZED_QWEN} and not (
+            row.get("generationTemperature")
+            == QWEN_GENERATION_CONTRACT["temperature"]
+            and row.get("generationSeed") == QWEN_GENERATION_CONTRACT["seed"]
+        ):
+            raise TrainingContractError("Qwen generation contract differs")
         by_arm[arm][example_id] = row
     for arm in (ARM_FROZEN_QWEN, ARM_FROZEN_FRONTIER, ARM_PERSONALIZED_QWEN):
         if set(by_arm[arm]) != scored_example_id_set:
@@ -203,10 +211,10 @@ def main() -> int:
     }
 
     update_by_block = {row["afterBlockID"]: row for row in updates}
-    if list(update_by_block) != [row["blockID"] for row in blocks]:
+    training_blocks = update_blocks(blocks)
+    if list(update_by_block) != [row["blockID"] for row in training_blocks]:
         raise TrainingContractError("update blocks differ from frozen protocol")
     for ordinal, block in enumerate(blocks):
-        update = update_by_block[block["blockID"]]
         scored_block_ids = [
             example_id for example_id in block["exampleIDs"]
             if example_id in scored_example_id_set
@@ -216,7 +224,8 @@ def main() -> int:
             for arm in (ARM_FROZEN_QWEN, ARM_FROZEN_FRONTIER, ARM_PERSONALIZED_QWEN)
             for example_id in scored_block_ids
         ]
-        if score_times and max(score_times) >= update["completedAt"]:
+        update = update_by_block.get(block["blockID"])
+        if update is not None and score_times and max(score_times) >= update["completedAt"]:
             raise TrainingContractError("block update preceded a score")
         expected_checkpoint = updates[ordinal - 1]["samplerCheckpointPath"] if ordinal else None
         for example_id in scored_block_ids:
@@ -471,7 +480,11 @@ def main() -> int:
                 ),
                 "scoreCompleteBlockBeforeUpdate": True,
                 "frontierHasComparableTokenNLL": False,
-                "personalizedUpdatePolicy": "warm_start_then_train_full_cumulative_corpus",
+                "personalizedUpdatePolicy": (
+                    "warm_start_then_train_full_cumulative_corpus_except_terminal_block"
+                ),
+                "terminalBlockReceivesPostScoreUpdate": False,
+                "qwenGenerationContract": QWEN_GENERATION_CONTRACT,
             },
             "generatedCompletionMetricContract": {
                 "version": METRIC_CONTRACT_VERSION,

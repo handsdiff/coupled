@@ -22,12 +22,16 @@ from phase1_training_contract import (
 )
 
 
-RUNNER_VERSION = "phase1-prequential-v2"
+RUNNER_VERSION = "phase1-prequential-v3"
 ARM_FROZEN_QWEN = "frozen_qwen3.5_9b_base"
 ARM_FROZEN_FRONTIER = "frozen_gpt_5.6_sol_xhigh"
 ARM_PERSONALIZED_QWEN = "personalized_qwen3.5_9b_base"
 ARMS = (ARM_FROZEN_QWEN, ARM_FROZEN_FRONTIER, ARM_PERSONALIZED_QWEN)
 PASTE_MARKER = "<|paste|>"
+QWEN_GENERATION_CONTRACT = {
+    "temperature": 0.6,
+    "seed": 17,
+}
 
 
 def prospective_blocks(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -46,6 +50,20 @@ def prospective_example_ids(blocks: list[dict[str, Any]]) -> list[str]:
         for block in prospective_blocks(blocks)
         for example_id in block["exampleIDs"]
     ]
+
+
+def update_blocks(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return blocks followed by a useful personalized checkpoint.
+
+    The terminal block is scored but never trained: no later block consumes
+    that checkpoint, so the update would add cost without experimental value.
+    """
+
+    if len(blocks) < 2:
+        raise TrainingContractError(
+            "prequential training requires one warm-up and one terminal scored block"
+        )
+    return blocks[:-1]
 TINKER_TRAINING_CONTRACT = {
     "algorithm": "lora",
     "rank": 32,
@@ -310,6 +328,7 @@ def run_mock_experiment(
     presentations = {example["exampleID"]: 0 for example in examples}
 
     evaluation_block_ids = {block["blockID"] for block in prospective_blocks(blocks)}
+    update_block_ids = {block["blockID"] for block in update_blocks(blocks)}
     for block in blocks:
         block_id = block["blockID"]
         block_ids = block["exampleIDs"]
@@ -351,6 +370,8 @@ def run_mock_experiment(
         if block_id in evaluation_block_ids and not set(block_ids).issubset(scored_personalized):
             raise AssertionError("personalized update attempted before complete block scoring")
         cumulative_ids.extend(block_ids)
+        if block_id not in update_block_ids:
+            continue
         cumulative_rows = [packed_by_id[value] for value in cumulative_ids]
         update = backend.update(
             current_checkpoint, cumulative_rows, len(updates) + 1, epochs_per_update
@@ -419,7 +440,11 @@ def run_mock_experiment(
                     block["blockID"] for block in prospective_blocks(blocks)
                 ],
                 "scoreCompleteBlockBeforeUpdate": True,
-                "personalizedUpdatePolicy": "warm_start_then_train_full_cumulative_corpus",
+                "personalizedUpdatePolicy": (
+                    "warm_start_then_train_full_cumulative_corpus_except_terminal_block"
+                ),
+                "terminalBlockReceivesPostScoreUpdate": False,
+                "qwenGenerationContract": QWEN_GENERATION_CONTRACT,
                 "epochsPerUpdate": epochs_per_update,
                 "frozenArmsNeverUpdate": True,
                 "contextPlanSharedAcrossArms": True,
@@ -462,6 +487,13 @@ def audit_mock_experiment(
         manifest.get("runnerVersion") == RUNNER_VERSION
         and manifest.get("status") == "passed_mock_only_not_scientific_evidence"
         and manifest.get("backend") == DeterministicMockBackend.name
+        and manifest.get("protocol", {}).get("qwenGenerationContract")
+        == QWEN_GENERATION_CONTRACT
+        and manifest.get("protocol", {}).get(
+            "terminalBlockReceivesPostScoreUpdate"
+        ) is False
+        and manifest.get("protocol", {}).get("personalizedUpdatePolicy")
+        == "warm_start_then_train_full_cumulative_corpus_except_terminal_block"
     ):
         raise TrainingContractError("not a supported passing mock experiment")
     for name, expected in manifest.get("artifactDigestsSHA256", {}).items():
@@ -511,7 +543,9 @@ def audit_mock_experiment(
     presentations = {value["exampleID"]: 0 for value in examples}
     parent: str | None = None
     epochs = manifest["protocol"]["epochsPerUpdate"]
-    for block, update in zip(corpus["blocking"]["blocks"], updates, strict=True):
+    all_blocks = corpus["blocking"]["blocks"]
+    training_blocks = update_blocks(all_blocks)
+    for block, update in zip(training_blocks, updates, strict=True):
         cumulative_ids.extend(block["exampleIDs"])
         if not (
             update.get("afterBlockID") == block["blockID"]
@@ -530,9 +564,8 @@ def audit_mock_experiment(
             raise TrainingContractError("update has no checkpoint")
         checkpoint_after_block[block["blockID"]] = checkpoint
         parent = checkpoint
-    if len(updates) != len(corpus["blocking"]["blocks"]):
-        raise TrainingContractError("update count differs from block count")
-    all_blocks = corpus["blocking"]["blocks"]
+    if len(updates) != len(training_blocks):
+        raise TrainingContractError("update count differs from nonterminal block count")
     prior_checkpoint: str | None = checkpoint_after_block[all_blocks[0]["blockID"]]
     for block in prospective_blocks(all_blocks):
         personalized = [
@@ -541,7 +574,8 @@ def audit_mock_experiment(
         ]
         if any(row.get("checkpointID") != prior_checkpoint for row in personalized):
             raise TrainingContractError("personalized block used the wrong prior checkpoint")
-        prior_checkpoint = checkpoint_after_block[block["blockID"]]
+        if block["blockID"] in checkpoint_after_block:
+            prior_checkpoint = checkpoint_after_block[block["blockID"]]
     if manifest.get("finalPerExamplePresentations") != presentations:
         raise TrainingContractError("final presentation accounting disagrees")
     if manifest.get("counts", {}).get("scores") != len(scores):

@@ -39,7 +39,7 @@ from phase1_training_contract import (
 
 
 FRONTIER_RUNNER_VERSION = "phase1-frontier-arm-v3"
-EXPECTED_PLAN_VERSION = "phase1-provider-plan-v6"
+EXPECTED_PLAN_VERSION = "phase1-provider-plan-v7"
 
 
 def iso8601() -> str:

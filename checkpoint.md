@@ -924,7 +924,7 @@ than behavioral evidence.
 1. Freeze the canonical 224-example raw-authoritative closed-episode corpus and shared 32K semantic context plans from the seven audited source sessions. The first 50 examples are training-only warm-up; the remaining 174 are prospectively scored within this developmental rerun.
 2. Preflight the exact Tinker and subscription-backed LiteLLM Responses operations, model identities, decoding, projected token use, privacy boundaries, and hard cost ceilings without transmitting personal data.
 3. After separate authorization, score each block with frozen base Qwen, frozen `gpt-5.6-sol` at `xhigh`, and the current personalized checkpoint using the same context plan.
-4. Train the personalized Qwen only after complete block scoring, save sampler and optimizer state, and use each result only for the following block.
+4. Train the personalized Qwen only after complete block scoring, save sampler and optimizer state, and use each result only for the following block. Do not train after the terminal block because no later score consumes that checkpoint.
 5. Record individual predictions and available NLLs plus macro, micro, chronological, aggregate, cost, latency, exposure, and per-application results before considering the later prospective continual experiment.
 
 ### Before live prediction
@@ -2057,11 +2057,14 @@ packed-examples.jsonl 7ea374de1d69762c843fb9fb1a13b0b7613a73282fd2f3bd01f96ea495
 context-plans.jsonl   5bdc16d211dd08ae5cb30ca081cd679bbd19dcb242541d801964b44f906b0095
 ```
 
-The no-network mock at
-`coupled-data/phase1-raw-episode-mock-v6-v10-canonical-20260820` produced 522
-scores, five cumulative updates, and 23,889 loss-bearing-token presentations.
+The revised no-network mock at
+`coupled-data/phase1-raw-episode-mock-v6-v10-terminal-score-r2-20260820`
+produced 522 scores, four cumulative updates, and 16,697 loss-bearing-token
+presentations. The terminal 24-example block is scored but receives no
+post-score update because no later evaluation uses that checkpoint. Qwen
+generation is frozen at temperature `0.6` and seed `17`.
 Its manifest SHA-256 is
-`47fdd5e5449032b2cf50f0ee29ca31ad944da1e251ac50a09dbaae65106df73b`.
+`80deafb9140d9b3de98aa5291ac2068bc85833fc577fe8a9fed1f5fb88046436`.
 
 The run captures the already implemented exact, surrounding-whitespace exact,
 correct-prefix, macro/micro character-edit-similarity, and paste-action metrics,
@@ -2075,16 +2078,17 @@ it is not hashed into the provider plan and does not replace the current
 metrics. Paired pre-update NLL and bits saved remain the primary controlled
 Qwen personalization measure.
 
-Provider plan v6 currently remains deliberately blocked. Five cumulative
-updates and 174 two-arm Qwen scores project `$50.002718` in Tinker operations:
-`$33.590142` training, `$15.057115` prefill, `$0.355461` maximum sampling, and
-`$1.00` checkpoint reserve. This exceeds the previously reviewed `$40.00`
-ceiling, so the plan cannot be executed. The blocked plan is
-`coupled-data/phase1-raw-episode-provider-plan-v6-v10-blocked-40usd-r2-20260820.json`,
+Provider plan v7 incorporates the user-authorized `$60.00` ceiling. Four
+cumulative updates and 174 two-arm Qwen scores project `$39.485060` in Tinker
+operations: `$23.072484` training, `$15.057115` prefill, `$0.355461` maximum
+sampling, and `$1.00` checkpoint reserve. The plan is executable under the
+reviewed ceiling. It is
+`coupled-data/phase1-raw-episode-provider-plan-v7-v6-v10-60usd-r2-20260820.json`,
 SHA-256
-`50a18a872cbf373bfbe99cdf77f1d0d2be4711adb15e9c45c361ad243dd0d6a0`.
-The earlier v5 plan is superseded because it incorrectly made the optional
-holistic rubric an execution prerequisite.
+`5345d4daddb872c1b421c6802bc74b6670ebdab4e74c0259c69716937b50ab49`.
+The earlier v5 and v6 plans are superseded: v5 incorrectly made the optional
+holistic rubric an execution prerequisite, while v6 included an unused
+post-terminal update.
 No credentials, provider call, personal-data transfer, or paid operation was
 used during this preflight. A newly reviewed ceiling requires a freshly hashed
 provider plan; the runner requires the command-line maximum to match it
