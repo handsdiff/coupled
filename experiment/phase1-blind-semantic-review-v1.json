@@ -1,6 +1,7 @@
 {
   "schemaVersion": 1,
   "rubricVersion": "phase1-blind-semantic-review-v1",
+  "status": "optional_draft_not_an_experiment_execution_prerequisite",
   "purpose": "Judge whether a generated completion captures the same closed substantive thought as the human target, independently of literal character overlap.",
   "evaluationUnit": "one model prediction for one prospectively scored closed-composition episode",
   "labels": [
@@ -65,5 +66,5 @@
     "frontierQualification": "The subscription-backed frontier interface exposes no comparable target likelihood, so semantic review and generated-completion metrics are cross-model while NLL is Qwen-only."
   },
   "pastePolicy": "A correctly predicted paste action is the literal <|paste|> marker; reproducing the clipboard payload instead is not equivalent under this experiment contract.",
-  "qualification": "This is a developmental corpus that informed the episode policy. The rubric measures completion usefulness on that frozen trace and does not convert it into prospective thesis evidence."
+  "qualification": "This optional draft may be applied after prediction capture. It is not hashed into the provider plan, is not an execution gate, and does not replace the run's implemented exact, prefix, edit-similarity, and paste metrics."
 }

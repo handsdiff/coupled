@@ -49,7 +49,7 @@ from phase1_training_contract import (
 
 
 TINKER_RUNNER_VERSION = "phase1-tinker-prequential-v3"
-EXPECTED_PLAN_VERSION = "phase1-provider-plan-v5"
+EXPECTED_PLAN_VERSION = "phase1-provider-plan-v6"
 GENERATION_TOKEN_CEILING = 512
 EPOCHS_PER_UPDATE = 1
 
@@ -198,16 +198,6 @@ def validate_plan(
     for key, value in expected.items():
         if source.get(key) != value:
             raise TrainingContractError(f"provider plan source changed: {key}")
-    rubric = plan.get("evaluation", {}).get("semanticReview", {})
-    rubric_path = project / "experiment/phase1-blind-semantic-review-v1.json"
-    if not (
-        rubric.get("rubricVersion") == "phase1-blind-semantic-review-v1"
-        and rubric.get("relativePath")
-        == "experiment/phase1-blind-semantic-review-v1.json"
-        and rubric.get("sha256") == sha256(rubric_path)
-        and rubric.get("blindUntilJudgmentsFrozen") is True
-    ):
-        raise TrainingContractError("provider plan semantic review rubric differs")
     tinker_plan = plan.get("tinker", {})
     if not (
         tinker_plan.get("projectID") == project_id

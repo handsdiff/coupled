@@ -40,7 +40,7 @@ from phase1_cost_latency import (
 from phase1_training_contract import TrainingContractError, sha256
 
 
-AUDIT_VERSION = "phase1-real-experiment-audit-v7"
+AUDIT_VERSION = "phase1-real-experiment-audit-v6"
 
 
 def target_profile(example: dict[str, Any]) -> dict[str, Any]:
@@ -132,7 +132,6 @@ def main() -> int:
     tinker_scores = load_jsonl(tinker_path / "scores.jsonl")
     updates = load_jsonl(tinker_path / "updates.jsonl")
     provider_plan = None
-    semantic_review_contract = None
     if provider_plan_path is not None:
         provider_plan = json.loads(provider_plan_path.read_text())
         plan_digest = sha256(provider_plan_path)
@@ -142,24 +141,6 @@ def main() -> int:
             == plan_digest
         ):
             raise TrainingContractError("provider plan lineage differs")
-        semantic_review_contract = provider_plan.get("evaluation", {}).get(
-            "semanticReview"
-        )
-        project = Path(__file__).resolve().parent.parent
-        expected_rubric_path = Path(
-            "experiment/phase1-blind-semantic-review-v1.json"
-        )
-        if not (
-            isinstance(semantic_review_contract, dict)
-            and semantic_review_contract.get("rubricVersion")
-            == "phase1-blind-semantic-review-v1"
-            and semantic_review_contract.get("relativePath")
-            == str(expected_rubric_path)
-            and semantic_review_contract.get("sha256")
-            == sha256(project / expected_rubric_path)
-            and semantic_review_contract.get("blindUntilJudgmentsFrozen") is True
-        ):
-            raise TrainingContractError("provider plan semantic review rubric differs")
     if (
         arguments.verified_tinker_charge_usd is not None
         and arguments.verified_tinker_charge_usd < 0
@@ -491,7 +472,6 @@ def main() -> int:
                 "scoreCompleteBlockBeforeUpdate": True,
                 "frontierHasComparableTokenNLL": False,
                 "personalizedUpdatePolicy": "warm_start_then_train_full_cumulative_corpus",
-                "semanticReview": semantic_review_contract,
             },
             "generatedCompletionMetricContract": {
                 "version": METRIC_CONTRACT_VERSION,
@@ -513,16 +493,13 @@ def main() -> int:
                     "mixed_authored_and_paste",
                     "paste_only",
                 ],
-                "secondaryCrossModelMetrics": [
+                "primaryCrossModelMetrics": [
                     "exact_match",
                     "surrounding_whitespace_normalized_exact_match",
                     "correct_prefix",
                     "macro_and_micro_normalized_levenshtein_similarity",
                     "paste_action_precision_and_recall",
                 ],
-                "primaryCrossModelMetric": (
-                    "blind_human_usable_and_usable_or_directionally_correct_rates"
-                ),
                 "personalizationPrimaryMetric": "paired_prequential_target_token_nll",
             },
             "costLatencyReportVersion": COST_LATENCY_VERSION,

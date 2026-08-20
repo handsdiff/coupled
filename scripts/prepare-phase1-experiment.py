@@ -18,7 +18,7 @@ from phase1_experiment import (
 from phase1_training_contract import TrainingContractError, sha256
 
 
-PLAN_VERSION = "phase1-provider-plan-v5"
+PLAN_VERSION = "phase1-provider-plan-v6"
 QWEN_MODEL = "Qwen/Qwen3.5-9B-Base"
 OPENAI_MODEL = "gpt-5.6-sol"
 OPENAI_REASONING_EFFORT = "xhigh"
@@ -31,10 +31,6 @@ OPENAI_INPUT_PER_MILLION = Decimal("5.00")
 OPENAI_OUTPUT_PER_MILLION = Decimal("30.00")
 CHECKPOINT_RESERVE = Decimal("1.00")
 DEFAULT_HARD_EXECUTION_CEILING = Decimal("40.00")
-SEMANTIC_RUBRIC_RELATIVE_PATH = Path(
-    "experiment/phase1-blind-semantic-review-v1.json"
-)
-SEMANTIC_RUBRIC_VERSION = "phase1-blind-semantic-review-v1"
 
 
 def money(tokens: int, price: Decimal) -> Decimal:
@@ -243,10 +239,6 @@ def main() -> int:
         })
 
     project_directory = Path(__file__).resolve().parent.parent
-    rubric_path = project_directory / SEMANTIC_RUBRIC_RELATIVE_PATH
-    semantic_rubric = json.loads(rubric_path.read_text(encoding="utf-8"))
-    if semantic_rubric.get("rubricVersion") != SEMANTIC_RUBRIC_VERSION:
-        raise TrainingContractError("semantic review rubric version changed")
     implementation_paths = [
         Path(__file__).resolve(),
         project_directory / "scripts/phase1_experiment.py",
@@ -259,7 +251,6 @@ def main() -> int:
         project_directory / "scripts/audit-phase1-real-experiment.py",
         project_directory / "scripts/tinker-requirements.txt",
         project_directory / "scripts/litellm-subscription-requirements.txt",
-        rubric_path,
     ]
     for path in implementation_paths:
         if not path.is_file():
@@ -310,20 +301,6 @@ def main() -> int:
             "personalizedUpdatePolicy": "warm_start_then_train_full_cumulative_corpus",
             "updates": update_plans,
             "finalPerExamplePresentationCounts": presentation_counts,
-        },
-        "evaluation": {
-            "semanticReview": {
-                "rubricVersion": SEMANTIC_RUBRIC_VERSION,
-                "relativePath": str(SEMANTIC_RUBRIC_RELATIVE_PATH),
-                "sha256": sha256(rubric_path),
-                "blindUntilJudgmentsFrozen": True,
-                "headlineAggregates": semantic_rubric["headlineAggregates"],
-            },
-            "primaryPersonalizationMetric": (
-                "paired_pre_update_target_nll_and_bits_saved_"
-                "personalized_qwen_versus_frozen_qwen"
-            ),
-            "automaticGeneratedCompletionMetricsAreSecondary": True,
         },
         "tinker": {
             "projectID": arguments.tinker_project_id,

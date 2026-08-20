@@ -2063,23 +2063,28 @@ scores, five cumulative updates, and 23,889 loss-bearing-token presentations.
 Its manifest SHA-256 is
 `47fdd5e5449032b2cf50f0ee29ca31ad944da1e251ac50a09dbaae65106df73b`.
 
-Generated predictions will be reviewed under the frozen blind rubric
-`experiment/phase1-blind-semantic-review-v1.json`, SHA-256
-`8ad7e4115bef5f5480818a1ef4ffee3cf9d21b8dbc2a6c1508c69d1c0be27687`.
-Model identity, likelihood, automatic similarity, cost, and latency remain
-hidden until every judgment is frozen. The headline cross-model semantic
-measures are usable rate and usable-or-directionally-correct rate; automatic
-string metrics remain secondary. Paired pre-update NLL and bits saved remain
-the primary Qwen personalization measure.
+The run captures the already implemented exact, surrounding-whitespace exact,
+correct-prefix, macro/micro character-edit-similarity, and paste-action metrics,
+along with every generated prediction, exact model-visible context, latency,
+and cost observation. Holistic evaluation will be established after capture
+from those preserved artifacts and is not a provider execution prerequisite.
+`experiment/phase1-blind-semantic-review-v1.json` remains an optional draft,
+SHA-256
+`ffc6f22f7e24820cd1a33ba01ab9e525f7f36566db8cfbb09e26416d6fdf450f`;
+it is not hashed into the provider plan and does not replace the current
+metrics. Paired pre-update NLL and bits saved remain the primary controlled
+Qwen personalization measure.
 
-Provider plan v5 currently remains deliberately blocked. Five cumulative
+Provider plan v6 currently remains deliberately blocked. Five cumulative
 updates and 174 two-arm Qwen scores project `$50.002718` in Tinker operations:
 `$33.590142` training, `$15.057115` prefill, `$0.355461` maximum sampling, and
 `$1.00` checkpoint reserve. This exceeds the previously reviewed `$40.00`
 ceiling, so the plan cannot be executed. The blocked plan is
-`coupled-data/phase1-raw-episode-provider-plan-v6-v10-blocked-40usd-20260820.json`,
+`coupled-data/phase1-raw-episode-provider-plan-v6-v10-blocked-40usd-r2-20260820.json`,
 SHA-256
-`5de3936693bb49e79216fe790fadf45ef54ac96029367173fc2875939996e607`.
+`50a18a872cbf373bfbe99cdf77f1d0d2be4711adb15e9c45c361ad243dd0d6a0`.
+The earlier v5 plan is superseded because it incorrectly made the optional
+holistic rubric an execution prerequisite.
 No credentials, provider call, personal-data transfer, or paid operation was
 used during this preflight. A newly reviewed ceiling requires a freshly hashed
 provider plan; the runner requires the command-line maximum to match it

@@ -111,17 +111,6 @@ def main() -> int:
             and plan["openai"]["operations"]["responseCalls"] == 150
         ):
             raise AssertionError("provider plan did not exclude warm-up scoring")
-        semantic_review = plan.get("evaluation", {}).get("semanticReview", {})
-        if not (
-            semantic_review.get("rubricVersion")
-            == "phase1-blind-semantic-review-v1"
-            and semantic_review.get("blindUntilJudgmentsFrozen") is True
-            and semantic_review.get("relativePath")
-            == "experiment/phase1-blind-semantic-review-v1.json"
-            and semantic_review.get("sha256")
-            == sha256(project / semantic_review["relativePath"])
-        ):
-            raise AssertionError("provider plan did not freeze the semantic rubric")
         cumulative = [
             example_id
             for block in corpus["blocking"]["blocks"][:2]
@@ -439,7 +428,7 @@ def main() -> int:
         audit = json.loads((audit_output / "experiment.json").read_text())
         if not (
             audit["status"] == "passed_developmental_not_thesis_conclusion"
-            and audit["auditVersion"] == "phase1-real-experiment-audit-v7"
+            and audit["auditVersion"] == "phase1-real-experiment-audit-v6"
             and audit["protocol"]["providerScoredExamples"] == 150
             and audit["protocol"]["warmupExamples"] == 50
             and audit["protocol"]["warmupProviderScored"] is False
