@@ -1,0 +1,69 @@
+{
+  "schemaVersion": 1,
+  "rubricVersion": "phase1-blind-semantic-review-v1",
+  "purpose": "Judge whether a generated completion captures the same closed substantive thought as the human target, independently of literal character overlap.",
+  "evaluationUnit": "one model prediction for one prospectively scored closed-composition episode",
+  "labels": [
+    {
+      "label": "usable",
+      "definition": "The prediction preserves the intended thought and could be inserted at the observed destination with only trivial editing.",
+      "allowedEdits": [
+        "surrounding whitespace",
+        "capitalization",
+        "punctuation",
+        "a small grammatical repair that does not change the substance"
+      ]
+    },
+    {
+      "label": "directionally_correct",
+      "definition": "The prediction captures material intent or the central judgment, but would require substantive editing, missing-detail recovery, or meaningful rewriting before use."
+    },
+    {
+      "label": "wrong_or_unhelpful",
+      "definition": "The prediction misses or contradicts the intended thought, is largely generic, is unusably incomplete, or heads in a materially different direction."
+    }
+  ],
+  "reviewProtocol": {
+    "inputsShown": [
+      "the frozen causal context and conditioning query",
+      "the actual human target",
+      "one generated prediction"
+    ],
+    "hiddenUntilAllJudgmentsAreFrozen": [
+      "model arm",
+      "checkpoint identity",
+      "likelihood scores",
+      "automatic similarity scores",
+      "cost",
+      "latency"
+    ],
+    "predictionOrder": "deterministically randomized within each example and identified only by an opaque review ID",
+    "requiredJudgmentFields": [
+      "reviewID",
+      "label"
+    ],
+    "optionalJudgmentFields": [
+      "brief rationale",
+      "adjudication note"
+    ],
+    "freezeRule": "All labels must be written and the judgment artifact hashed before model identities or aggregate metrics are revealed."
+  },
+  "headlineAggregates": [
+    "usable rate",
+    "usable-or-directionally-correct rate"
+  ],
+  "secondaryGeneratedCompletionMetrics": [
+    "exact match",
+    "surrounding-whitespace-normalized exact match",
+    "correct-prefix length and target coverage",
+    "macro character edit similarity",
+    "micro character edit similarity",
+    "paste-action precision and recall"
+  ],
+  "likelihoodMetric": {
+    "primaryPersonalizationComparison": "paired pre-update target NLL and bits saved for personalized Qwen versus frozen Qwen",
+    "frontierQualification": "The subscription-backed frontier interface exposes no comparable target likelihood, so semantic review and generated-completion metrics are cross-model while NLL is Qwen-only."
+  },
+  "pastePolicy": "A correctly predicted paste action is the literal <|paste|> marker; reproducing the clipboard payload instead is not equivalent under this experiment contract.",
+  "qualification": "This is a developmental corpus that informed the episode policy. The rubric measures completion usefulness on that frozen trace and does not convert it into prospective thesis evidence."
+}

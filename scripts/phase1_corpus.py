@@ -14,6 +14,15 @@ from typing import Any, Iterable
 
 ASSEMBLER_VERSION = "phase1-corpus-v2"
 PRIVACY_POLICY_VERSION = "phase1-context-privacy-v1"
+RAW_EPISODE_EXPERIMENT_ADAPTER_VERSION = (
+    "phase1-raw-episode-experiment-adapter-v1"
+)
+SUPPORTED_RAW_EPISODE_EXPERIMENT_CONTRACT = {
+    "artifactType": "phase1_raw_authoritative_episode_corpus",
+    "schemaVersion": 2,
+    "episodeVersion": "phase1-raw-episode-v6",
+    "conversionVersion": "phase1-raw-episode-causal-v6",
+}
 
 
 def json_bytes(value: Any) -> bytes:
@@ -497,11 +506,22 @@ def assemble(
 def audit(directory: Path) -> dict[str, Any]:
     directory = directory.expanduser().resolve()
     manifest = load_json(directory / "corpus.json")
-    if not (
+    multi_session = (
         manifest.get("artifactType") == "phase1_multi_session_corpus"
         and manifest.get("assemblerVersion") in {"phase1-corpus-v1", ASSEMBLER_VERSION}
         and manifest.get("conversionVersion") == "phase1-causal-v14"
-    ):
+    )
+    raw_episode = all(
+        manifest.get(key) == value
+        for key, value in SUPPORTED_RAW_EPISODE_EXPERIMENT_CONTRACT.items()
+    ) and (
+        manifest.get("rawEpisodeArchitecture", {}).get(
+            "productionConsumesRegressionFixture"
+        ) is False
+        and manifest.get("rawEpisodeArchitecture", {}).get("sourceAuthority")
+        == "immutable_raw_journals"
+    )
+    if not (multi_session or raw_episode):
         raise ValueError("unsupported Phase 1 corpus manifest")
     if load_json(directory / "dataset.json") != manifest:
         raise ValueError("dataset.json compatibility manifest disagrees with corpus.json")
@@ -588,7 +608,28 @@ def audit(directory: Path) -> dict[str, Any]:
         if not isinstance(block_id, str):
             raise ValueError(f"example {example_id} has no experiment block")
         expected_block_members.setdefault(block_id, []).append(example_id)
-    declared_blocks = manifest.get("blocking", {}).get("blocks", [])
+    if raw_episode:
+        declared_blocks = load_jsonl(directory / "episode-blocks.jsonl")
+        if not declared_blocks:
+            raise ValueError("raw episode corpus has no experiment blocks")
+        expected_block_ids = [
+            f"block-{ordinal:04d}"
+            for ordinal in range(1, len(declared_blocks) + 1)
+        ]
+        if [block.get("blockID") for block in declared_blocks] != expected_block_ids:
+            raise ValueError("raw episode block IDs are not contiguous")
+        for ordinal, block in enumerate(declared_blocks):
+            example_ids = block.get("exampleIDs")
+            if not isinstance(example_ids, list) or not example_ids:
+                raise ValueError("raw episode block has no examples")
+            if block.get("exampleCount") != len(example_ids):
+                raise ValueError("raw episode block count disagrees")
+            if len(example_ids) > 50 or (
+                ordinal < len(declared_blocks) - 1 and len(example_ids) != 50
+            ):
+                raise ValueError("raw episode blocks do not follow the frozen size-50 rule")
+    else:
+        declared_blocks = manifest.get("blocking", {}).get("blocks", [])
     if [block.get("blockID") for block in declared_blocks] != list(expected_block_members):
         raise ValueError("experiment block order disagrees")
     for block in declared_blocks:
@@ -597,10 +638,13 @@ def audit(directory: Path) -> dict[str, Any]:
     counts = manifest.get("counts", {})
     expected_counts = {
         "convertedEvents": len(events),
-        "contextBlocks": len(blocks),
-        "coverageGaps": len(gaps),
         "examples": len(examples),
     }
+    if multi_session:
+        expected_counts.update({
+            "contextBlocks": len(blocks),
+            "coverageGaps": len(gaps),
+        })
     for key, value in expected_counts.items():
         if counts.get(key) != value:
             raise ValueError(f"manifest count disagrees: {key}")
@@ -629,4 +673,22 @@ def audit(directory: Path) -> dict[str, Any]:
                 raise ValueError(f"privacy policy lineage disagrees: {event_id}")
     elif redacted_count:
         raise ValueError("legacy corpus contains privacy redactions")
+    if raw_episode:
+        # The frozen episode artifact remains byte-for-byte immutable. Expose
+        # its separately hashed episode-block ledger only in the in-memory
+        # experiment contract consumed by provider-neutral runners.
+        manifest = {
+            **manifest,
+            "blocking": {
+                "blockSize": 50,
+                "blockCount": len(declared_blocks),
+                "blocks": declared_blocks,
+            },
+            "experimentAdapter": {
+                "version": RAW_EPISODE_EXPERIMENT_ADAPTER_VERSION,
+                "sourceArtifactType": manifest["artifactType"],
+                "episodeBlocksSHA256": sha256(directory / "episode-blocks.jsonl"),
+                "semanticInterpretationChanged": False,
+            },
+        }
     return manifest

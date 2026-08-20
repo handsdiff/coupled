@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 from copy import deepcopy
+from decimal import Decimal
 from pathlib import Path
 
 from phase1_experiment import (
@@ -97,6 +98,7 @@ def main() -> int:
             corpus_path,
             packed_path,
             "10b258ab-25fe-45e0-a54b-fef023154281",
+            Decimal("40.00"),
         )
         if plan["tinker"]["hardExecutionCeilingUSD"] != "40.00":
             raise AssertionError("hard Tinker ceiling is not frozen")
@@ -109,6 +111,17 @@ def main() -> int:
             and plan["openai"]["operations"]["responseCalls"] == 150
         ):
             raise AssertionError("provider plan did not exclude warm-up scoring")
+        semantic_review = plan.get("evaluation", {}).get("semanticReview", {})
+        if not (
+            semantic_review.get("rubricVersion")
+            == "phase1-blind-semantic-review-v1"
+            and semantic_review.get("blindUntilJudgmentsFrozen") is True
+            and semantic_review.get("relativePath")
+            == "experiment/phase1-blind-semantic-review-v1.json"
+            and semantic_review.get("sha256")
+            == sha256(project / semantic_review["relativePath"])
+        ):
+            raise AssertionError("provider plan did not freeze the semantic rubric")
         cumulative = [
             example_id
             for block in corpus["blocking"]["blocks"][:2]
@@ -426,7 +439,7 @@ def main() -> int:
         audit = json.loads((audit_output / "experiment.json").read_text())
         if not (
             audit["status"] == "passed_developmental_not_thesis_conclusion"
-            and audit["auditVersion"] == "phase1-real-experiment-audit-v6"
+            and audit["auditVersion"] == "phase1-real-experiment-audit-v7"
             and audit["protocol"]["providerScoredExamples"] == 150
             and audit["protocol"]["warmupExamples"] == 50
             and audit["protocol"]["warmupProviderScored"] is False
@@ -476,6 +489,31 @@ def main() -> int:
         )
         if rejected.returncode == 0:
             raise AssertionError("final audit accepted a leaked personalized checkpoint")
+
+    raw_episode_corpus = (
+        project
+        / "coupled-data/phase1-raw-episode-corpus-v6-v10-review-20260820"
+    )
+    raw_episode_pack = (
+        project
+        / "coupled-data/phase1-raw-episode-pack-v6-v10-canonical-20260820"
+    )
+    if raw_episode_corpus.is_dir() and raw_episode_pack.is_dir():
+        episode_manifest, episode_examples, _, _ = validate_inputs(
+            raw_episode_corpus, raw_episode_pack
+        )
+        episode_blocks = episode_manifest["blocking"]["blocks"]
+        if not (
+            len(episode_examples) == 224
+            and [block["exampleCount"] for block in episode_blocks]
+            == [50, 50, 50, 50, 24]
+            and len(prospective_example_ids(episode_blocks)) == 174
+            and len(tinker.expected_score_sequence(episode_blocks)) == 348
+            and episode_manifest["experimentAdapter"][
+                "semanticInterpretationChanged"
+            ] is False
+        ):
+            raise AssertionError("raw episode experiment adapter contract changed")
     print("Phase 1 real provider-runner checks passed")
     return 0
 

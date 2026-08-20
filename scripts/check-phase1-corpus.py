@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -152,6 +153,62 @@ def main() -> int:
             raise AssertionError("private context lacks an explicit redaction marker")
         if private_manifest["counts"]["examples"] != 1:
             raise AssertionError("private target remained eligible")
+
+        # A raw-authoritative episode corpus stays immutable while the
+        # experiment adapter exposes its separately hashed block ledger.
+        raw_episode = root / "raw-episode"
+        shutil.copytree(output_b, raw_episode)
+        raw_examples = [
+            json.loads(line)
+            for line in (raw_episode / "examples.jsonl").read_text().splitlines()
+        ]
+        for example in raw_examples:
+            example["experimentBlockID"] = "block-0001"
+        write_jsonl(raw_episode / "examples.jsonl", raw_examples)
+        episode_blocks = [{
+            "blockID": "block-0001",
+            "exampleCount": len(raw_examples),
+            "exampleIDs": [example["exampleID"] for example in raw_examples],
+        }]
+        write_jsonl(raw_episode / "episode-blocks.jsonl", episode_blocks)
+        raw_manifest = json.loads((raw_episode / "corpus.json").read_text())
+        raw_manifest.pop("assemblerVersion", None)
+        raw_manifest.pop("blocking", None)
+        raw_manifest.update({
+            "schemaVersion": 2,
+            "artifactType": "phase1_raw_authoritative_episode_corpus",
+            "episodeVersion": "phase1-raw-episode-v6",
+            "conversionVersion": "phase1-raw-episode-causal-v6",
+            "rawEpisodeArchitecture": {
+                "productionConsumesRegressionFixture": False,
+                "sourceAuthority": "immutable_raw_journals",
+            },
+        })
+        raw_manifest["artifactDigestsSHA256"]["examples.jsonl"] = sha256(
+            raw_episode / "examples.jsonl"
+        )
+        raw_manifest["artifactDigestsSHA256"]["episode-blocks.jsonl"] = sha256(
+            raw_episode / "episode-blocks.jsonl"
+        )
+        write_json(raw_episode / "corpus.json", raw_manifest)
+        write_json(raw_episode / "dataset.json", raw_manifest)
+        adapted = audit(raw_episode)
+        if not (
+            adapted["blocking"]["blockCount"] == 1
+            and adapted["blocking"]["blocks"] == episode_blocks
+            and adapted["experimentAdapter"]["semanticInterpretationChanged"] is False
+        ):
+            raise AssertionError("raw episode experiment adapter changed its source")
+        write_jsonl(raw_episode / "episode-blocks.jsonl", [{
+            **episode_blocks[0], "exampleIDs": list(reversed(episode_blocks[0]["exampleIDs"]))
+        }])
+        try:
+            audit(raw_episode)
+        except ValueError as error:
+            if "digest mismatch" not in str(error):
+                raise
+        else:
+            raise AssertionError("raw episode adapter accepted a tampered block ledger")
     print("Phase 1 corpus checks passed")
     return 0
 

@@ -157,7 +157,7 @@ rectangular screenshot.
 ## Implemented semantic reduction and causal compilation
 
 Current compiler: `phase1-causal-v14`
-Current reducer: `phase1-semantic-v8`
+Current reducer: `phase1-semantic-v10`
 
 The reducer consumes only `session.json` and `raw.jsonl`; deleting or corrupting
 `events.preview.jsonl` produces byte-identical finalized events. Event IDs are
@@ -904,12 +904,12 @@ comparable target-token NLL through the subscription interface.
 
 ### Before the next authoritative collection
 
-Treat `phase1-semantic-v8`, `phase1-causal-v14`, the one-second READ delay,
+Treat `phase1-semantic-v10`, `phase1-causal-v14`, the one-second READ delay,
 three-second WRITE delay, and ten-percent top/side/bottom crop configuration as
 the candidate baseline.
 
 1. Run normal work without changing collector rules mid-session.
-2. Reduce the raw session with `phase1-semantic-v8`; inspect finalized events and every non-event disposition.
+2. Reduce the raw session with `phase1-semantic-v10`; inspect finalized events and every non-event disposition.
 3. Compile the finalized reduction with `phase1-causal-v14`, supplying the raw session directory for hash and lineage verification.
 4. Manually sample the temporal trace against the actual work and record Phase 1's fidelity categories: missing events, temporal-ordering errors, incorrect content inclusion, authorship errors, write-boundary disagreement, destination ambiguity, and future leakage.
 5. Quantify reducer unresolved reasons plus target/context exclusions. Fix only recurrent material errors demonstrated by that trace; otherwise freeze the collector/reducer/compiler versions.
@@ -921,7 +921,7 @@ and bounded Tinker LoRA overfit—including exact `<|paste|>`/EOS generation and
 sampler/optimizer-state reload—have passed. They remain mechanical gates rather
 than behavioral evidence.
 
-1. Freeze the canonical 200-example unredacted corpus and shared 32K semantic context plans from the two audited sessions. The user's authorization explicitly includes the five Inkling form-response targets and their appearance in provider-transmitted history.
+1. Freeze the canonical 224-example raw-authoritative closed-episode corpus and shared 32K semantic context plans from the seven audited source sessions. The first 50 examples are training-only warm-up; the remaining 174 are prospectively scored within this developmental rerun.
 2. Preflight the exact Tinker and subscription-backed LiteLLM Responses operations, model identities, decoding, projected token use, privacy boundaries, and hard cost ceilings without transmitting personal data.
 3. After separate authorization, score each block with frozen base Qwen, frozen `gpt-5.6-sol` at `xhigh`, and the current personalized checkpoint using the same context plan.
 4. Train the personalized Qwen only after complete block scoring, save sampler and optimizer state, and use each result only for the following block.
@@ -2028,3 +2028,67 @@ the completed run SHA-256 is
 Logical provider operations are estimated at `$3.018118` before checkpoint
 storage. Tinker's billing API still reported its normal pending-usage lag when
 the run closed, so this estimate is not presented as final billed cost.
+
+## Raw episode v6 foundational-experiment preflight
+
+The frozen raw episode corpus now crosses the experiment boundary through
+`phase1-raw-episode-experiment-adapter-v1`. The adapter does not rewrite the
+corpus or reinterpret an episode. It verifies the separately hashed
+`episode-blocks.jsonl`, requires every example exactly once in chronological
+order, and exposes the five frozen blocks in memory to the provider-neutral
+runner. The blocks contain `50 / 50 / 50 / 50 / 24` examples. Block 1 is a
+50-example training-only warm-up; blocks 2–5 contain 174 provider-scored
+examples. A tampered or reordered block ledger is rejected.
+
+The canonical full pack is:
+
+```text
+coupled-data/phase1-raw-episode-pack-v6-v10-canonical-20260820
+```
+
+It contains 224 examples, 7,192 loss-bearing target tokens, 15 grounded paste
+actions, and a maximum complete sequence of 33,003 tokens. The Qwen tokenizer
+revision, causal shift, masks, literal paste marker, and one native EOS per
+target pass the standalone packed audit. Canonical digests are:
+
+```text
+packing.json          4783edfff0bc3cbd95c1a9c7d1543edf81109ce942744d516c99163c29afff3d
+packed-examples.jsonl 7ea374de1d69762c843fb9fb1a13b0b7613a73282fd2f3bd01f96ea495e1ec84
+context-plans.jsonl   5bdc16d211dd08ae5cb30ca081cd679bbd19dcb242541d801964b44f906b0095
+```
+
+The no-network mock at
+`coupled-data/phase1-raw-episode-mock-v6-v10-canonical-20260820` produced 522
+scores, five cumulative updates, and 23,889 loss-bearing-token presentations.
+Its manifest SHA-256 is
+`47fdd5e5449032b2cf50f0ee29ca31ad944da1e251ac50a09dbaae65106df73b`.
+
+Generated predictions will be reviewed under the frozen blind rubric
+`experiment/phase1-blind-semantic-review-v1.json`, SHA-256
+`8ad7e4115bef5f5480818a1ef4ffee3cf9d21b8dbc2a6c1508c69d1c0be27687`.
+Model identity, likelihood, automatic similarity, cost, and latency remain
+hidden until every judgment is frozen. The headline cross-model semantic
+measures are usable rate and usable-or-directionally-correct rate; automatic
+string metrics remain secondary. Paired pre-update NLL and bits saved remain
+the primary Qwen personalization measure.
+
+Provider plan v5 currently remains deliberately blocked. Five cumulative
+updates and 174 two-arm Qwen scores project `$50.002718` in Tinker operations:
+`$33.590142` training, `$15.057115` prefill, `$0.355461` maximum sampling, and
+`$1.00` checkpoint reserve. This exceeds the previously reviewed `$40.00`
+ceiling, so the plan cannot be executed. The blocked plan is
+`coupled-data/phase1-raw-episode-provider-plan-v6-v10-blocked-40usd-20260820.json`,
+SHA-256
+`5de3936693bb49e79216fe790fadf45ef54ac96029367173fc2875939996e607`.
+No credentials, provider call, personal-data transfer, or paid operation was
+used during this preflight. A newly reviewed ceiling requires a freshly hashed
+provider plan; the runner requires the command-line maximum to match it
+exactly.
+
+The 224-example corpus is developmental and mixes historical sensor regimes:
+148 targets came from three-second READ / 35-percent-bottom-crop sessions,
+three from one-second / 35-percent, and 73 from one-second / 10-percent.
+Historical screenshots can be recropped when retained, but their capture time
+cannot be moved retroactively. This qualification does not break causal
+ordering, but later prospective confirmation should use homogeneous
+one-second READ / ten-percent crop sessions.

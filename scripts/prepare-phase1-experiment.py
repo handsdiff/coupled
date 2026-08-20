@@ -18,7 +18,7 @@ from phase1_experiment import (
 from phase1_training_contract import TrainingContractError, sha256
 
 
-PLAN_VERSION = "phase1-provider-plan-v4"
+PLAN_VERSION = "phase1-provider-plan-v5"
 QWEN_MODEL = "Qwen/Qwen3.5-9B-Base"
 OPENAI_MODEL = "gpt-5.6-sol"
 OPENAI_REASONING_EFFORT = "xhigh"
@@ -30,7 +30,11 @@ TINKER_TRAIN_PER_MILLION = Decimal("1.463")
 OPENAI_INPUT_PER_MILLION = Decimal("5.00")
 OPENAI_OUTPUT_PER_MILLION = Decimal("30.00")
 CHECKPOINT_RESERVE = Decimal("1.00")
-HARD_EXECUTION_CEILING = Decimal("40.00")
+DEFAULT_HARD_EXECUTION_CEILING = Decimal("40.00")
+SEMANTIC_RUBRIC_RELATIVE_PATH = Path(
+    "experiment/phase1-blind-semantic-review-v1.json"
+)
+SEMANTIC_RUBRIC_VERSION = "phase1-blind-semantic-review-v1"
 
 
 def money(tokens: int, price: Decimal) -> Decimal:
@@ -51,6 +55,12 @@ def main() -> int:
     parser.add_argument("--qwen-generation-token-ceiling", type=int, default=512)
     parser.add_argument("--openai-max-output-tokens", type=int, default=8192)
     parser.add_argument(
+        "--hard-tinker-ceiling-usd",
+        type=Decimal,
+        default=DEFAULT_HARD_EXECUTION_CEILING,
+        help="Reviewed hard ceiling; planning may report a blocked over-ceiling run",
+    )
+    parser.add_argument(
         "--frontier-transport",
         choices=("responses_api", "litellm_chatgpt_subscription"),
         default="responses_api",
@@ -62,6 +72,7 @@ def main() -> int:
         arguments.epochs_per_update <= 0
         or arguments.qwen_generation_token_ceiling <= 0
         or arguments.openai_max_output_tokens <= 0
+        or arguments.hard_tinker_ceiling_usd <= 0
     ):
         raise TrainingContractError("epochs and generation ceiling must be positive")
     if arguments.epochs_per_update != TINKER_TRAINING_CONTRACT[
@@ -130,8 +141,10 @@ def main() -> int:
         "checkpointReserveUSD": CHECKPOINT_RESERVE,
     }
     tinker_total = sum(tinker_cost.values(), Decimal(0))
-    if tinker_total > HARD_EXECUTION_CEILING:
-        raise TrainingContractError("Tinker projection exceeds the hard execution ceiling")
+    hard_ceiling = arguments.hard_tinker_ceiling_usd.quantize(Decimal("0.01"))
+    if hard_ceiling != arguments.hard_tinker_ceiling_usd:
+        raise TrainingContractError("Tinker ceiling may have at most two decimal places")
+    cost_ceiling_satisfied = tinker_total <= hard_ceiling
 
     context_blocks = {
         row["contextBlockID"]: row
@@ -230,9 +243,14 @@ def main() -> int:
         })
 
     project_directory = Path(__file__).resolve().parent.parent
+    rubric_path = project_directory / SEMANTIC_RUBRIC_RELATIVE_PATH
+    semantic_rubric = json.loads(rubric_path.read_text(encoding="utf-8"))
+    if semantic_rubric.get("rubricVersion") != SEMANTIC_RUBRIC_VERSION:
+        raise TrainingContractError("semantic review rubric version changed")
     implementation_paths = [
         Path(__file__).resolve(),
         project_directory / "scripts/phase1_experiment.py",
+        project_directory / "scripts/phase1_corpus.py",
         project_directory / "scripts/phase1_training_contract.py",
         project_directory / "scripts/phase1_tinker_overfit_contract.py",
         project_directory / "scripts/phase1_subscription_responses.py",
@@ -241,6 +259,7 @@ def main() -> int:
         project_directory / "scripts/audit-phase1-real-experiment.py",
         project_directory / "scripts/tinker-requirements.txt",
         project_directory / "scripts/litellm-subscription-requirements.txt",
+        rubric_path,
     ]
     for path in implementation_paths:
         if not path.is_file():
@@ -249,7 +268,11 @@ def main() -> int:
     plan = {
         "schemaVersion": 1,
         "planVersion": PLAN_VERSION,
-        "status": "local_plan_only_no_authentication_or_data_transfer",
+        "status": (
+            "local_plan_only_no_authentication_or_data_transfer"
+            if cost_ceiling_satisfied
+            else "blocked_projected_tinker_cost_exceeds_hard_ceiling"
+        ),
         "implementation": {
             "fileDigestsSHA256": {
                 str(path.relative_to(project_directory)): sha256(path)
@@ -288,6 +311,20 @@ def main() -> int:
             "updates": update_plans,
             "finalPerExamplePresentationCounts": presentation_counts,
         },
+        "evaluation": {
+            "semanticReview": {
+                "rubricVersion": SEMANTIC_RUBRIC_VERSION,
+                "relativePath": str(SEMANTIC_RUBRIC_RELATIVE_PATH),
+                "sha256": sha256(rubric_path),
+                "blindUntilJudgmentsFrozen": True,
+                "headlineAggregates": semantic_rubric["headlineAggregates"],
+            },
+            "primaryPersonalizationMetric": (
+                "paired_pre_update_target_nll_and_bits_saved_"
+                "personalized_qwen_versus_frozen_qwen"
+            ),
+            "automaticGeneratedCompletionMetricsAreSecondary": True,
+        },
         "tinker": {
             "projectID": arguments.tinker_project_id,
             "model": QWEN_MODEL,
@@ -314,7 +351,8 @@ def main() -> int:
                 "totalIncludingReserve": decimal_string(tinker_total),
             },
             "trainingContract": TINKER_TRAINING_CONTRACT,
-            "hardExecutionCeilingUSD": str(HARD_EXECUTION_CEILING),
+            "hardExecutionCeilingUSD": str(hard_ceiling),
+            "projectedCostWithinHardCeiling": cost_ceiling_satisfied,
             "interruptionPolicy": {
                 "partialUpdateReplayAllowedUnderThisPlan": False,
                 "inFlightOperationReplayAllowedUnderThisPlan": False,
@@ -329,6 +367,8 @@ def main() -> int:
             "separateApprovalRequiredForAuthenticatedMetadataCalls": True,
             "separateApprovalRequiredForAnyDataBearingCall": True,
             "hardCostCeilingFrozen": True,
+            "hardCostCeilingSatisfied": cost_ceiling_satisfied,
+            "providerExecutionPermittedByPlan": cost_ceiling_satisfied,
             "chatGPTSubscriptionCannotFundResponsesAPI": True,
         },
     }
@@ -339,6 +379,11 @@ def main() -> int:
     )
     print(f"Wrote local provider plan to {arguments.output}")
     print(f"Tinker projected total including reserve: ${decimal_string(tinker_total)}")
+    if not cost_ceiling_satisfied:
+        print(
+            "Provider execution blocked: projected Tinker cost exceeds the "
+            f"reviewed ${hard_ceiling} ceiling."
+        )
     if arguments.frontier_transport == "responses_api":
         print(
             "OpenAI proxy / byte-bound totals: "

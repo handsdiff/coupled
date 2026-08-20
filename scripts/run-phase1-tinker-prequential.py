@@ -49,7 +49,7 @@ from phase1_training_contract import (
 
 
 TINKER_RUNNER_VERSION = "phase1-tinker-prequential-v3"
-EXPECTED_PLAN_VERSION = "phase1-provider-plan-v4"
+EXPECTED_PLAN_VERSION = "phase1-provider-plan-v5"
 GENERATION_TOKEN_CEILING = 512
 EPOCHS_PER_UPDATE = 1
 
@@ -122,8 +122,12 @@ def parse_arguments() -> argparse.Namespace:
         )
     except ValueError as error:
         parser.error(f"invalid project UUID: {error}")
-    if arguments.maximum_usd != Decimal("40.00"):
-        parser.error("--maximum-usd must exactly equal the reviewed $40.00 ceiling")
+    if (
+        arguments.maximum_usd <= 0
+        or arguments.maximum_usd.quantize(Decimal("0.01"))
+        != arguments.maximum_usd
+    ):
+        parser.error("--maximum-usd must be a positive reviewed dollar ceiling")
     return arguments
 
 
@@ -160,12 +164,19 @@ def validate_plan(
     corpus_path: Path,
     packed_path: Path,
     project_id: str,
+    maximum_usd: Decimal,
 ) -> tuple[dict[str, Any], str]:
     actual = sha256(path)
     if actual != expected_digest:
         raise TrainingContractError("provider plan SHA-256 differs from approval")
     plan = json.loads(path.read_text(encoding="utf-8"))
-    if plan.get("planVersion") != EXPECTED_PLAN_VERSION:
+    if (
+        plan.get("planVersion") != EXPECTED_PLAN_VERSION
+        or plan.get("status") != "local_plan_only_no_authentication_or_data_transfer"
+        or plan.get("authorizationBoundary", {}).get(
+            "providerExecutionPermittedByPlan"
+        ) is not True
+    ):
         raise TrainingContractError("unsupported provider plan version")
     project = Path(__file__).resolve().parent.parent
     for relative, expected_digest in plan.get("implementation", {}).get(
@@ -187,6 +198,16 @@ def validate_plan(
     for key, value in expected.items():
         if source.get(key) != value:
             raise TrainingContractError(f"provider plan source changed: {key}")
+    rubric = plan.get("evaluation", {}).get("semanticReview", {})
+    rubric_path = project / "experiment/phase1-blind-semantic-review-v1.json"
+    if not (
+        rubric.get("rubricVersion") == "phase1-blind-semantic-review-v1"
+        and rubric.get("relativePath")
+        == "experiment/phase1-blind-semantic-review-v1.json"
+        and rubric.get("sha256") == sha256(rubric_path)
+        and rubric.get("blindUntilJudgmentsFrozen") is True
+    ):
+        raise TrainingContractError("provider plan semantic review rubric differs")
     tinker_plan = plan.get("tinker", {})
     if not (
         tinker_plan.get("projectID") == project_id
@@ -197,7 +218,8 @@ def validate_plan(
         and plan.get("protocol", {}).get("personalizedUpdatePolicy")
         == "warm_start_then_train_full_cumulative_corpus"
         and tinker_plan.get("trainingContract") == TINKER_TRAINING_CONTRACT
-        and tinker_plan.get("hardExecutionCeilingUSD") == "40.00"
+        and Decimal(tinker_plan.get("hardExecutionCeilingUSD")) == maximum_usd
+        and tinker_plan.get("projectedCostWithinHardCeiling") is True
         and tinker_plan.get("interruptionPolicy", {}).get(
             "partialUpdateReplayAllowedUnderThisPlan"
         ) is False
@@ -207,7 +229,7 @@ def validate_plan(
     ):
         raise TrainingContractError("provider plan does not match Tinker contract")
     projected = Decimal(tinker_plan["projectedCostUSD"]["totalIncludingReserve"])
-    if projected > Decimal("40.00"):
+    if projected > maximum_usd:
         raise TrainingContractError("provider plan exceeds the hard cost ceiling")
     return plan, actual
 
@@ -480,6 +502,7 @@ def run() -> int:
         corpus_path,
         packed_path,
         arguments.dedicated_private_project_id,
+        arguments.maximum_usd,
     )
     frontier = validate_frontier(
         frontier_path, corpus_path, packed_path, evaluation_example_ids
@@ -743,7 +766,9 @@ def run() -> int:
             atomic_json(manifest_path, manifest)
             if position % 10 == 0 or position == len(order):
                 print(
-                    f"tinker-update {block_ordinal}/4 step={position}/{len(order)}",
+                    "tinker-update "
+                    f"{block_ordinal}/{len(corpus['blocking']['blocks'])} "
+                    f"step={position}/{len(order)}",
                     flush=True,
                 )
 
@@ -800,7 +825,9 @@ def run() -> int:
         manifest["usage"] = usage.as_dict()
         atomic_json(manifest_path, manifest)
         print(
-            f"tinker-update {block_ordinal}/4 saved nll={update['meanPreUpdateNLL']:.4f}",
+            "tinker-update "
+            f"{block_ordinal}/{len(corpus['blocking']['blocks'])} "
+            f"saved nll={update['meanPreUpdateNLL']:.4f}",
             flush=True,
         )
 
