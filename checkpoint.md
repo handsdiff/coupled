@@ -1988,3 +1988,38 @@ The read-only target-delta inspector serves this corpus against the reviewed
 v4 baseline at `http://127.0.0.1:8768/`. The default view shows the four new
 example identities, including the corrected replacement target; it also
 reports the one superseded v4 example.
+
+### Qwen mechanical smoke for raw episode v6
+
+A three-example private-project Tinker smoke exercised the corrected
+three-member GTM episode, the shortest grounded-paste target, and the longest
+ordinary target. The pack contained 387 loss-bearing positions and exactly one
+paste action; all causal-shift, mask, paste-marker, and EOS audits passed before
+transmission. Tinker's tokenizer matched the frozen local vocabulary and every
+one of the 8,322 token IDs used by the pack.
+
+The bounded rank-32 Qwen3.5-9B-Base LoRA run used 20 epochs, 60 optimizer
+steps, and 1,853,240 submitted training positions. Weighted NLL fell from
+`3.495846312` to `0.000194417` (ratio `0.000055614`). Exact greedy generation,
+EOS termination, the grounded paste marker, sampler checkpoint, optimizer
+state reload, reload NLL parity, reload generation parity, and all operation
+ceilings passed for all three examples. This is a mechanical compatibility
+test, not Phase 1 hypothesis evidence.
+
+Artifacts:
+
+```text
+coupled-data/phase1-raw-episode-smoke-corpus-v6-v10-20260820
+coupled-data/phase1-raw-episode-smoke-pack-v6-v10-20260820
+coupled-data/phase1-raw-episode-smoke-tinker-tokenizer-preflight-v6-v10-20260820.json
+coupled-data/phase1-raw-episode-smoke-tinker-plan-v6-v10-80bf5b7-20260820.json
+coupled-data/phase1-raw-episode-smoke-tinker-run-v6-v10-80bf5b7-20260820.json
+```
+
+The approved plan SHA-256 is
+`bf679a7d5bfcfc61cc22df2e0e4d11367153da7eaeb0789c13e1edfa029547bd`;
+the completed run SHA-256 is
+`c19c12e618cc19c6f244824e302e304e9f48ece90160aee643b02cabc4481d38`.
+Logical provider operations are estimated at `$3.018118` before checkpoint
+storage. Tinker's billing API still reported its normal pending-usage lag when
+the run closed, so this estimate is not presented as final billed cost.
