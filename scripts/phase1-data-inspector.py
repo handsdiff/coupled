@@ -148,7 +148,7 @@ def discover_paths(
     else:
         result_candidates = [
             value.parent
-            for value in data.glob("phase1-*-results*/experiment.json")
+            for value in data.glob("phase1-*/experiment.json")
             if (value.parent / "comparisons.jsonl").is_file()
         ]
         results = preferred_candidate(result_candidates)
@@ -191,12 +191,18 @@ def discover_paths(
                 f"holistic review file does not exist: {holistic_review}"
             )
     else:
-        default_review = (
-            project
-            / "episode-review"
-            / "phase1-experiment-1-holistic-strict-v1.json"
+        expected_corpus_id = load_json(corpus / "corpus.json").get("corpusID")
+        review_candidates: list[Path] = []
+        for review_path in (project / "episode-review").glob("*holistic*.json"):
+            try:
+                review = load_json(review_path)
+            except InspectorError:
+                continue
+            if review.get("source", {}).get("corpusID") == expected_corpus_id:
+                review_candidates.append(review_path)
+        holistic_review = (
+            preferred_candidate(review_candidates) if review_candidates else None
         )
-        holistic_review = default_review if default_review.is_file() else None
 
     required = {
         results / "experiment.json",
@@ -272,8 +278,15 @@ class DatasetStore:
         self.event_by_id = self._index(self.events, "sourceEventID", "events")
         self.plan_by_id = self._index(self.plans, "exampleID", "context plans")
         self.packed_by_id = self._index(self.packed, "exampleID", "packed examples")
+        self.scored_examples = [
+            example
+            for example in self.examples
+            if example["exampleID"] in self.comparison_by_id
+        ]
         self._validate()
-        self.summaries = [self._summary(example) for example in self.examples]
+        self.summaries = [
+            self._summary(example) for example in self.scored_examples
+        ]
 
     @staticmethod
     def _index(
@@ -290,18 +303,26 @@ class DatasetStore:
         return result
 
     def _validate(self) -> None:
-        example_ids = [value["exampleID"] for value in self.examples]
+        scored_ids = [value["exampleID"] for value in self.scored_examples]
+        unknown_comparisons = [
+            value for value in self.comparison_by_id if value not in self.example_by_id
+        ]
+        if unknown_comparisons:
+            raise InspectorError(
+                f"comparisons reference {len(unknown_comparisons)} unknown examples"
+            )
         for label, indexed in (
-            ("comparison", self.comparison_by_id),
             ("context plan", self.plan_by_id),
             ("packed example", self.packed_by_id),
         ):
-            missing = [value for value in example_ids if value not in indexed]
+            missing = [value for value in scored_ids if value not in indexed]
             if missing:
-                raise InspectorError(f"{label} is missing {len(missing)} examples")
-        if len(example_ids) != len(self.comparisons):
-            raise InspectorError("comparison/example counts disagree")
-        for example_id in example_ids:
+                raise InspectorError(
+                    f"{label} is missing {len(missing)} scored examples"
+                )
+        if len(scored_ids) != len(self.comparisons):
+            raise InspectorError("comparison/scored-example counts disagree")
+        for example_id in scored_ids:
             semantic = self.semantic_input(example_id)
             expected = self.plan_by_id[example_id].get("semanticModelInputSHA256")
             actual = hashlib.sha256(semantic.encode()).hexdigest()
@@ -330,8 +351,14 @@ class DatasetStore:
         if not isinstance(first, int) or not isinstance(last, int) or first > last:
             raise InspectorError("holistic review has an invalid ordinal scope")
         available = {
-            int(example["chronologicalOrdinal"]) + 1 for example in self.examples
+            int(example["chronologicalOrdinal"]) + 1
+            for example in self.scored_examples
         }
+        scoped_available = {
+            ordinal for ordinal in available if first <= ordinal <= last
+        }
+        if scope.get("examples") != len(scoped_available):
+            raise InspectorError("holistic review example scope disagrees")
         models = review.get("models")
         if not isinstance(models, dict):
             raise InspectorError("holistic review has no model labels")
@@ -446,7 +473,7 @@ class DatasetStore:
         review = self.holistic_review or {}
         review_models = review.get("models", {})
         return {
-            "examples": len(self.examples),
+            "examples": len(self.scored_examples),
             "applications": sorted(
                 {value.get("application") for value in self.summaries if value.get("application")}
             ),
@@ -755,14 +782,15 @@ HTML = r'''<!doctype html>
       const frontier = m.summaries['frozen_gpt_5.6_sol_xhigh'] || {};
       const holistic = m.holisticReview || {};
       const holisticScope = holistic.scope?.examples ?? 150;
+      const holisticScore = passes => `${passes}/${holisticScope} · ${((passes / holisticScope) * 100).toFixed(1)}%`;
       $('stats').innerHTML = `
         <div class="stat"><strong>${m.examples}</strong>examples</div>
         <div class="stat"><strong>${Number(m.bitsSaved || 0).toLocaleString(undefined,{maximumFractionDigits:1})}</strong>bits saved</div>
         <div class="stat"><strong>${fmt(personalized.microTargetTokenNLL)}</strong>personalized NLL</div>
         <div class="stat"><strong>${personalized.generatedCompletion?.exactMatches ?? personalized.exactMatches ?? 0}</strong>Qwen exact</div>
         <div class="stat"><strong>${frontier.generatedCompletion?.exactMatches ?? frontier.exactMatches ?? 0}</strong>GPT exact</div>
-        ${holistic.personalizedPasses == null ? '' : `<div class="stat" title="Subjective strict reviewer pass; approximately ±${holistic.uncertaintyExamplesPerModel ?? 3} examples"><strong>${holistic.personalizedPasses}/${holisticScope}</strong>Q holistic</div>`}
-        ${holistic.frontierPasses == null ? '' : `<div class="stat" title="Subjective strict reviewer pass; approximately ±${holistic.uncertaintyExamplesPerModel ?? 3} examples"><strong>${holistic.frontierPasses}/${holisticScope}</strong>GPT holistic</div>`}`;
+        ${holistic.personalizedPasses == null ? '' : `<div class="stat" title="Subjective strict reviewer pass; approximately ±${holistic.uncertaintyExamplesPerModel ?? 3} examples"><strong>${holisticScore(holistic.personalizedPasses)}</strong>Q holistic</div>`}
+        ${holistic.frontierPasses == null ? '' : `<div class="stat" title="Subjective strict reviewer pass; approximately ±${holistic.uncertaintyExamplesPerModel ?? 3} examples"><strong>${holisticScore(holistic.frontierPasses)}</strong>GPT holistic</div>`}`;
       $('paths').textContent = m.paths.results;
       $('paths').title = `Corpus: ${m.paths.corpus}\nPacked: ${m.paths.packed}\nResults: ${m.paths.results}\nHolistic review: ${m.paths.holisticReview || 'none'}${holistic.passBar ? `\n\nReviewer bar: ${holistic.passBar}` : ''}`;
       fillSelect('block', m.blocks);
@@ -1088,7 +1116,7 @@ def main() -> None:
     store = DatasetStore(paths)
     if arguments.check:
         print(
-            f"Phase 1 inspector validation passed: {len(store.examples)} examples, "
+            f"Phase 1 inspector validation passed: {len(store.scored_examples)} scored examples, "
             f"{len(store.context_blocks)} context blocks."
         )
         print(f"Corpus:  {paths.corpus}")
@@ -1104,7 +1132,9 @@ def main() -> None:
     port = server.server_address[1]
     url = f"http://127.0.0.1:{port}/"
     print(f"Coupled Phase 1 Inspector: {url}")
-    print(f"Loaded {len(store.examples)} examples from {paths.results.name}")
+    print(
+        f"Loaded {len(store.scored_examples)} scored examples from {paths.results.name}"
+    )
     print("The server is read-only and bound to localhost. Press Ctrl-C to stop.")
     if not arguments.no_open:
         threading.Timer(0.25, lambda: webbrowser.open(url)).start()

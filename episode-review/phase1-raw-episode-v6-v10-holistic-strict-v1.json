@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "reviewID": "phase1-raw-episode-v6-v10-holistic-strict-v1",
+  "status": "subjective_reviewer_labels",
+  "authority": "diagnostic_only_not_training_or_metric_authority",
+  "reviewedAt": "2026-08-20",
+  "passBar": "The prediction expresses recognizably the same intended semantic move. Merely sharing the topic, predicting a plausible alternative, answering the human target, or repeating a nearby workflow action does not pass.",
+  "scope": {
+    "firstOneBasedExampleOrdinal": 51,
+    "lastOneBasedExampleOrdinal": 224,
+    "examples": 174,
+    "reason": "Only examples 51 through 224 have paired personalized-Qwen and frontier predictions in this continual-learning run."
+  },
+  "uncertaintyExamplesPerModel": 4,
+  "source": {
+    "corpusID": "episode_corpus_c06b6b98701b902d4f9f113a8c468179f4f6afb70c138129f1e172fc8b95d5e3",
+    "predictionTriplesSHA256": "9a0f171c4a23d3a32084f2b6d541936fd616f090e7f0b0bf7472398c173b8c46"
+  },
+  "models": {
+    "personalized_qwen3.5_9b_base": {
+      "displayLabel": "Q holistic",
+      "passCount": 3,
+      "passOneBasedExampleOrdinals": [
+        107,
+        114,
+        145
+      ]
+    },
+    "frozen_gpt_5.6_sol_xhigh": {
+      "displayLabel": "GPT holistic",
+      "passCount": 24,
+      "passOneBasedExampleOrdinals": [
+        65,
+        76,
+        99,
+        102,
+        122,
+        126,
+        134,
+        138,
+        156,
+        169,
+        174,
+        175,
+        178,
+        186,
+        187,
+        191,
+        192,
+        194,
+        202,
+        204,
+        207,
+        210,
+        211,
+        217
+      ]
+    }
+  }
+}

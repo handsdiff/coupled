@@ -1926,9 +1926,21 @@ fallback. The reducer accepts an exact submission term from that bounded clicked
 ancestry even when a browser reports the semantic node as a group rather than a
 button. It still requires the complete pre/post field-transition proof; an
 unlabelled click cannot close a WRITE. A permanent fixture verifies a semantic
-`send` ancestor with role `AXGroup`. The full repository check passes. This
-specific collector-side expansion still requires one live Chrome replay before
-v10 is treated as validated.
+`send` ancestor with role `AXGroup`, and the full repository check passes.
+
+The live replay in `coupled-data/phase1-ordinary-work-2026-08-20-1` exposed the
+remaining Chrome case. Gemini preserved the exact settled draft before the
+mouse click, restored the prompt placeholder about 156 ms afterward, and the
+retained screenshot showed the draft as a submitted message while Gemini began
+responding. Even the deeper Accessibility walk exposed only an unlabeled
+`AXGroup`, with no semantic submission term. Semantic v10 therefore retained
+the ordinary settled WRITE and rejected the closure observation as
+`closure_action_not_semantically_submissive` rather than guessing. The paired
+negative click-away retained its populated draft and correctly remained a
+non-submission. The positive record is repairable from existing raw evidence by
+a later versioned offline rule that combines the exact draft, pointer action,
+field reset, and retained post-action screenshot. It is not part of the frozen
+224-example v10/v6 experiment corpus and does not alter that run.
 
 ## Semantic v10 replay and raw episode v6
 
