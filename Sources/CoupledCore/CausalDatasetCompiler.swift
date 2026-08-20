@@ -197,6 +197,7 @@ public struct CausalDatasetCompiler {
 
         let rawRecords = try readJSONL(rawURL)
         var attempts = [String: [String: Any]]()
+        var rawRecordsByID = [String: [String: Any]]()
         var rawRecordIDs = Set<String>()
         for record in rawRecords {
             guard let recordID = record.object.string("recordID"), !recordID.isEmpty else { continue }
@@ -205,6 +206,7 @@ public struct CausalDatasetCompiler {
                     rawURL.path, record.line, "duplicate raw record ID \(recordID)"
                 )
             }
+            rawRecordsByID[recordID] = record.object
         }
         for record in rawRecords
             where record.object.string("recordType") == "active_tap_write_attempt" {
@@ -314,7 +316,11 @@ public struct CausalDatasetCompiler {
                 continue
             }
             let verification = usesFinalizedReduction
-                ? verifyReducedWrite(event: event, attempts: attempts)
+                ? verifyReducedWrite(
+                    event: event,
+                    attempts: attempts,
+                    rawRecordsByID: rawRecordsByID
+                )
                 : canonicalWrite(event: event, attempts: attempts)
             switch verification {
             case .success(let canonicalEvent):
@@ -726,15 +732,25 @@ private enum CanonicalWriteResult {
 /// to the versioned reducer and are recorded on the finalized event.
 private func verifyReducedWrite(
     event: [String: Any],
-    attempts: [String: [String: Any]]
+    attempts: [String: [String: Any]],
+    rawRecordsByID: [String: [String: Any]]
 ) -> CanonicalWriteResult {
     let sourceIDs = event.stringArray("sourceRecordIDs")
+    let sourceRecords = sourceIDs.compactMap { rawRecordsByID[$0] }
     let sourceAttempts = sourceIDs.compactMap { attempts[$0] }
     guard !sourceIDs.isEmpty,
           Set(sourceIDs).count == sourceIDs.count,
-          sourceAttempts.count == sourceIDs.count,
+          sourceRecords.count == sourceIDs.count,
+          sourceRecords.allSatisfy({
+              ["active_tap_write_attempt", "prompt_submission_observation"]
+                  .contains($0.string("recordType") ?? "")
+          }),
+          !sourceAttempts.isEmpty,
           let firstAttempt = sourceAttempts.first else {
         return .failure("missing_raw_write_lineage")
+    }
+    let closureRecords = sourceRecords.filter {
+        $0.string("recordType") == "prompt_submission_observation"
     }
     guard let sessionID = event.string("sessionID"),
           let reduction = event["reduction"] as? [String: Any],
@@ -750,6 +766,20 @@ private func verifyReducedWrite(
           let selectedID = reduction.string("selectedObservationID"),
           sourceAttempts.contains(where: { rawObservationIDs($0).contains(selectedID) }) else {
         return .failure("reducer_decision_or_selected_observation_missing")
+    }
+    if let closure = event["closureEvidence"] as? [String: Any] {
+        guard closureRecords.count == 1,
+              closure.string("sourceRecordID") == closureRecords[0].string("recordID"),
+              let closureSourceID = closureRecords[0].string("sourceWriteRecordID"),
+              sourceAttempts.contains(where: {
+                  $0.string("recordID") == closureSourceID
+              }),
+              event.string("boundaryReason") == "submission_boundary",
+              event.string("submissionObservedAt") == closure.string("observedAt") else {
+            return .failure("prompt_closure_lineage_contract_invalid")
+        }
+    } else if !closureRecords.isEmpty {
+        return .failure("unclaimed_prompt_closure_lineage")
     }
     if let authorshipObservationID = event.string("authorshipObservationID"),
        !sourceAttempts.contains(where: {
@@ -1267,6 +1297,15 @@ private func serializeAuditContextEvent(
         serialized["removedContent"] = event.string("removedContent") ?? ""
         serialized["characterOffset"] = event.number("characterOffset")?.intValue ?? 0
         serialized["boundaryReason"] = event.string("boundaryReason") ?? ""
+        if let captureBoundary = event.string("captureBoundaryReason") {
+            serialized["captureBoundaryReason"] = captureBoundary
+        }
+        if let submissionObservedAt = event.string("submissionObservedAt") {
+            serialized["submissionObservedAt"] = submissionObservedAt
+        }
+        if let closureEvidence = event["closureEvidence"] as? [String: Any] {
+            serialized["closureEvidence"] = closureEvidence
+        }
         serialized["resolvedCompletion"] = resolvedWriteContent(event)
         serialized["stateContinuity"] = event.string("stateContinuity")
             ?? "single_ax_epoch"

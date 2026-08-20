@@ -313,6 +313,44 @@ public func logicalEditableValue(_ value: String, placeholderValue: String?) -> 
     valueRepresentsPlaceholder(value, placeholderValue: placeholderValue) ? "" : value
 }
 
+public enum PromptClosureDisposition: String, Codable, Equatable, Sendable {
+    case confirmedFieldCleared = "confirmed_field_cleared"
+    case confirmedPlaceholderRestored = "confirmed_placeholder_restored"
+    case confirmedFieldDisappeared = "confirmed_field_disappeared"
+    case promptRemainedPopulated = "prompt_remained_populated"
+    case fieldChangedWithoutClear = "field_changed_without_clear"
+    case surfaceChanged = "surface_changed"
+    case observationFailed = "observation_failed"
+}
+
+/// Describes a post-action prompt transition without declaring that the action
+/// was a submission. The semantic reducer combines this state evidence with
+/// the separately retained action and capture-time surface identity.
+public func promptClosureDisposition(
+    observedLogicalValue: String?,
+    observedSurfacePrompt: String?,
+    observedValueMatchesTerminal: Bool?,
+    observationErrors: [String],
+    sameSurface: Bool
+) -> PromptClosureDisposition {
+    guard sameSurface else { return .surfaceChanged }
+    guard let observedLogicalValue else {
+        return observationErrors.contains(where: {
+            $0.localizedCaseInsensitiveContains("invalid_ui_element")
+        }) ? .confirmedFieldDisappeared : .observationFailed
+    }
+    if observedSurfacePrompt != nil {
+        return .confirmedPlaceholderRestored
+    }
+    if observedLogicalValue.isEmpty {
+        return .confirmedFieldCleared
+    }
+    if observedValueMatchesTerminal == true {
+        return .promptRemainedPopulated
+    }
+    return .fieldChangedWithoutClear
+}
+
 /// Identifies UI prompt chrome that an application exposes as AXValue even
 /// though the editable field is logically empty. This is deliberately narrow:
 /// unknown short field values remain user content rather than being guessed

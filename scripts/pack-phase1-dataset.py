@@ -103,6 +103,14 @@ def require_compiled_dataset(
         "phase1-episode-causal-v1",
         "phase1-episode-causal-v2",
         "phase1-episode-causal-v3",
+        "phase1-episode-causal-v4",
+        "phase1-episode-causal-v5",
+        "phase1-raw-episode-causal-v1",
+        "phase1-raw-episode-causal-v2",
+        "phase1-raw-episode-causal-v3",
+        "phase1-raw-episode-causal-v4",
+        "phase1-raw-episode-causal-v5",
+        "phase1-raw-episode-causal-v6",
     }:
         raise ValueError(
             "packer requires a supported causal or episode-causal conversion"
@@ -126,7 +134,8 @@ def require_compiled_dataset(
         if len(context_by_id) != len(context_blocks):
             raise ValueError("corpus contains duplicate contextBlockID values")
         if manifest.get("artifactType") not in {
-            "phase1_multi_session_corpus", "phase1_episode_corpus"
+            "phase1_multi_session_corpus", "phase1_episode_corpus",
+            "phase1_raw_authoritative_episode_corpus",
         }:
             raise ValueError("context-blocks.jsonl requires a multi-session corpus manifest")
         for event_id, event in events_by_id.items():
@@ -675,7 +684,13 @@ def main() -> int:
                         f"example {example['exampleID']} has invalid episode lineage"
                     )
                 if source_manifest["conversionVersion"] in {
-                    "phase1-episode-causal-v2", "phase1-episode-causal-v3"
+                    "phase1-episode-causal-v2", "phase1-episode-causal-v3",
+                    "phase1-episode-causal-v4", "phase1-raw-episode-causal-v1",
+                    "phase1-episode-causal-v5",
+                    "phase1-raw-episode-causal-v2", "phase1-raw-episode-causal-v3",
+                    "phase1-raw-episode-causal-v4",
+                    "phase1-raw-episode-causal-v5",
+                    "phase1-raw-episode-causal-v6",
                 }:
                     # v2 deliberately removes micro-WRITEs from model-facing
                     # events. Their IDs remain immutable audit lineage on the

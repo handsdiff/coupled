@@ -1496,3 +1496,495 @@ packed audit, causal-shift/mask tests, episode-review regressions, and full loca
 check suite pass. The prior v2 corpus and pack remain the immutable mechanical
 smoke record but are superseded for the next three-arm experiment. No additional
 paid smoke is required.
+
+## Episode-construction review candidate (v4)
+
+The user's second corpus review found that episode v3 conflated three separate
+questions: which micro-WRITEs form one composition, what WRITE belongs in later
+history, and whether that WRITE should receive loss. In particular, 41 of 42
+flagged UI rows were excluded even though only six involved paste and most were
+ordinary typed prompts or notes.
+
+Episode v4 keeps those decisions separate:
+
+- every semantically reconstructible transition remains a model-facing,
+  history-only WRITE when closure or prediction-time onset is not proved;
+- only a closed composition with an available onset query can receive loss;
+- missing-onset submitted prompts may retain their complete terminal field
+  value in history but cannot become targets;
+- known application prompt scaffolds such as Claude's `Write a message…` are
+  empty logical field states rather than removed human content;
+- grammatical surface heuristics such as unmatched parentheses and trailing
+  whitespace no longer reject otherwise proved compositions;
+- concise submitted questions explicitly reviewed by the user may receive loss
+  despite the general 40-character/six-word automatic threshold;
+- pure pastes become grounded history WRITEs, while a proved mixed
+  authored/paste/authored composition may receive `<|paste|>` loss without
+  copied-payload loss.
+
+The 30 user/reviewer-adjudicated cases are frozen by stable source event IDs in:
+
+```text
+episode-review/phase1-episode-regressions-v4.json
+```
+
+They comprise 18 loss episodes and 12 history-only episodes. The regression
+checker requires exact decisions, exact member lineage, four concise submitted
+questions, unavailable-onset exclusions from loss, uniquely grounded paste
+segments, and the exact finalized content for both user-supplied blind cases at
+`2026-08-19T12:43:16.708Z` and `2026-08-19T19:05:05.004Z`. The former contains
+seven—not five—source micro-WRITEs once the two intervening transitions omitted
+by the older review selection are included; only the complete seven-member
+selection satisfies continuity and no-outside-WRITE gates.
+
+Current immutable review artifacts:
+
+```text
+coupled-data/phase1-episode-regression-review-v4-r4
+coupled-data/phase1-full-episode-adjudications-v4-r4.jsonl
+coupled-data/phase1-full-episode-production-candidates-v4-r4.jsonl
+coupled-data/phase1-closed-episode-corpus-v4-review-r3-20260819
+coupled-data/phase1-closed-episode-pack-v4-review-r3-20260819
+```
+
+The v4 corpus partitions 478 semantic micro-WRITEs into 346 model-facing WRITE
+episodes: 125 loss-bearing, 221 history-only, and 57 source transitions with no
+usable semantic completion. Thirty episodes contain multiple source WRITEs and
+25 of those receive loss. No source micro-WRITE ID appears directly
+in model-facing history.
+
+The tokenizer pack contains 125 examples, 4,327 target tokens, seven grounded
+paste actions, and one EOS per target. Corpus audit, regression audit, packed
+audit, full repository checks, and an independent deterministic replay pass.
+This remains a review candidate—not authority for another paid Phase 1 run—until
+the user finishes inspecting the revised loss/history assignments in the local
+episode UI.
+
+## Raw-authoritative episode review candidate (v1)
+
+The v4 review showed that a fixed list of adjudicated event IDs was useful as a
+regression oracle but was not a valid production conversion. The production
+path now follows the architecture implied by the vault's sensor-first arc:
+
+```text
+immutable raw evidence
+→ normalized semantic READ/WRITE primitives
+→ raw-aware closed-composition episodes
+→ normalized causal history and loss-bearing examples
+→ tokenizer-specific packing
+```
+
+The production episode assembler accepts only the source micro-corpus, the
+complete raw-evidence primitive projection, and an output directory. It does
+not accept adjudications, forced decisions, example ordinals, or oracle event
+IDs. The 30 user/reviewer-adjudicated cases remain test-only regressions, and a
+static check rejects embedding any of their identities in the production
+assembler.
+
+Episode boundaries are decided from raw state continuity, logical destination,
+affected text region, causal READ novelty, submission evidence, and field
+departure. Repeated or self-derived READs do not split a composition; novel
+causally available READs do. Reconstruction, structural closure, and loss
+eligibility are separate statuses. Semantic micro-WRITEs remain audit lineage
+only: model-facing history contains the normalized closed episodes.
+
+Raw paste checkpoints are authoritative for authorship. This caught a real AX
+epoch failure that had previously turned a pure Obsidian paste into a target
+containing thousands of surrounding document characters. The corrected rule
+derives the local paste transition from the synchronous pre/post checkpoint,
+retains its resolved payload and provenance in later history, and gives pure
+pastes no authored loss. Mixed authored/paste episodes retain authored text and
+the grounded paste marker without copied-payload loss.
+
+The complete six-session review projection contains:
+
+- 1,462 source semantic events and 478 source micro-WRITEs;
+- 317 normalized closed WRITE episodes;
+- 152 loss-bearing closed substantive episodes;
+- 38 excluded episode groups with no surviving authored or pasted output;
+- 58 multi-WRITE episodes, 37 of them loss-bearing;
+- 437 absorbed source micro-WRITEs and zero source micro-WRITEs in model-facing
+  history;
+- two repeated/self-derived READs suppressed inside active compositions.
+
+Canonical review artifacts:
+
+```text
+coupled-data/phase1-raw-write-primitives-v1-20260819
+coupled-data/phase1-raw-episode-corpus-v1-review-20260819
+coupled-data/phase1-raw-episode-pack-v1-review-20260819
+```
+
+The corpus replay is byte-identical. Its `corpus.json`, `events.jsonl`, and
+`examples.jsonl` SHA-256 digests are respectively:
+
+```text
+e0e5cf52b85601b4671dc44bae94dabe87ef18187fd67f7f50cb050a4573682f
+220444badf8760c384bf86e1241e664b7566467252b5f5ddffa2c37e43c997df
+a59c7f5289024f2d41587a153a56d57f27b0c788ce62f1c92a8afb9264570534
+```
+
+All 30 reviewer-oracle regressions, the raw-episode unit checks, corpus audit,
+packed audit, and full repository check suite pass. The Qwen pack contains 152
+examples, 4,977 target tokens, eight grounded paste actions, exactly one EOS
+per target, and a maximum packed sequence length of 33,004 tokens. No provider
+call or paid training was performed for this checkpoint.
+
+This is the production-independent review candidate that supersedes v4. It is
+not yet frozen for another paid Phase 1 experiment: the user should first
+inspect the 152 loss-bearing episodes and their raw trajectories in the local
+review UI.
+
+## Raw episode closure and AX-epoch correction (v2)
+
+Independent review of raw episode v1 found three remaining boundary problems.
+Version 2 makes the corresponding narrow, evidence-based corrections:
+
+- a novel causal READ closes the preceding prompt composition only when the
+  following WRITE continues on the same logical field with replayable state;
+  the preceding completion must meet the ordinary 40-character/six-word
+  threshold rather than the short submitted-prompt threshold;
+- session termination alone is not closure evidence; a final episode requires
+  an independently observed submission or another structural boundary to
+  receive loss;
+- volatile braille progress glyphs in VS Code terminal descriptions do not
+  change logical destination identity, and a same-prompt AX value reset can be
+  stitched only when no submission occurred and raw local epochs remain
+  independently reconstructible;
+- a synchronous Cmd-V whose clipboard version matches conditioning can survive
+  an opaque post-paste AX reset as an explicitly marked paste action. The
+  record states that direct semantic insertion was not observed. Its payload
+  remains resolved and provenance-marked in later history, while the target
+  contains only the paste marker.
+
+The motivating old #389–390 trace now reconstructs as one history-only draft:
+an authored prefix, one grounded 2,436-character paste, and a final quote. It
+does not receive loss because neither submission nor a closed-thought boundary
+was observed. Three other previously unresolved submitted VS Code prompts now
+produce mixed authored/paste targets rather than copied-payload supervision.
+
+Relative to v1, every one of the original 152 targets is byte-identical. Seven
+additional targets are admitted: four substantive thoughts partitioned by a
+novel READ before same-field continuation, and three submitted mixed-write
+prompts with grounded opaque paste actions. The previously reviewed incomplete
+bullet-list draft remains history-only because its subsequent novel READ led to
+a different destination rather than same-field continuation.
+
+Canonical v2 review artifacts:
+
+```text
+coupled-data/phase1-raw-episode-corpus-v2-review-r4-20260820
+coupled-data/phase1-raw-episode-pack-v2-review-r4-20260820
+```
+
+The projection contains 315 normalized closed WRITE episodes and 159
+loss-bearing examples; 59 episodes contain multiple source micro-WRITEs and 39
+of those receive loss. The pack contains 5,219 target tokens, 11 grounded paste
+actions, exactly one EOS per target, and a maximum sequence length of 33,004.
+
+The regression fixture now contains 32 cases, including same-field novel-READ
+closure and the opaque formatted-paste epoch. The corpus audit also asserts
+that unsubmitted session-end episodes cannot receive loss. Construction is
+byte-identical on replay, and all original v1 targets remain unchanged.
+
+The corpus, event, example, packing-manifest, and packed-example SHA-256 digests
+are respectively:
+
+```text
+ff25415258977168054927076b8c0635a387d5ab738f97c07eb48cda4444a247
+52fdac2e6665d7272d80574afa87b4e5598157105ee24a594259e6a5f3086cd7
+576d72501a03d4284b1580ca6a3ca5c83dce2c1137b3d0ed0ec00b5b132cdd9c
+3b74b68d3dcd11cfc8033ab82a07fcb426c85ab6e619a7f86563bd8d56810578
+f7d42c06cecdde4257effb3b4b18ecd5c98ea29475cf5ca6ce5fc8caed361e9a
+```
+
+No provider call or paid training was performed. Version 2 supersedes raw
+episode v1 for review, but it remains a review candidate until the seven newly
+loss-bearing targets and the repaired #389–390 history trajectory are visually
+accepted.
+
+## Offset-grounded repeated-paste correction (raw episode v3)
+
+Raw episode v2 still required a proven clipboard insertion to be globally
+unique inside the completed episode text. That is unnecessarily strict: the
+user may first author a phrase and later paste the same phrase as a quotation.
+The synchronous pre/post-paste observation already records the actual field
+offset of the paste.
+
+Version 3 first maps that raw checkpoint offset into the episode's complete
+initial-to-terminal edit. It accepts the placement only when:
+
+- the exact raw insertion occurs at the observed field offset;
+- replacing that raw span with a sentinel, normalizing the complete episode,
+  and restoring the insertion reproduces the finalized content exactly; and
+- paste placements remain ordered and non-overlapping.
+
+The prior unique-text search remains only as a conservative compatibility
+fallback for observations whose exact checkpoint offset cannot be projected.
+An ambiguous location still becomes unresolved rather than guessed.
+
+This repairs old UI #299–300. Its three micro-WRITEs now form one submitted,
+loss-bearing episode whose target contains authored text, one grounded paste
+action at the second occurrence of the repeated phrase, and the final authored
+quote. The regression verifies the checkpoint ID, repeated authored occurrence,
+paste payload, segment order, and full-content round trip.
+
+Old #389–390 remains history-only. Its text and 2,436-character paste are
+reconstructible, but closure is absent from the raw evidence. The regression
+now explicitly describes this as `closure unobserved`: the conservative
+history-only result does not assert that the user never submitted it.
+
+Every v2 episode and target is unchanged except #299–300, which moves from
+`paste_authorship_unresolved` history to a verified loss episode. The canonical
+v3 artifacts are:
+
+```text
+coupled-data/phase1-raw-episode-corpus-v3-review-r5-20260820
+coupled-data/phase1-raw-episode-pack-v3-review-r5-20260820
+```
+
+The projection contains 315 model-facing WRITE episodes and 160 loss-bearing
+examples. Forty of the 59 multi-WRITE episodes receive loss. The pack contains
+5,328 target tokens, 12 grounded paste actions, exactly one EOS per target,
+and a maximum sequence length of 33,004 tokens.
+
+The ten raw reducer checks, 33 episode regressions, corpus audit, packed audit,
+and byte-identical replay pass. The corpus, events, examples, packing manifest,
+and packed examples SHA-256 digests are respectively:
+
+```text
+a69367a001ae6a38f0dbe8024341156a9a6ba1ecb7f3e957006534eb60e37767
+e44b28f2e1ea8ee1136bc2f7b9f2ce628d070747f8d9c5240247289fa2d43427
+8971f310be6816ed8ef0e948aca89c9711ac95f7965ea4262556ba5767a227de
+a43bf7533a30e53a5bc6800f7211bb35b6a4fa6c00fe07d28bf41b36eea643e7
+77effdad1b1f3065bb86bd8c1cc4d94dbcc5d6b590bc030d813d8ad4f94c7071
+```
+
+No provider call or paid training was performed.
+
+## Canceled-paste repair and expanded August 20 review corpus (raw episode v4)
+
+Raw episode v4 handles the demonstrated paste-then-immediate-undo trajectory as
+an observed cancellation rather than a paste target. The rule is deliberately
+narrow: the synchronous paste transition must insert the conditioned clipboard
+exactly, the immediately following input must be Undo, the next retained field
+state must exactly restore the pre-paste value and selection, the payload must
+be absent from the terminal edit, and the later checkpoint trajectory must
+reach the selected terminal state. Raw paste and Undo evidence remain intact;
+the finalized target contains only the surviving authored completion.
+
+The active collection in
+`coupled-data/phase1-ordinary-work-2026-08-19-10` was stopped cleanly and
+reduced with semantic reducer v8. Its 2,342 raw records produced 520 READs and
+198 verified micro-WRITEs; causal compilation admitted 164 micro-WRITE targets.
+It was assembled chronologically with the prior six compatible sessions and
+then passed through the same raw-authoritative episode constructor.
+
+The expanded seven-session review projection contains:
+
+- 2,180 source semantic events and 676 source micro-WRITEs;
+- 450 normalized closed WRITE episodes;
+- 221 loss-bearing closed substantive episodes;
+- 41 excluded unresolved episode groups;
+- 94 multi-WRITE episodes, 61 of them loss-bearing;
+- 631 absorbed source micro-WRITEs and zero micro-WRITEs in model-facing
+  history;
+- four repeated/self-derived READs suppressed inside active compositions.
+
+Canonical review artifacts:
+
+```text
+coupled-data/phase1-all-through-2026-08-20-micro-corpus-v3
+coupled-data/phase1-raw-write-primitives-v2-20260820
+coupled-data/phase1-raw-episode-corpus-v4-expanded-review-20260820
+coupled-data/phase1-raw-episode-pack-v4-expanded-review-20260820
+```
+
+Construction is byte-identical on replay. All 34 adjudicated regressions,
+including the canceled paste, pass. The corpus and packed audits pass. The pack
+contains 221 examples, 7,034 target tokens, 15 grounded paste actions, exactly
+one EOS per target, and a maximum sequence length of 33,004 tokens. The corpus,
+event, example, packing-manifest, and packed-example SHA-256 digests are:
+
+```text
+004fd3bad6f5090f512230e913889fc11bfac5a3d2b0d08715c170ed270151ab
+c22c67c68da5d419501c06720541710bde6734d4930d2ef257cd014dbd9ca763
+56141b6bbb767a58cedd85d5e2aa1af0652fb3397771f185b3a9d1ebb770e36d
+54bef7fdd83efa8be77b9b1f294d566e61b096a512a6c00181e36570962d0119
+a0ad5a0b3740b014b9131f92ab98a8fb89cb04c0b78947d2d801cf2d9ffba66f
+```
+
+This remains a review candidate, not training authority. The read-only local
+inspector serves it at `http://127.0.0.1:8767/`.
+
+## Raw post-settlement prompt-closure evidence
+
+The collector now retains one minimal reference after a prompt-like editable
+settles: the source raw WRITE ID, held AX element, terminal observation ID,
+terminal hash, and character count. It does not cache screen contents and does
+not create a third semantic event.
+
+An unmodified Return or any left click while that reference is live triggers
+one bounded post-action observation. The raw `prompt_submission_observation`
+record links back to the settled WRITE and retains the hit-tested action,
+pre-action state, post-action state, surface validation, AX errors, and field
+transition. The sensor does not require the clicked Accessibility node to label
+itself as Send: that proved brittle in the first live mouse test. A click that
+leaves the draft populated records that fact; a different window cannot close
+the old prompt; and a later mutation supersedes the reference. The offline
+semantic reducer will decide whether action plus transition proves submission.
+
+This closes the missing-evidence gap for mouse submission after `WRITE_DELAY`
+without adding online semantic interpretation.
+
+Live validation then established both sides of the sensor contract:
+
+- `prompt-closure-test-3` linked a settled prompt to a later mouse click on an
+  `AXButton` labelled Send. The pre-action value exactly matched the settled
+  terminal value, the field disappeared afterward, and the raw disposition was
+  `confirmed_field_disappeared`.
+- `prompt-closure-test-4` retained a populated draft when the user clicked into
+  another window. Its raw disposition was `surface_changed`; it did not become
+  submission evidence.
+
+Semantic reducer v9 is now authoritative for these records. It accepts only a
+linked positive transition with exact terminal observation identity/hash/count,
+an exact pre-action field value, ordered timings, same-surface validation, and
+either unmodified Return or a generic semantic submission button. Accepted
+evidence is added to deterministic raw lineage and changes the semantic boundary
+to `submission_boundary`; the original capture boundary remains separately
+recorded. Negative raw observations never close a WRITE. The causal compiler
+verifies the mixed WRITE/closure lineage without repeating the semantic rule.
+
+Raw episode v5 carries this evidence into closed-composition construction. A
+submitted episode becomes causally available at the actual post-action closure
+observation, not at the earlier three-second write settlement. This preserves
+the key invariant that the resulting prompt cannot enter history until the
+submission that closed it has actually been observed.
+
+The mechanism is surface-generic, not ChatGPT-specific. It applies to allowlisted
+applications whose Accessibility surface exposes a recognizable prompt/editor
+field and a provable Return or submission control transition. Stable document
+editors continue through the ordinary raw WRITE path unchanged. Terminal-style
+surfaces remain an empirical validation case rather than an assumed capability.
+
+The live positive and negative traces reduce and compile with zero rejected
+WRITEs. The positive trace also completes raw episode v5 construction, corpus
+audit, and tokenizer packing; its normalized WRITE `availableAt` equals the
+post-submission observation time. The full repository check suite passes. No
+provider call or paid training was performed.
+
+### Cross-surface validation
+
+`prompt-closure-multisurface-test-5` exercised ChatGPT, Chrome prompt fields,
+Obsidian, and VS Code/terminal surfaces. The collector was stopped explicitly
+at 127 raw records before the final replay.
+
+The ChatGPT Return case passed end to end: the settled completion was retained,
+the later Return produced `confirmed_field_disappeared`, semantic v9 emitted a
+`submission_boundary`, and raw episode v5 delayed causal availability until the
+post-action observation. Chrome clicks that merely preserved the draft or
+changed surface remained non-submission evidence. This trace did not provide a
+second confirmed Chrome mouse-Send transition, so generic Chrome mouse closure
+remains supported by the raw architecture but should not be claimed as newly
+validated by this particular session.
+
+The Obsidian multiline negative test correctly remained an ordinary
+`write_delay_elapsed` WRITE rather than submission. It also exposed a second
+AX list-scaffold rendering: current Obsidian sometimes emits
+`newline + zero-width + newline + dash`, without the extra zero-width-only line
+seen in the older fixture. The reducer's exact structural grammar now accepts
+both observed variants while preserving the original transition in
+`observedNetEdit`. The reconstructed authored completion contains the four
+typed lines and no zero-width or bullet scaffold. A permanent regression covers
+the compact variant.
+
+The final session replay produced 12 READs and nine semantic WRITEs with zero
+causal-compiler rejections. Raw episode v5 produced eight model-facing closed
+episodes, three test-only loss-bearing episodes, and zero source micro-WRITEs in
+model history. Its corpus audit passes. These validation strings are not part
+of the ordinary-work training corpus.
+
+### Chrome mouse-Send action semantics
+
+The isolated `prompt-closure-chrome-send-test-6` proved that the state sensor is
+correct in Chrome/Gemini: immediately before the click the held prompt contained
+exactly `chrome mouse submit validation 2026-08-20`; 150 ms later the same field
+had restored `Ask Gemini`; and the retained screenshot showed the exact prompt
+as a submitted user message. A later READ captured Gemini's response.
+
+Semantic v9 nevertheless rejected the closure because Chrome exposed the
+clicked control as an unlabeled `AXGroup`. The initial action sensor inspected
+only four AX ancestors, and the reducer unnecessarily required both an
+`AXButton` role and a semantic submission term. This is an action-semantics
+coverage failure, not a missing field transition.
+
+The generic correction is semantic reducer v10 plus a deeper bounded action
+probe. The collector now inspects up to ten ancestors of the hit-tested node,
+preferring a node carrying a submission term and retaining button evidence as a
+fallback. The reducer accepts an exact submission term from that bounded clicked
+ancestry even when a browser reports the semantic node as a group rather than a
+button. It still requires the complete pre/post field-transition proof; an
+unlabelled click cannot close a WRITE. A permanent fixture verifies a semantic
+`send` ancestor with role `AXGroup`. The full repository check passes. This
+specific collector-side expansion still requires one live Chrome replay before
+v10 is treated as validated.
+
+## Semantic v10 replay and raw episode v6
+
+All seven compatible ordinary-work sessions through August 20 were replayed
+from immutable raw journals with semantic reducer v10 and causal compiler v14.
+The replay produced 2,184 semantic events and 541 eligible micro examples with
+zero causal-compiler rejections. Those micro examples remain an audit layer;
+they are not the Phase 1 prediction unit.
+
+Raw episode v5 initially converted the replay into 225 closed-composition
+targets. A target-level comparison against the manually reviewed 221-example
+v4 baseline found 221 byte-identical targets and four additions. One addition
+was invalid as an independent thought: an Obsidian pointer relocation allowed
+one character to materialize between the preceding terminal snapshot and the
+next synchronous BEFORE, splitting the sentence at `who a` and supervising the
+suffix `ren't using...` independently.
+
+Raw episode v6 repairs that class at the composition layer without a language
+heuristic. It permits a discontinuous pair to remain in one episode only when:
+
+- the exact same retained AX element and logical destination are observed;
+- the prior boundary is a pointer-selection boundary;
+- the gap is no more than three seconds;
+- neither side contains paste or cut provenance;
+- the existing composition is already substantive; and
+- the bridge edit and final net edit stay inside the active authored region.
+
+The target still comes from the episode's original BEFORE and final AFTER.
+Intermediate text and the unobserved bridge never receive their own loss. A
+permanent regression proves the positive case and rejects a different element
+or a gap above the bound.
+
+The canonical review artifact is:
+
+```text
+coupled-data/phase1-raw-episode-corpus-v6-v10-review-20260820
+```
+
+It contains 455 model-facing closed episodes and 224 loss-bearing examples.
+Ninety-five episodes contain multiple semantic WRITEs, 62 of which receive
+loss; 638 source micro-WRITEs are absorbed and none appear independently in
+model-facing history. Against the v4 baseline, 220 targets are byte-identical,
+the incomplete GTM target is replaced by its finalized three-member thought,
+and three new complete targets are admitted. The standalone `ren't using...`
+target is absent. All 34 adjudicated episode regressions and the corpus audit
+pass. A second construction is byte-identical.
+
+Canonical SHA-256 digests are:
+
+```text
+corpus.json    04f53a8544aac13e2515d8e582794d4f88dba6e6578cc65a734e299191d96a11
+events.jsonl   4791358e5a3cc63982014a9af61c170be023e69991ff2856a20e3d14730f97e2
+examples.jsonl c72949ca16f2a040420e692dcb4d22d366d6c241a3653cfb17416753b4c86c8c
+```
+
+The read-only target-delta inspector serves this corpus against the reviewed
+v4 baseline at `http://127.0.0.1:8768/`. The default view shows the four new
+example identities, including the corrected replacement target; it also
+reports the one superseded v4 example.

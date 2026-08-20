@@ -18,7 +18,10 @@ final class ActiveTapWriteCollector {
     private var eventTapSource: CFRunLoopSource?
     private var writeTimer: Timer?
     private var mutationCheckpointTimer: Timer?
+    private var promptClosureTimer: Timer?
     private var pending: PendingActiveTapWrite?
+    private var settledPromptReference: SettledPromptReference?
+    private var knownPromptSurfaces = Set<PromptSurfaceIdentity>()
     private var sequence: UInt64 = 0
     private var tapTimeoutCount: UInt64 = 0
 
@@ -52,6 +55,7 @@ final class ActiveTapWriteCollector {
             .sorted()
         writeDiagnostic("write apps: \(enabledBundles.joined(separator: ", "))")
         writeDiagnostic("no polling; one before snapshot is held only during an active write burst")
+        writeDiagnostic("settled prompt closure: raw evidence only; no derived submission event")
     }
 
     private func primeRendererAccessibility() {
@@ -104,7 +108,7 @@ final class ActiveTapWriteCollector {
             if type == .keyDown {
                 collector.handleKeyDown(event)
             } else {
-                collector.handlePointerBoundary(type)
+                collector.handlePointerBoundary(type, event: event)
             }
             return Unmanaged.passUnretained(event)
         }
@@ -172,6 +176,23 @@ final class ActiveTapWriteCollector {
         }
 
         let classification = classifyKey(event)
+        if pending == nil, settledPromptReference != nil {
+            if classification.isUnmodifiedReturn {
+                beginSettledPromptClosureObservation(
+                    action: captureKeyboardSubmissionAction(
+                        event: event,
+                        observedAt: inputObservedAt
+                    )
+                )
+                return
+            }
+            if classification.canStartWrite {
+                expireSettledPromptReference(
+                    reason: "superseded_by_subsequent_mutation",
+                    actionAt: inputObservedAt
+                )
+            }
+        }
         if let active = pending,
            active.conditioningClipboard.changeCount != NSPasteboard.general.changeCount {
             completeCapture(
@@ -298,16 +319,27 @@ final class ActiveTapWriteCollector {
         }
     }
 
-    private func handlePointerBoundary(_ type: CGEventType) {
+    private func handlePointerBoundary(_ type: CGEventType, event: CGEvent) {
         let callbackStarted = DispatchTime.now().uptimeNanoseconds
-        guard pending != nil else { return }
-        completeOutstandingPasteCheckpointsSynchronously()
-        completeCapture(
-            boundaryReason: type == .leftMouseDown
-                ? "pointer_selection_boundary"
-                : "pointer_context_boundary",
-            deferPersistence: true,
-            callbackStartedNanoseconds: callbackStarted
+        guard !configuration.isPaused() else {
+            discardPendingForPause()
+            return
+        }
+        if pending != nil {
+            completeOutstandingPasteCheckpointsSynchronously()
+            completeCapture(
+                boundaryReason: type == .leftMouseDown
+                    ? "pointer_selection_boundary"
+                    : "pointer_context_boundary",
+                deferPersistence: true,
+                callbackStartedNanoseconds: callbackStarted
+            )
+            return
+        }
+        guard type == .leftMouseDown,
+              settledPromptReference != nil else { return }
+        beginSettledPromptClosureObservation(
+            action: capturePointerAction(event: event)
         )
     }
 
@@ -501,6 +533,13 @@ final class ActiveTapWriteCollector {
             writeDiagnostic("could not persist active-tap write evidence: \(error)")
             return
         }
+        rememberPromptSurfaceIfObserved(pending: pending)
+        retainSettledPromptReferenceIfEligible(
+            pending: pending,
+            after: after,
+            boundaryReason: boundaryReason,
+            terminalDecisionAt: terminalDecisionAt
+        )
 
         let decision: WriteDerivationDecision
         if tapTimeoutCountAtCompletion > pending.tapTimeoutCountAtStart {
@@ -587,6 +626,421 @@ final class ActiveTapWriteCollector {
         } catch {
             writeDiagnostic("could not write active-tap event: \(error)")
         }
+    }
+
+    private func retainSettledPromptReferenceIfEligible(
+        pending: PendingActiveTapWrite,
+        after: TargetCapture,
+        boundaryReason: String,
+        terminalDecisionAt: String
+    ) {
+        guard boundaryReason == "write_delay_elapsed",
+              pending.tapTimeoutCountAtStart == tapTimeoutCount,
+              pending.beforeAXErrors.isEmpty,
+              after.errors.isEmpty,
+              let target = pending.target,
+              let before = pending.before,
+              let terminal = after.observation,
+              !before.valueWasTruncated,
+              !terminal.valueWasTruncated else { return }
+        let logicalTerminal = logicalEditableValue(
+            terminal.value,
+            placeholderValue: terminal.placeholderValue
+        )
+        guard !logicalTerminal.isEmpty,
+              isSubmissionPromptSurface(target: target, before: before) else { return }
+
+        if settledPromptReference != nil {
+            expireSettledPromptReference(
+                reason: "replaced_by_new_settled_prompt_reference",
+                actionAt: terminalDecisionAt
+            )
+        }
+        settledPromptReference = SettledPromptReference(
+            sourceWriteRecordID: pending.attemptID,
+            retainedAt: terminalDecisionAt,
+            target: target,
+            terminalObservationID: terminal.observationID,
+            terminalValueSHA256: sha256(logicalTerminal),
+            terminalCharacterCount: logicalTerminal.count
+        )
+    }
+
+    private func isSubmissionPromptSurface(
+        target: HeldEditableTarget,
+        before: ActiveTapEditableObservation
+    ) -> Bool {
+        knownPromptSurfaces.contains(PromptSurfaceIdentity(target))
+            || directlyIdentifiesSubmissionPromptSurface(target: target, before: before)
+    }
+
+    private func rememberPromptSurfaceIfObserved(pending: PendingActiveTapWrite) {
+        guard let target = pending.target,
+              let before = pending.before,
+              directlyIdentifiesSubmissionPromptSurface(
+                target: target,
+                before: before
+              ) else { return }
+        knownPromptSurfaces.insert(PromptSurfaceIdentity(target))
+    }
+
+    private func directlyIdentifiesSubmissionPromptSurface(
+        target: HeldEditableTarget,
+        before: ActiveTapEditableObservation
+    ) -> Bool {
+        if unpopulatedSurfacePrompt(
+            bundleIdentifier: target.app.bundleIdentifier,
+            fieldDescription: target.identity.fieldDescription,
+            value: before.value,
+            placeholderValue: before.placeholderValue,
+            valueRepresentedPlaceholder: before.valueRepresentedPlaceholder
+        ) != nil {
+            return true
+        }
+        if target.identity.role == (kAXTextFieldRole as String)
+            || target.identity.role == (kAXComboBoxRole as String) {
+            return true
+        }
+        let metadata = [
+            before.placeholderValue,
+            target.identity.accessibilityIdentifier,
+            target.identity.fieldLabel,
+            target.identity.fieldDescription,
+        ]
+        .compactMap { $0?.lowercased() }
+        .joined(separator: " ")
+        return ["prompt", "message", "composer", "chat", "ask", "reply"]
+            .contains { metadata.contains($0) }
+    }
+
+    private func captureKeyboardSubmissionAction(
+        event: CGEvent,
+        observedAt: String
+    ) -> PromptSubmissionActionEvidence {
+        PromptSubmissionActionEvidence(
+            kind: "unmodified_return",
+            observedAt: observedAt,
+            eventTimestampNanoseconds: event.timestamp,
+            pointerX: nil,
+            pointerY: nil,
+            controlRole: nil,
+            controlTitle: nil,
+            controlDescription: nil,
+            controlIdentifier: nil,
+            matchedSubmissionTerm: "return",
+            axErrors: []
+        )
+    }
+
+    private func capturePointerAction(
+        event: CGEvent
+    ) -> PromptSubmissionActionEvidence {
+        let point = event.location
+        var element: AXUIElement?
+        let hitError = AXUIElementCopyElementAtPosition(
+            systemWideElement,
+            Float(point.x),
+            Float(point.y),
+            &element
+        )
+        guard hitError == .success, var candidate = element else {
+            return PromptSubmissionActionEvidence(
+                kind: "pointer_click",
+                observedAt: nowTimestamp(),
+                eventTimestampNanoseconds: event.timestamp,
+                pointerX: point.x,
+                pointerY: point.y,
+                controlRole: nil,
+                controlTitle: nil,
+                controlDescription: nil,
+                controlIdentifier: nil,
+                matchedSubmissionTerm: nil,
+                axErrors: ["element_at_position:\(axErrorName(hitError))"]
+            )
+        }
+
+        var accumulatedErrors = [String]()
+        var fallback: PromptSubmissionActionEvidence?
+        var buttonEvidence: PromptSubmissionActionEvidence?
+        var semanticEvidence: PromptSubmissionActionEvidence?
+        // Browser accessibility trees often place an unlabeled SVG/group
+        // several layers below the semantic submit control. Walk a bounded
+        // ancestor chain instead of assuming the first four nodes contain the
+        // button. This remains application-neutral and happens only after a
+        // settled prompt reference exists.
+        for _ in 0..<10 {
+            var errors = [String]()
+            let role = stringAttribute(candidate, kAXRoleAttribute, errors: &errors)
+            let title = stringAttribute(candidate, kAXTitleAttribute, errors: &errors)
+            let description = stringAttribute(
+                candidate,
+                kAXDescriptionAttribute,
+                errors: &errors
+            )
+            let identifier = stringAttribute(
+                candidate,
+                kAXIdentifierAttribute,
+                errors: &errors
+            )
+            accumulatedErrors.append(contentsOf: errors)
+            let term = submissionTerm(
+                in: [title, description, identifier].compactMap { $0 }
+            )
+            let evidence = PromptSubmissionActionEvidence(
+                kind: "pointer_click",
+                observedAt: nowTimestamp(),
+                eventTimestampNanoseconds: event.timestamp,
+                pointerX: point.x,
+                pointerY: point.y,
+                controlRole: role,
+                controlTitle: title,
+                controlDescription: description,
+                controlIdentifier: identifier,
+                matchedSubmissionTerm: term,
+                axErrors: accumulatedErrors
+            )
+            if fallback == nil {
+                fallback = evidence
+            }
+            if role == (kAXButtonRole as String), buttonEvidence == nil {
+                buttonEvidence = evidence
+            }
+            if term != nil, semanticEvidence == nil {
+                semanticEvidence = evidence
+            }
+            if role == (kAXButtonRole as String), term != nil {
+                return evidence
+            }
+            var parentErrors = [String]()
+            guard let parent = elementAttribute(
+                candidate,
+                kAXParentAttribute,
+                errors: &parentErrors
+            ) else { break }
+            accumulatedErrors.append(contentsOf: parentErrors)
+            candidate = parent
+        }
+        return semanticEvidence ?? buttonEvidence ?? fallback ?? PromptSubmissionActionEvidence(
+            kind: "pointer_click",
+            observedAt: nowTimestamp(),
+            eventTimestampNanoseconds: event.timestamp,
+            pointerX: point.x,
+            pointerY: point.y,
+            controlRole: nil,
+            controlTitle: nil,
+            controlDescription: nil,
+            controlIdentifier: nil,
+            matchedSubmissionTerm: nil,
+            axErrors: accumulatedErrors
+        )
+    }
+
+    private func submissionTerm(in values: [String]) -> String? {
+        let words = Set(values
+            .joined(separator: " ")
+            .lowercased()
+            .split { !$0.isLetter && !$0.isNumber }
+            .map(String.init))
+        return ["send", "submit", "post", "publish", "search", "ask", "go", "continue"]
+            .first { words.contains($0) }
+    }
+
+    private func beginSettledPromptClosureObservation(
+        action: PromptSubmissionActionEvidence
+    ) {
+        guard let reference = settledPromptReference else { return }
+        let focused = captureFocusedTarget(includeValue: false, reason: "prompt_pre_action_target")
+        guard sameTarget(reference.target, focused.target) else {
+            expireSettledPromptReference(
+                reason: "submission_action_target_changed",
+                actionAt: action.observedAt,
+                action: action
+            )
+            return
+        }
+        let preAction = captureHeldTarget(
+            reference.target,
+            reason: "prompt_pre_submission_action"
+        )
+        let preActionLogicalValue = preAction.observation.map {
+            logicalEditableValue($0.value, placeholderValue: $0.placeholderValue)
+        }
+        guard let preActionLogicalValue,
+              sha256(preActionLogicalValue) == reference.terminalValueSHA256 else {
+            emitPromptSubmissionObservation(
+                reference: reference,
+                action: action,
+                preAction: preAction,
+                afterAction: nil,
+                surfaceErrors: [],
+                disposition: "pre_action_terminal_state_changed"
+            )
+            settledPromptReference = nil
+            return
+        }
+
+        promptClosureTimer?.invalidate()
+        promptClosureTimer = Timer.scheduledTimer(
+            withTimeInterval: Self.postSubmissionObservationDelaySeconds,
+            repeats: false
+        ) { [weak self] _ in
+            self?.completeSettledPromptClosureObservation(
+                sourceWriteRecordID: reference.sourceWriteRecordID,
+                action: action,
+                preAction: preAction
+            )
+        }
+    }
+
+    private func completeSettledPromptClosureObservation(
+        sourceWriteRecordID: String,
+        action: PromptSubmissionActionEvidence,
+        preAction: TargetCapture
+    ) {
+        promptClosureTimer = nil
+        guard let reference = settledPromptReference,
+              reference.sourceWriteRecordID == sourceWriteRecordID else { return }
+        let surface = captureFrontmostSurfaceMatch(reference.target)
+        let afterAction = captureHeldTarget(
+            reference.target,
+            reason: "prompt_post_submission_action"
+        )
+        let observedLogicalValue = afterAction.observation.map {
+            logicalEditableValue($0.value, placeholderValue: $0.placeholderValue)
+        }
+        let observedSurfacePrompt = afterAction.observation.flatMap {
+            unpopulatedSurfacePrompt(
+                bundleIdentifier: reference.target.app.bundleIdentifier,
+                fieldDescription: reference.target.identity.fieldDescription,
+                value: $0.value,
+                placeholderValue: $0.placeholderValue,
+                valueRepresentedPlaceholder: $0.valueRepresentedPlaceholder
+            )
+        }
+        let disposition = promptClosureDisposition(
+            observedLogicalValue: observedLogicalValue,
+            observedSurfacePrompt: observedSurfacePrompt,
+            observedValueMatchesTerminal: observedLogicalValue.map {
+                sha256($0) == reference.terminalValueSHA256
+            },
+            observationErrors: afterAction.errors,
+            sameSurface: surface.matches
+        )
+        emitPromptSubmissionObservation(
+            reference: reference,
+            action: action,
+            preAction: preAction,
+            afterAction: afterAction,
+            surfaceErrors: surface.errors,
+            disposition: disposition.rawValue
+        )
+        switch disposition {
+        case .confirmedFieldCleared,
+             .confirmedPlaceholderRestored,
+             .confirmedFieldDisappeared,
+             .fieldChangedWithoutClear,
+             .surfaceChanged:
+            settledPromptReference = nil
+        case .promptRemainedPopulated, .observationFailed:
+            break
+        }
+    }
+
+    private func captureFrontmostSurfaceMatch(
+        _ target: HeldEditableTarget
+    ) -> FrontmostSurfaceMatch {
+        guard let running = NSWorkspace.shared.frontmostApplication else {
+            return FrontmostSurfaceMatch(
+                matches: false,
+                errors: ["frontmost_application:no_value"]
+            )
+        }
+        guard running.processIdentifier == target.app.processIdentifier else {
+            return FrontmostSurfaceMatch(matches: false, errors: [])
+        }
+        var errors = [String]()
+        let applicationElement = AXUIElementCreateApplication(running.processIdentifier)
+        let focusedWindow = elementAttribute(
+            applicationElement,
+            kAXFocusedWindowAttribute,
+            errors: &errors
+        )
+        if let expected = target.windowElement, let focusedWindow {
+            return FrontmostSurfaceMatch(
+                matches: CFEqual(expected, focusedWindow),
+                errors: errors
+            )
+        }
+        let title = focusedWindow.flatMap {
+            stringAttribute($0, kAXTitleAttribute, errors: &errors)
+        }
+        return FrontmostSurfaceMatch(
+            matches: title == target.window.title,
+            errors: errors
+        )
+    }
+
+    private func expireSettledPromptReference(
+        reason: String,
+        actionAt: String,
+        action: PromptSubmissionActionEvidence? = nil
+    ) {
+        promptClosureTimer?.invalidate()
+        promptClosureTimer = nil
+        guard let reference = settledPromptReference else { return }
+        settledPromptReference = nil
+        emitPromptSubmissionObservation(
+            reference: reference,
+            action: action,
+            preAction: nil,
+            afterAction: nil,
+            surfaceErrors: [],
+            disposition: reason,
+            observedAt: actionAt
+        )
+    }
+
+    private func emitPromptSubmissionObservation(
+        reference: SettledPromptReference,
+        action: PromptSubmissionActionEvidence?,
+        preAction: TargetCapture?,
+        afterAction: TargetCapture?,
+        surfaceErrors: [String],
+        disposition: String,
+        observedAt: String = nowTimestamp()
+    ) {
+        let record = RawPromptSubmissionObservation(
+            recordID: UUID().uuidString,
+            observedAt: observedAt,
+            sourceWriteRecordID: reference.sourceWriteRecordID,
+            referenceRetainedAt: reference.retainedAt,
+            targetIdentity: reference.target.identity,
+            terminalObservationID: reference.terminalObservationID,
+            terminalValueSHA256: reference.terminalValueSHA256,
+            terminalCharacterCount: reference.terminalCharacterCount,
+            configuredPostActionDelaySeconds: Self.postSubmissionObservationDelaySeconds,
+            action: action,
+            preActionObservation: preAction?.observation,
+            preActionAXErrors: preAction?.errors ?? [],
+            postActionObservation: afterAction?.observation,
+            postActionAXErrors: afterAction?.errors ?? [],
+            surfaceValidationErrors: surfaceErrors,
+            disposition: disposition
+        )
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            do {
+                _ = try self.rawWriter.write(record)
+            } catch {
+                writeDiagnostic("could not persist prompt submission observation: \(error)")
+            }
+        }
+    }
+
+    private func sha256(_ value: String) -> String {
+        SHA256.hash(data: Data(value.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
     }
 
     private func writeConditioningState(
@@ -1082,7 +1536,10 @@ final class ActiveTapWriteCollector {
         writeTimer = nil
         mutationCheckpointTimer?.invalidate()
         mutationCheckpointTimer = nil
+        promptClosureTimer?.invalidate()
+        promptClosureTimer = nil
         pending = nil
+        settledPromptReference = nil
     }
 
     private func captureReturnCheckpoint(
@@ -1597,6 +2054,7 @@ final class ActiveTapWriteCollector {
     }
 
     private static let axTimeoutSeconds = 0.2
+    private static let postSubmissionObservationDelaySeconds = 0.15
 }
 
 private struct PendingActiveTapWrite {
@@ -1620,6 +2078,40 @@ private struct PendingActiveTapWrite {
     var firstCallbackDurationMilliseconds: Double?
     var maximumCallbackDurationMilliseconds: Double
     let tapTimeoutCountAtStart: UInt64
+}
+
+private struct SettledPromptReference {
+    let sourceWriteRecordID: String
+    let retainedAt: String
+    let target: HeldEditableTarget
+    let terminalObservationID: String
+    let terminalValueSHA256: String
+    let terminalCharacterCount: Int
+}
+
+private struct PromptSurfaceIdentity: Hashable {
+    let processIdentifier: Int32
+    let bundleIdentifier: String?
+    let role: String
+    let subrole: String?
+    let accessibilityIdentifier: String?
+    let fieldLabel: String?
+    let fieldDescription: String?
+
+    init(_ target: HeldEditableTarget) {
+        processIdentifier = target.app.processIdentifier
+        bundleIdentifier = target.app.bundleIdentifier
+        role = target.identity.role
+        subrole = target.identity.subrole
+        accessibilityIdentifier = target.identity.accessibilityIdentifier
+        fieldLabel = target.identity.fieldLabel
+        fieldDescription = target.identity.fieldDescription
+    }
+}
+
+private struct FrontmostSurfaceMatch {
+    let matches: Bool
+    let errors: [String]
 }
 
 private struct CapturedReturnCheckpoint {
@@ -1963,6 +2455,41 @@ private struct RawActiveTapWriteEvidence: Encodable {
     let firstCallbackDurationMilliseconds: Double?
     let maximumCallbackDurationMilliseconds: Double
     let tapTimeoutCountDuringBurst: UInt64
+}
+
+private struct PromptSubmissionActionEvidence: Encodable {
+    let kind: String
+    let observedAt: String
+    let eventTimestampNanoseconds: UInt64
+    let pointerX: Double?
+    let pointerY: Double?
+    let controlRole: String?
+    let controlTitle: String?
+    let controlDescription: String?
+    let controlIdentifier: String?
+    let matchedSubmissionTerm: String?
+    let axErrors: [String]
+}
+
+private struct RawPromptSubmissionObservation: Encodable {
+    let schemaVersion = 1
+    let recordType = "prompt_submission_observation"
+    let recordID: String
+    let observedAt: String
+    let sourceWriteRecordID: String
+    let referenceRetainedAt: String
+    let targetIdentity: ActiveTapTargetIdentity
+    let terminalObservationID: String
+    let terminalValueSHA256: String
+    let terminalCharacterCount: Int
+    let configuredPostActionDelaySeconds: Double
+    let action: PromptSubmissionActionEvidence?
+    let preActionObservation: ActiveTapEditableObservation?
+    let preActionAXErrors: [String]
+    let postActionObservation: ActiveTapEditableObservation?
+    let postActionAXErrors: [String]
+    let surfaceValidationErrors: [String]
+    let disposition: String
 }
 
 private struct RawWriteSensorHealth: Encodable {

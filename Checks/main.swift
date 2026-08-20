@@ -1593,6 +1593,29 @@ obsidianDestination["bundleIdentifier"] = "md.obsidian"
 obsidianConditioning["destination"] = obsidianDestination
 obsidianScaffoldWrite["conditioningState"] = obsidianConditioning
 
+let compactObsidianScaffoldAfter =
+    "existing note\nfirst thought\n\u{200B}\n-\n\u{200B} \nsecond thought\n\u{200B}\n-\n\u{200B} \nthird thought\n"
+var compactObsidianScaffoldWrite = schema15WriteFixture(
+    id: "obsidian-compact-list-scaffold",
+    beforeValue: obsidianScaffoldBefore,
+    afterValue: compactObsidianScaffoldAfter,
+    beganAt: "2026-01-01T00:01:04.000Z",
+    terminalAt: "2026-01-01T00:01:07.000Z",
+    inputHints: ["typed", "return"]
+)
+compactObsidianScaffoldWrite["bundleIdentifier"] = "md.obsidian"
+var compactObsidianTarget =
+    compactObsidianScaffoldWrite["targetIdentity"] as! [String: Any]
+compactObsidianTarget["bundleIdentifier"] = "md.obsidian"
+compactObsidianScaffoldWrite["targetIdentity"] = compactObsidianTarget
+var compactObsidianConditioning =
+    compactObsidianScaffoldWrite["conditioningState"] as! [String: Any]
+var compactObsidianDestination =
+    compactObsidianConditioning["destination"] as! [String: Any]
+compactObsidianDestination["bundleIdentifier"] = "md.obsidian"
+compactObsidianConditioning["destination"] = compactObsidianDestination
+compactObsidianScaffoldWrite["conditioningState"] = compactObsidianConditioning
+
 // Deliberately append the READ captured at t=3 before the WRITE which began at
 // t=2 but settled at t=4. Raw-order overlap would incorrectly emit only gamma.
 writeFixtureJSONL([
@@ -1622,7 +1645,7 @@ writeFixtureJSONL([
     autocompleteFour, autocompleteFive,
     cursorMoveOne, cursorMoveTwo,
     selectedReplacementWrite, unpopulatedPromptWrite, ambiguousShortcutWrite,
-    obsidianScaffoldWrite,
+    obsidianScaffoldWrite, compactObsidianScaffoldWrite,
 ], to: motivatingInput.appendingPathComponent("raw.jsonl"))
 
 _ = try! reducer.reduce(
@@ -1770,6 +1793,19 @@ expect(
         && (obsidianScaffoldEvent?["observedNetEdit"] as? [String: Any])?["content"]
             as? String == "\nfirst thought\n\u{200B}\t\n\u{200B}\n-\n\u{200B} second thought\n\u{200B}\t\n\u{200B}\n-\n\u{200B} ",
     "Obsidian list scaffolding remains observed evidence but not human-authored content"
+)
+let compactObsidianScaffoldEvent = motivatingEvents.first {
+    ($0["sourceRecordIDs"] as? [String]) == ["obsidian-compact-list-scaffold"]
+}
+expect(
+    compactObsidianScaffoldEvent?["content"] as? String
+        == "first thought\nsecond thought\nthird thought\n"
+        && compactObsidianScaffoldEvent?["authorshipEvidence"] as? String
+            == "obsidian_list_scaffold_normalized_v1"
+        && (compactObsidianScaffoldEvent?["observedNetEdit"] as? [String: Any])?["content"]
+            as? String
+            == "\nfirst thought\n\u{200B}\n-\n\u{200B} \nsecond thought\n\u{200B}\n-\n\u{200B} \nthird thought\n",
+    "compact Obsidian list scaffolding is normalized from the observed transition"
 )
 expect(
     motivatingDispositions.contains {
@@ -1979,6 +2015,180 @@ do {
     schema15LegacyWasRejected = String(describing: error).contains("requires reduction.json")
 }
 expect(schema15LegacyWasRejected, "schema 15 cannot use the legacy compiler importer")
+
+// A settled prompt WRITE may be closed later by independently persisted raw
+// evidence. The reducer—not the collector preview—binds that observation into
+// semantic lineage and moves causal availability to the proven submission.
+let promptClosureInput = fixtureRoot.appendingPathComponent("prompt-closure-input")
+let promptClosureReduction = fixtureRoot.appendingPathComponent("prompt-closure-reduction")
+let promptClosureDataset = fixtureRoot.appendingPathComponent("prompt-closure-dataset")
+try! FileManager.default.createDirectory(
+    at: promptClosureInput, withIntermediateDirectories: true
+)
+try! jsonData([
+    "sessionID": "prompt-closure-session",
+    "schemas": ["timingSemanticsVersion": 2, "rawActiveTapWrite": 15],
+], pretty: true).write(to: promptClosureInput.appendingPathComponent("session.json"))
+var promptClosureAttempt = rawFirstAttempt
+promptClosureAttempt["recordID"] = "prompt-closure-attempt"
+promptClosureAttempt["sessionID"] = "prompt-closure-session"
+let promptClosureObservation: [String: Any] = [
+    "schemaVersion": 1,
+    "recordType": "prompt_submission_observation",
+    "recordID": "prompt-closure-observation",
+    "sessionID": "prompt-closure-session",
+    "sourceWriteRecordID": "prompt-closure-attempt",
+    "referenceRetainedAt": "2026-01-01T00:00:04.000Z",
+    "terminalObservationID": rawFirstAfter["observationID"] as! String,
+    "terminalValueSHA256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+    "terminalCharacterCount": 5,
+    "preActionObservation": rawFirstAfter,
+    "preActionAXErrors": [],
+    "action": [
+        "kind": "unmodified_return",
+        "observedAt": "2026-01-01T00:00:05.000Z",
+        "eventTimestampNanoseconds": 5,
+    ],
+    "observedAt": "2026-01-01T00:00:05.150Z",
+    "postActionAXErrors": ["AXValue:invalid_ui_element"],
+    "surfaceValidationErrors": [],
+    "disposition": "confirmed_field_disappeared",
+]
+var pointerPromptClosureAttempt = promptClosureAttempt
+pointerPromptClosureAttempt["recordID"] = "pointer-prompt-closure-attempt"
+pointerPromptClosureAttempt["beganAt"] = "2026-01-01T00:00:06.000Z"
+pointerPromptClosureAttempt["lastInputAt"] = "2026-01-01T00:00:06.000Z"
+pointerPromptClosureAttempt["observedAt"] = "2026-01-01T00:00:09.000Z"
+pointerPromptClosureAttempt["terminalDecisionAt"] = "2026-01-01T00:00:09.000Z"
+pointerPromptClosureAttempt["terminalSnapshotAt"] = "2026-01-01T00:00:09.000Z"
+let pointerPromptClosureObservation: [String: Any] = [
+    "schemaVersion": 1,
+    "recordType": "prompt_submission_observation",
+    "recordID": "pointer-prompt-closure-observation",
+    "sessionID": "prompt-closure-session",
+    "sourceWriteRecordID": "pointer-prompt-closure-attempt",
+    "referenceRetainedAt": "2026-01-01T00:00:09.000Z",
+    "terminalObservationID": rawFirstAfter["observationID"] as! String,
+    "terminalValueSHA256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+    "terminalCharacterCount": 5,
+    "preActionObservation": rawFirstAfter,
+    "preActionAXErrors": [],
+    "action": [
+        "kind": "pointer_click",
+        "controlRole": "AXGroup",
+        "matchedSubmissionTerm": "send",
+        "observedAt": "2026-01-01T00:00:10.000Z",
+        "eventTimestampNanoseconds": 10,
+    ],
+    "observedAt": "2026-01-01T00:00:10.150Z",
+    "postActionObservation": observation(
+        "", at: "2026-01-01T00:00:10.150Z", selectionLocation: 0
+    ),
+    "postActionAXErrors": [],
+    "surfaceValidationErrors": [],
+    "disposition": "confirmed_field_cleared",
+]
+writeFixtureJSONL(
+    [
+        promptClosureAttempt, promptClosureObservation,
+        pointerPromptClosureAttempt, pointerPromptClosureObservation,
+    ],
+    to: promptClosureInput.appendingPathComponent("raw.jsonl")
+)
+_ = try! Phase1SemanticReducer().reduce(
+    sourceDirectory: promptClosureInput,
+    outputDirectory: promptClosureReduction
+)
+let promptClosureEvents = readFixtureJSONL(
+    promptClosureReduction.appendingPathComponent("events.jsonl")
+)
+expect(
+    promptClosureEvents.count == 2
+        && promptClosureEvents.allSatisfy {
+            $0["boundaryReason"] as? String == "submission_boundary"
+        }
+        && promptClosureEvents[0]["captureBoundaryReason"] as? String
+            == "write_delay_elapsed"
+        && promptClosureEvents[0]["submissionObservedAt"] as? String
+            == "2026-01-01T00:00:05.150Z"
+        && promptClosureEvents[0]["sourceRecordIDs"] as? [String]
+            == ["prompt-closure-attempt", "prompt-closure-observation"],
+    "reducer binds a proven post-settlement submission to its source WRITE"
+)
+_ = try! CausalDatasetCompiler().compile(
+    inputDirectory: promptClosureReduction,
+    sourceDirectory: promptClosureInput,
+    outputDirectory: promptClosureDataset
+)
+let compiledPromptClosure = readFixtureJSONL(
+    promptClosureDataset.appendingPathComponent("events.jsonl")
+)
+expect(
+    compiledPromptClosure.count == 2
+        && compiledPromptClosure.contains {
+            $0["sourceRecordIDs"] as? [String]
+                == ["prompt-closure-attempt", "prompt-closure-observation"]
+        }
+        && compiledPromptClosure.contains {
+            $0["sourceRecordIDs"] as? [String]
+                == [
+                    "pointer-prompt-closure-attempt",
+                    "pointer-prompt-closure-observation",
+                ]
+        },
+    "causal compiler verifies mixed WRITE and closure raw lineage"
+)
+
+expect(
+    promptClosureDisposition(
+        observedLogicalValue: "",
+        observedSurfacePrompt: nil,
+        observedValueMatchesTerminal: false,
+        observationErrors: [],
+        sameSurface: true
+    ) == .confirmedFieldCleared,
+    "a submission-shaped action followed by an empty field proves prompt closure"
+)
+expect(
+    promptClosureDisposition(
+        observedLogicalValue: "",
+        observedSurfacePrompt: "Ask anything",
+        observedValueMatchesTerminal: false,
+        observationErrors: [],
+        sameSurface: true
+    ) == .confirmedPlaceholderRestored,
+    "restored prompt chrome proves prompt closure"
+)
+expect(
+    promptClosureDisposition(
+        observedLogicalValue: nil,
+        observedSurfacePrompt: nil,
+        observedValueMatchesTerminal: nil,
+        observationErrors: ["AXValue:invalid_ui_element"],
+        sameSurface: true
+    ) == .confirmedFieldDisappeared,
+    "an invalidated prompt on the same surface is retained as disappearance evidence"
+)
+expect(
+    promptClosureDisposition(
+        observedLogicalValue: "draft",
+        observedSurfacePrompt: nil,
+        observedValueMatchesTerminal: true,
+        observationErrors: [],
+        sameSurface: true
+    ) == .promptRemainedPopulated,
+    "clicking elsewhere while a draft remains does not fabricate closure"
+)
+expect(
+    promptClosureDisposition(
+        observedLogicalValue: "",
+        observedSurfacePrompt: nil,
+        observedValueMatchesTerminal: false,
+        observationErrors: [],
+        sameSurface: false
+    ) == .surfaceChanged,
+    "a different capture-time surface cannot close the old prompt"
+)
 
 try! FileManager.default.removeItem(at: fixtureRoot)
 

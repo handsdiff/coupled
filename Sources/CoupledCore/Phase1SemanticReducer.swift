@@ -4,7 +4,7 @@ import Foundation
 public struct Phase1SemanticReducerConfiguration: Sendable {
     public let reducerVersion: String
 
-    public init(reducerVersion: String = "phase1-semantic-v8") {
+    public init(reducerVersion: String = "phase1-semantic-v10") {
         self.reducerVersion = reducerVersion
     }
 }
@@ -82,9 +82,17 @@ public struct Phase1SemanticReducer {
                 throw Phase1SemanticReducerError.duplicateRawRecordID(id)
             }
         }
+        let rawByID = Dictionary(uniqueKeysWithValues: raw.compactMap { record in
+            stringValue(record.object["recordID"]).map { ($0, record) }
+        })
+        let promptClosures = validatedPromptClosures(
+            raw,
+            rawByID: rawByID,
+            sessionID: sessionID
+        )
 
         var candidates = [ReducerCandidate]()
-        var dispositions = [ReducerDisposition]()
+        var dispositions = promptClosures.dispositions
         for record in raw {
             let object = record.object
             guard object["sessionID"] as? String == sessionID else {
@@ -146,10 +154,19 @@ public struct Phase1SemanticReducer {
                 } else {
                     effectiveLineage = writeLineage
                 }
+                let closure = effectiveLineage.compactMap {
+                    promptClosures.bySourceWriteRecordID[$0]
+                }.sorted {
+                    if $0.observedAt != $1.observedAt {
+                        return $0.observedAt < $1.observedAt
+                    }
+                    return $0.rawLine < $1.rawLine
+                }.first
                 switch reduceWrite(
                     effectiveWriteObject,
                     sessionID: sessionID,
-                    lineage: effectiveLineage
+                    lineage: effectiveLineage,
+                    promptClosure: closure
                 ) {
                 case .failure(let failure):
                     dispositions.append(ReducerDisposition(line: writeLine, object: reducerUnresolved(
@@ -240,6 +257,7 @@ public struct Phase1SemanticReducer {
             "navigationContinuationRule": "selection-navigation attempts are one WRITE only when the same retained editable either proves an end-of-field application completion or proves that value, caret, and selection were unchanged within WRITE_DELAY",
             "selectedReplacementRule": "an initial complete AX selection or explicit unpopulated-prompt state may expand a minimal diff to the exact replacement completion only when the replacement reconstructs the selected observation and the final ordered mutation checkpoint reaches that observation",
             "fastStartRule": "adjacent target-changing attempts whose typed-input count exactly explains the later prefilled prefix remain history-only with explicit target ineligibility",
+            "promptClosureRule": "a settled WRITE gains a submission boundary only from a linked raw post-action observation whose terminal hash and pre-action state match, whose action is unmodified Return or has a semantic submission term anywhere on the bounded clicked AX ancestor chain, and whose same-surface field clears, restores its placeholder, or disappears",
             "readOverlapOrdering": "READ capturedAt with finalized WRITE beganAt boundaries; raw append order ignored",
             "previewAuthority": false,
         ]
@@ -264,6 +282,17 @@ private struct ReducerCandidate {
 }
 private struct ReducerDisposition { let line: Int; let object: [String: Any] }
 private struct ReducerWriteBoundary { let rawLine: Int; let beganAt: String }
+private struct ReducerPromptClosure {
+    let rawLine: Int
+    let recordID: String
+    let sourceWriteRecordID: String
+    let observedAt: String
+    let evidence: [String: Any]
+}
+private struct ReducerPromptClosureResult {
+    let bySourceWriteRecordID: [String: ReducerPromptClosure]
+    let dispositions: [ReducerDisposition]
+}
 private struct ReducerOverlapResult {
     let events: [ReducerCandidate]
     let dispositions: [ReducerDisposition]
@@ -283,6 +312,167 @@ private struct ReducerNavigationChain {
 private struct ReducerNavigationChains {
     let byFirstRecordID: [String: ReducerNavigationChain]
     let consumedRecordIDs: Set<String>
+}
+
+private func validatedPromptClosures(
+    _ records: [ReducerLine],
+    rawByID: [String: ReducerLine],
+    sessionID: String
+) -> ReducerPromptClosureResult {
+    let positiveDispositions: Set<String> = [
+        "confirmed_field_cleared",
+        "confirmed_placeholder_restored",
+        "confirmed_field_disappeared",
+    ]
+    let submissionTerms: Set<String> = [
+        "send", "submit", "post", "publish", "search", "ask", "go", "continue",
+    ]
+    var accepted = [String: ReducerPromptClosure]()
+    var dispositions = [ReducerDisposition]()
+
+    func reject(_ record: ReducerLine, reason: String, details: [String: Any] = [:]) {
+        dispositions.append(ReducerDisposition(
+            line: record.line,
+            object: reducerUnresolved(
+                sessionID: sessionID,
+                raw: record.object,
+                line: record.line,
+                kind: "write_closure",
+                rule: "prompt_closure_evidence_v1",
+                reason: reason,
+                details: details
+            )
+        ))
+    }
+
+    for record in records where
+        stringValue(record.object["recordType"]) == "prompt_submission_observation"
+    {
+        let raw = record.object
+        guard stringValue(raw["sessionID"]) == sessionID else {
+            reject(record, reason: "closure_session_identity_mismatch")
+            continue
+        }
+        guard let disposition = stringValue(raw["disposition"]),
+              positiveDispositions.contains(disposition) else {
+            continue
+        }
+        guard let recordID = stringValue(raw["recordID"]),
+              let sourceID = stringValue(raw["sourceWriteRecordID"]),
+              let source = rawByID[sourceID]?.object,
+              stringValue(source["recordType"]) == "active_tap_write_attempt" else {
+            reject(record, reason: "closure_source_write_missing")
+            continue
+        }
+        guard stringValue(source["sessionID"]) == sessionID,
+              stringValue(source["boundaryReason"]) == "write_delay_elapsed",
+              let terminal = source["after"] as? [String: Any],
+              terminal["valueWasTruncated"] as? Bool != true,
+              let terminalRaw = stringValue(terminal["value"]),
+              let terminalObservationID = stringValue(terminal["observationID"]),
+              terminalObservationID == stringValue(raw["terminalObservationID"]) else {
+            reject(record, reason: "closure_terminal_observation_mismatch")
+            continue
+        }
+        let terminalValue = logicalEditableValue(
+            terminalRaw,
+            placeholderValue: stringValue(terminal["placeholderValue"])
+        )
+        let terminalHash = reducerSHA256String(terminalValue)
+        guard !terminalValue.isEmpty,
+              terminalHash == stringValue(raw["terminalValueSHA256"]),
+              terminalValue.count == intValue(raw["terminalCharacterCount"]),
+              let preAction = raw["preActionObservation"] as? [String: Any],
+              stringArray(raw["preActionAXErrors"]).isEmpty,
+              preAction["valueWasTruncated"] as? Bool != true,
+              let preActionRaw = stringValue(preAction["value"]),
+              reducerSHA256String(logicalEditableValue(
+                preActionRaw,
+                placeholderValue: stringValue(preAction["placeholderValue"])
+              )) == terminalHash else {
+            reject(record, reason: "closure_pre_action_state_mismatch")
+            continue
+        }
+        guard stringArray(raw["surfaceValidationErrors"]).isEmpty,
+              let action = raw["action"] as? [String: Any],
+              let actionKind = stringValue(action["kind"]),
+              let actionAt = stringValue(action["observedAt"]),
+              let observedAt = stringValue(raw["observedAt"]),
+              let retainedAt = stringValue(raw["referenceRetainedAt"]),
+              retainedAt <= actionAt,
+              actionAt <= observedAt else {
+            reject(record, reason: "closure_action_or_timing_invalid")
+            continue
+        }
+        let actionProvesSubmission = actionKind == "unmodified_return"
+            || (actionKind == "pointer_click"
+                && stringValue(action["matchedSubmissionTerm"]).map {
+                    submissionTerms.contains($0)
+                } == true)
+        guard actionProvesSubmission else {
+            reject(record, reason: "closure_action_not_semantically_submissive")
+            continue
+        }
+
+        let postAction = raw["postActionObservation"] as? [String: Any]
+        let postErrors = stringArray(raw["postActionAXErrors"])
+        let transitionIsValid: Bool
+        switch disposition {
+        case "confirmed_field_disappeared":
+            transitionIsValid = postAction == nil && postErrors.contains(where: {
+                $0.localizedCaseInsensitiveContains("invalid_ui_element")
+            })
+        case "confirmed_field_cleared":
+            transitionIsValid = postErrors.isEmpty
+                && postAction.flatMap { stringValue($0["value"]) }.map {
+                    logicalEditableValue(
+                        $0,
+                        placeholderValue: stringValue(postAction?["placeholderValue"])
+                    ).isEmpty
+                } == true
+        case "confirmed_placeholder_restored":
+            transitionIsValid = postErrors.isEmpty
+                && postAction.flatMap { stringValue($0["value"]) }.map {
+                    logicalEditableValue(
+                        $0,
+                        placeholderValue: stringValue(postAction?["placeholderValue"])
+                    ).isEmpty
+                } == true
+        default:
+            transitionIsValid = false
+        }
+        guard transitionIsValid else {
+            reject(record, reason: "closure_post_action_transition_invalid")
+            continue
+        }
+        guard accepted[sourceID] == nil else {
+            reject(record, reason: "duplicate_confirmed_closure_for_write")
+            continue
+        }
+        let evidence: [String: Any] = [
+            "schemaVersion": 1,
+            "status": "submitted",
+            "sourceRecordID": recordID,
+            "observedAt": observedAt,
+            "disposition": disposition,
+            "action": action,
+            "terminalObservationID": terminalObservationID,
+            "preActionObservationID": stringValue(preAction["observationID"]) ?? "",
+            "postActionObservationID": stringValue(postAction?["observationID"]) as Any,
+            "rule": "prompt_closure_evidence_v1",
+        ]
+        accepted[sourceID] = ReducerPromptClosure(
+            rawLine: record.line,
+            recordID: recordID,
+            sourceWriteRecordID: sourceID,
+            observedAt: observedAt,
+            evidence: removeNullOptionals(evidence)
+        )
+    }
+    return ReducerPromptClosureResult(
+        bySourceWriteRecordID: accepted,
+        dispositions: dispositions
+    )
 }
 
 /// The collector intentionally persists a boundary before a navigation key is
@@ -1189,7 +1379,8 @@ private func reduceRead(_ raw: [String: Any], sessionID: String)
 private func reduceWrite(
     _ raw: [String: Any],
     sessionID: String,
-    lineage: [String]? = nil
+    lineage: [String]? = nil,
+    promptClosure: ReducerPromptClosure? = nil
 )
     -> Result<[String: Any], ReducerFailure>
 {
@@ -1198,8 +1389,10 @@ private func reduceWrite(
         .failure(ReducerFailure(rule: rule, reason: reason, details: details))
     }
     guard let recordID = stringValue(raw["recordID"]) else { return fail("missing_record_id") }
-    let sourceRecordIDs = lineage ?? [recordID]
-    let composedNavigation = sourceRecordIDs.count > 1
+    let writeSourceRecordIDs = lineage ?? [recordID]
+    let sourceRecordIDs = writeSourceRecordIDs
+        + [promptClosure?.recordID].compactMap { $0 }
+    let composedNavigation = writeSourceRecordIDs.count > 1
         && stringValue(raw["semanticComposition"])
             == "same_editable_navigation_chain"
     guard (raw["tapTimeoutCountDuringBurst"] as? NSNumber)?.uint64Value ?? 0 == 0 else {
@@ -1413,7 +1606,7 @@ private func reduceWrite(
         authorshipEvidence = authorship.evidence ?? NSNull()
     }
     var event: [String: Any] = [
-        "schemaVersion": 12,
+        "schemaVersion": 13,
         "kind": "write",
         "provenance": "raw_input_semantic_reducer",
         "eventID": eventID,
@@ -1424,7 +1617,12 @@ private func reduceWrite(
         "terminalDecisionAt": stringValue(raw["terminalDecisionAt"]) ?? "",
         "terminalSnapshotAt": raw["terminalSnapshotAt"] ?? NSNull(),
         "configuredWriteDelaySeconds": raw["configuredWriteDelaySeconds"] ?? 0,
-        "boundaryReason": stringValue(raw["boundaryReason"]) ?? "unknown",
+        "boundaryReason": promptClosure == nil
+            ? stringValue(raw["boundaryReason"]) ?? "unknown"
+            : "submission_boundary",
+        "captureBoundaryReason": stringValue(raw["boundaryReason"]) ?? "unknown",
+        "submissionObservedAt": promptClosure?.observedAt as Any,
+        "closureEvidence": promptClosure?.evidence as Any,
         "derivationObservationSource": selection.source,
         "fallbackReason": selection.reason == "terminal_observation" ? NSNull() : selection.reason,
         "usedCheckpointID": selection.checkpointID ?? NSNull(),
@@ -1506,7 +1704,11 @@ private func normalizeObsidianListScaffolding(
               $0.type == "authored_text" && $0.content.contains("\u{200B}")
           }) else { return authorship }
 
-    let scaffold = "\n\u{200B}(?:\\t)?\n\u{200B}\n-\n\u{200B} "
+    // Obsidian currently exposes two equivalent list boundaries. Some editor
+    // states include an extra zero-width-only line before the literal dash;
+    // others proceed directly from the first zero-width line to the dash.
+    // Both are exact structural AX scaffolds surrounding a typed Return.
+    let scaffold = "\n\u{200B}(?:\\t)?\n(?:\u{200B}\n)?-\n\u{200B} (?:\n)?"
     guard let expression = try? NSRegularExpression(pattern: scaffold) else {
         return authorship
     }
@@ -2223,6 +2425,12 @@ private func reducerWriteJSON(_ object: [String: Any], to url: URL) throws {
 
 private func reducerSHA256(_ url: URL) throws -> String {
     SHA256.hash(data: try Data(contentsOf: url)).map { String(format: "%02x", $0) }.joined()
+}
+
+private func reducerSHA256String(_ value: String) -> String {
+    SHA256.hash(data: Data(value.utf8))
+        .map { String(format: "%02x", $0) }
+        .joined()
 }
 
 private func stringValue(_ value: Any?) -> String? { value as? String }

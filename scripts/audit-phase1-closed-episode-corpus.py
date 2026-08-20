@@ -59,12 +59,42 @@ def main() -> int:
 
     root = args.corpus.resolve()
     manifest = load_json(root / "corpus.json")
-    if manifest.get("artifactType") != "phase1_episode_corpus":
+    if manifest.get("artifactType") not in {
+        "phase1_episode_corpus", "phase1_raw_authoritative_episode_corpus",
+    }:
         raise ValueError("not an episode corpus")
-    if manifest.get("conversionVersion") != "phase1-episode-causal-v3":
-        raise ValueError("audit requires phase1-episode-causal-v3")
-    if manifest.get("episodeVersion") != "phase1-episode-v3":
-        raise ValueError("audit requires phase1-episode-v3")
+    episode_version = manifest.get("episodeVersion")
+    conversion_version = manifest.get("conversionVersion")
+    raw_authoritative = (
+        manifest.get("artifactType") == "phase1_raw_authoritative_episode_corpus"
+    )
+    if raw_authoritative:
+        if episode_version not in {
+            "phase1-raw-episode-v1", "phase1-raw-episode-v2",
+            "phase1-raw-episode-v3",
+            "phase1-raw-episode-v4",
+            "phase1-raw-episode-v5",
+            "phase1-raw-episode-v6",
+        }:
+            raise ValueError("audit requires a supported raw episode version")
+        if conversion_version not in {
+            "phase1-raw-episode-causal-v1", "phase1-raw-episode-causal-v2",
+            "phase1-raw-episode-causal-v3",
+            "phase1-raw-episode-causal-v4",
+            "phase1-raw-episode-causal-v5",
+            "phase1-raw-episode-causal-v6",
+        }:
+            raise ValueError("audit requires a supported raw causal version")
+        architecture = manifest.get("rawEpisodeArchitecture") or {}
+        assert architecture.get("sourceAuthority") == "immutable_raw_journals"
+        assert architecture.get("productionConsumesRegressionFixture") is False
+    elif (
+        episode_version not in {"phase1-episode-v4", "phase1-episode-v5"}
+        or conversion_version not in {
+            "phase1-episode-causal-v4", "phase1-episode-causal-v5"
+        }
+    ):
+        raise ValueError("audit requires a supported Phase 1 episode corpus")
     objective = manifest.get("objective") or {}
     assert objective.get("predictionUnit") == "closed_composition_episode"
     assert objective.get("microWritesReceiveLoss") is False
@@ -73,9 +103,14 @@ def main() -> int:
     eligibility = manifest.get("eligibility") or {}
     assert eligibility.get("minimumTrimmedAuthoredCharacters") == 40
     assert eligibility.get("minimumAuthoredWords") == 6
+    assert eligibility.get("minimumSubmittedAuthoredCharacters") == 4
+    assert eligibility.get("automaticSubmittedShortMinimumEnabled") is raw_authoritative
+    assert eligibility.get("reviewedConciseSubmissionsMayOverrideGeneralMinimum") is not raw_authoritative
+    assert eligibility.get("reviewedRegressionDecisionsOverrideLengthHeuristics") is not raw_authoritative
     assert eligibility.get("groundedPasteActionBypassesMinimumAuthoredContent") is False
     assert eligibility.get("closedButBelowThresholdRemainsHistoryOnly") is True
-    assert eligibility.get("unresolvedOrUnclosedMicroWritesAppearInModelHistory") is False
+    assert eligibility.get("resolvedTransitionsWithoutTargetEligibilityRemainHistoryOnly") is True
+    assert eligibility.get("unresolvedOrUnclosedMicroWritesAppearInModelHistory") is not raw_authoritative
 
     for name, expected in manifest.get("artifactDigestsSHA256", {}).items():
         actual = digest(root / name)
@@ -97,6 +132,31 @@ def main() -> int:
     blocks = load_jsonl(root / "context-blocks.jsonl")
     examples = load_jsonl(root / "examples.jsonl")
     adjudications = load_jsonl(root / "episode-adjudications.jsonl")
+    adjudication_by_candidate = {
+        row["candidateID"]: row for row in adjudications
+    }
+    if raw_authoritative and episode_version in {
+        "phase1-raw-episode-v2", "phase1-raw-episode-v3",
+        "phase1-raw-episode-v4",
+        "phase1-raw-episode-v5",
+        "phase1-raw-episode-v6",
+    }:
+        raw_candidates = load_jsonl(root / "raw-episode-candidates.jsonl")
+        for candidate in raw_candidates:
+            adjudication = adjudication_by_candidate[candidate["candidateID"]]
+            state_machine = candidate.get("episodeStateMachine") or {}
+            closure_evidence = candidate.get("closureEvidence") or {}
+            if (
+                state_machine.get("closeReason") == "session_end"
+                and closure_evidence.get("objectiveSubmissionBoundary") is not True
+            ):
+                assert adjudication.get("decision") != "closed_loss_episode"
+                assert adjudication.get("closureStatus") == "open_or_abandoned"
+            if adjudication.get("closureReason") == "novel_causal_read_partition":
+                boundary = (state_machine.get("boundaryEvidence") or [])[-1]
+                assert boundary.get("reason") == "novel_read"
+                assert boundary.get("sameLogicalDestination") is True
+                assert boundary.get("stateContinuous") is True
     event_by_id = {row["sourceEventID"]: row for row in events}
     block_by_id = {row["contextBlockID"]: row for row in blocks}
     assert len(event_by_id) == len(events)
@@ -121,7 +181,7 @@ def main() -> int:
         compact = json.loads(event["serialized"])
         audit = json.loads(event["auditSerialized"])
         assert compact["operation"] == "closed_composition_episode"
-        assert audit["episodeVersion"] == "phase1-episode-v3"
+        assert audit["episodeVersion"] == episode_version
         assert audit["memberWriteEventIDs"] == members
         assert audit["resolvedCompletion"] == "".join(
             segment["content"] for segment in compact["authorshipSegments"]
@@ -129,12 +189,17 @@ def main() -> int:
         for segment in compact["authorshipSegments"]:
             if segment.get("type") == "paste":
                 assert isinstance(segment.get("content"), str) and segment["content"]
+            else:
+                assert segment.get("type") in {
+                    "authored_text", "unresolved_paste_transition",
+                    "unresolved_authorship",
+                }
 
     target_texts: list[str] = []
     loss_members: set[str] = set()
     for ordinal, example in enumerate(examples):
         assert example["chronologicalOrdinal"] == ordinal
-        assert example["conversionVersion"] == "phase1-episode-causal-v3"
+        assert example["conversionVersion"] == conversion_version
         assert example["targetUnitType"] == "closed_composition_episode"
         target_event = event_by_id[example["targetEventID"]]
         assert target_event["kind"] == "write"
@@ -164,13 +229,23 @@ def main() -> int:
         onset = example["episode"].get("onsetEvidence") or {}
         if onset.get("requiresProvenPromptOnset"):
             assert onset.get("promptOnsetProven") is True
+        if onset.get("requiresProvenPromptOnset") and not raw_authoritative:
             cursor = example["conditioningState"].get("cursorContext") or {}
             visible = "".join(
                 str(cursor.get(key) or "")
                 for key in ("leftContext", "selectedText", "rightContext")
             )
             if onset.get("emptyOrUnpopulatedPromptProven"):
-                assert not visible.replace("\u200b", "").replace("\ufeff", "").strip()
+                normalized_visible = visible.replace("\u200b", "").replace(
+                    "\ufeff", ""
+                ).strip().lower()
+                if onset.get("initialObservationSource") == "known_application_prompt_scaffold":
+                    assert normalized_visible in {
+                        "ask gemini", "do anything", "start writing...",
+                        "write a message…", "write a message...",
+                    }
+                else:
+                    assert not normalized_visible
             else:
                 assert onset.get("causalPartitionAfterPriorCompositionProven") is True
                 assert onset.get("proofReason") in {
@@ -237,10 +312,26 @@ def main() -> int:
             for segment in target["segments"]
             if segment.get("type") == "authored_text"
         ).strip()
-        assert len(authored) >= 40 and len(words(authored)) >= 6
+        adjudication = adjudication_by_candidate[example["episode"]["candidateID"]]
+        closure = adjudication.get("closureReason")
+        reviewed = adjudication.get("classificationProvenance") == "reviewed_regression_fixture"
+        if raw_authoritative:
+            assert adjudication.get("lossEligibility") == "eligible"
+            if not (len(authored) >= 40 and len(words(authored)) >= 6):
+                assert adjudication.get("closureStatus") == "closed_submission"
+                assert len(authored) >= 4
+        else:
+            assert reviewed or (len(authored) >= 40 and len(words(authored)) >= 6)
+        assert all(
+            segment.get("type") != "unresolved_paste_transition"
+            for segment in target["segments"]
+        )
         for segment in target["segments"]:
             if segment.get("type") == "paste":
-                forbidden = {"content", "payload", "resolvedContent", "clipboardContent"}
+                forbidden = {
+                    "content", "payload", "resolvedContent", "clipboardContent",
+                    "historyContent",
+                }
                 assert not forbidden.intersection(segment)
         target_texts.append(text)
 

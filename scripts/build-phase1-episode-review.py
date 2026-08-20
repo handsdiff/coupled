@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import difflib
 import hashlib
 import json
 import os
@@ -17,6 +18,13 @@ from typing import Any
 
 BUILDER_VERSION = "phase1-episode-design-v1-shadow-r6"
 SEMANTIC_ANCHOR_MINIMUM_CHARACTERS = 32
+KNOWN_PROMPT_SCAFFOLDS = {
+    "ask gemini",
+    "do anything",
+    "start writing...",
+    "write a message…",
+    "write a message...",
+}
 
 
 class ReviewError(RuntimeError):
@@ -440,6 +448,8 @@ def logical_initial_value(
     value = observation.get("value")
     if not isinstance(value, str):
         raise ReviewError("initial raw observation has no string value")
+    if value.strip().lower() in KNOWN_PROMPT_SCAFFOLDS:
+        return "", "known_application_prompt_scaffold"
     if value != "" and logical_observation_value(observation) == "":
         return "", "accessibility_value_represented_placeholder"
     return value, "raw_before_value"
@@ -464,6 +474,95 @@ def effectively_empty_prompt_value(value: str | None) -> bool:
     if not isinstance(value, str):
         return False
     return not value.replace("\u200b", "").replace("\ufeff", "").strip()
+
+
+def normalized_paste_text(value: str) -> str:
+    return "".join(
+        character.lower()
+        for character in value
+        if not character.isspace() and character not in {"\u200b", "\ufeff"}
+    )
+
+
+def paste_authorship_evidence(
+    record: dict[str, Any], before: str | None, terminal: str | None
+) -> dict[str, Any]:
+    """Prove a Cmd-V span from its recorded clipboard and AX transition."""
+    checkpoints = [
+        row for row in record.get("pasteCheckpoints", [])
+        if isinstance(row, dict)
+    ]
+    result: dict[str, Any] = {
+        "status": "not_proven",
+        "checkpointCount": len(checkpoints),
+    }
+    if len(checkpoints) != 1 or not isinstance(before, str) or not isinstance(terminal, str):
+        result["reason"] = "requires_one_checkpoint_and_complete_interval"
+        return result
+    checkpoint = checkpoints[0]
+    clipboard = checkpoint.get("clipboardText")
+    if not isinstance(clipboard, str) or not clipboard or checkpoint.get(
+        "clipboardTextWasTruncated"
+    ):
+        result["reason"] = "clipboard_missing_or_truncated"
+        return result
+    edit = minimal_edit(before, terminal)
+    inserted = edit["content"]
+    hints = set(record.get("inputHints", []))
+    result.update({
+        "checkpointID": checkpoint.get("checkpointID"),
+        "clipboardSnapshotID": checkpoint.get("clipboardSnapshotID"),
+        "clipboardChangeCount": checkpoint.get("clipboardChangeCount"),
+        "clipboardTextSHA256": hashlib.sha256(clipboard.encode()).hexdigest(),
+        "insertedTextSHA256": hashlib.sha256(inserted.encode()).hexdigest(),
+        "inputHints": sorted(hints),
+    })
+    exact = inserted.find(clipboard)
+    if exact >= 0:
+        prefix = inserted[:exact]
+        suffix = inserted[exact + len(clipboard) :]
+        result.update({
+            "status": "proven",
+            "reason": "clipboard_exact_substring_of_observed_insertion",
+            "segments": [
+                *([{"type": "authored_text", "content": prefix}] if prefix else []),
+                {
+                    "type": "paste",
+                    "content": clipboard,
+                    "clipboardSnapshotID": checkpoint.get("clipboardSnapshotID"),
+                    "pasteCheckpointID": checkpoint.get("checkpointID"),
+                    "clipboardChangeCount": checkpoint.get("clipboardChangeCount"),
+                },
+                *([{"type": "authored_text", "content": suffix}] if suffix else []),
+            ],
+            "resolvedContent": inserted,
+        })
+        return result
+    normalized_inserted = normalized_paste_text(inserted)
+    normalized_clipboard = normalized_paste_text(clipboard)
+    similarity = difflib.SequenceMatcher(
+        None, normalized_inserted, normalized_clipboard, autojunk=False
+    ).ratio()
+    result["normalizedSimilarity"] = similarity
+    paste_only = hints.issubset({"paste", "return"}) and "paste" in hints
+    if paste_only and similarity >= 0.995:
+        result.update({
+            "status": "proven",
+            "reason": "single_paste_matches_observed_insertion_after_ui_normalization",
+            "segments": [{
+                "type": "paste",
+                "content": inserted,
+                "clipboardSnapshotID": checkpoint.get("clipboardSnapshotID"),
+                "pasteCheckpointID": checkpoint.get("checkpointID"),
+                "clipboardChangeCount": checkpoint.get("clipboardChangeCount"),
+                "sourceClipboardTextSHA256": hashlib.sha256(clipboard.encode()).hexdigest(),
+                "applicationFormattingObserved": inserted != clipboard,
+            }],
+            "resolvedContent": inserted,
+        })
+        return result
+    result["reason"] = "clipboard_not_uniquely_grounded_in_observed_insertion"
+    return result
 
 
 def prompt_submission_surface(members: list[dict[str, Any]]) -> bool:
@@ -506,6 +605,8 @@ class Neighborhood:
     rationale: str | None = None
     mode: str = "editable_episode"
     leading_write_event_ids: tuple[str, ...] = ()
+    write_event_ids: tuple[str, ...] = ()
+    allow_incomplete_onset: bool = False
 
 
 def parse_neighborhood(value: str) -> Neighborhood:
@@ -541,6 +642,8 @@ def load_selection(path: Path, corpus_id: str) -> tuple[list[Neighborhood], dict
         rationale = row.get("rationale")
         mode = row.get("mode", "editable_episode")
         leading_write_event_ids = row.get("leadingWriteEventIDs", [])
+        write_event_ids = row.get("writeEventIDs", [])
+        allow_incomplete_onset = row.get("allowIncompleteOnset", False)
         if (
             not isinstance(label, str)
             or not label
@@ -559,6 +662,13 @@ def load_selection(path: Path, corpus_id: str) -> tuple[list[Neighborhood], dict
                 for value in leading_write_event_ids
             )
             or len(set(leading_write_event_ids)) != len(leading_write_event_ids)
+            or not isinstance(write_event_ids, list)
+            or any(
+                not isinstance(value, str) or not value
+                for value in write_event_ids
+            )
+            or len(set(write_event_ids)) != len(write_event_ids)
+            or not isinstance(allow_incomplete_onset, bool)
         ):
             raise ReviewError(f"invalid selection neighborhood: {row!r}")
         neighborhoods.append(
@@ -570,6 +680,8 @@ def load_selection(path: Path, corpus_id: str) -> tuple[list[Neighborhood], dict
                 rationale=rationale,
                 mode=mode,
                 leading_write_event_ids=tuple(leading_write_event_ids),
+                write_event_ids=tuple(write_event_ids),
+                allow_incomplete_onset=allow_incomplete_onset,
             )
         )
     labels = [value.label for value in neighborhoods]
@@ -746,6 +858,8 @@ def member_projection(
     )
     audit = json.loads(event.get("auditSerialized", "{}"))
     reduction = semantic_event.get("reduction", {})
+    before_value = logical_member_before(record, semantic_event)
+    terminal_value = logical_observation_value(selected_observation)
     return {
         "oneBasedExampleOrdinal": ordinal,
         "exampleID": example.get("exampleID") if example else None,
@@ -762,6 +876,9 @@ def member_projection(
         "characterOffset": audit.get("characterOffset"),
         "removedContent": audit.get("removedContent", ""),
         "boundaryReason": audit.get("boundaryReason"),
+        "captureBoundaryReason": audit.get("captureBoundaryReason"),
+        "submissionObservedAt": audit.get("submissionObservedAt"),
+        "submissionClosureEvidence": audit.get("closureEvidence"),
         "application": audit.get("appName"),
         "windowTitle": audit.get("windowTitle"),
         "sourceRecordID": record.get("recordID"),
@@ -777,11 +894,14 @@ def member_projection(
         "beforeAXErrors": record.get("beforeAXErrors", []),
         "afterAXErrors": record.get("afterAXErrors", []),
         "before": observation_projection(record.get("before")),
-        "beforeLogicalValue": logical_member_before(record, semantic_event),
+        "beforeLogicalValue": before_value,
         "selectedTerminalObservationSource": selected_source,
         "selectedTerminalCheckpointID": selected_checkpoint,
         "selectedTerminalObservation": observation_projection(selected_observation),
-        "selectedTerminalLogicalValue": logical_observation_value(selected_observation),
+        "selectedTerminalLogicalValue": terminal_value,
+        "pasteAuthorshipEvidence": paste_authorship_evidence(
+            record, before_value, terminal_value
+        ),
         "semanticReduction": {
             "rule": reduction.get("rule"),
             "reason": reduction.get("reason"),
@@ -799,10 +919,27 @@ def member_projection(
 
 def composite_raw_entry(entries: list[dict[str, Any]]) -> dict[str, Any]:
     """Project a reducer-composed semantic WRITE as one reviewable transition."""
-    if len(entries) == 1:
-        return {**entries[0], "sourceRecordIDs": [entries[0]["record"]["recordID"]]}
-    first = entries[0]["record"]
-    last = entries[-1]["record"]
+    source_record_ids = [entry["record"]["recordID"] for entry in entries]
+    write_entries = [
+        entry for entry in entries
+        if entry["record"].get("recordType") == "active_tap_write_attempt"
+    ]
+    closure_record_ids = [
+        entry["record"]["recordID"] for entry in entries
+        if entry["record"].get("recordType") == "prompt_submission_observation"
+    ]
+    if not write_entries:
+        raise ReviewError("semantic WRITE lineage contains no raw WRITE attempt")
+    if len(write_entries) == 1:
+        return {
+            **write_entries[0],
+            "sourceRecordIDs": source_record_ids,
+            "writeSourceRecordIDs": [write_entries[0]["record"]["recordID"]],
+            "closureSourceRecordIDs": closure_record_ids,
+            "terminalSourceRecordID": write_entries[0]["record"]["recordID"],
+        }
+    first = write_entries[0]["record"]
+    last = write_entries[-1]["record"]
     record = dict(last)
     record["recordID"] = first["recordID"]
     record["before"] = first.get("before")
@@ -811,17 +948,21 @@ def composite_raw_entry(entries: list[dict[str, Any]]) -> dict[str, Any]:
     record["beganAt"] = first.get("beganAt")
     record["inputHints"] = sorted({
         hint
-        for entry in entries
+        for entry in write_entries
         for hint in entry["record"].get("inputHints", [])
     })
     record["inputEventCount"] = sum(
-        entry["record"].get("inputEventCount", 0) for entry in entries
+        entry["record"].get("inputEventCount", 0) for entry in write_entries
     )
     return {
         "record": record,
-        "rawPath": entries[0]["rawPath"],
-        "rawLine": entries[0]["rawLine"],
-        "sourceRecordIDs": [entry["record"]["recordID"] for entry in entries],
+        "rawPath": write_entries[0]["rawPath"],
+        "rawLine": write_entries[0]["rawLine"],
+        "sourceRecordIDs": source_record_ids,
+        "writeSourceRecordIDs": [
+            entry["record"]["recordID"] for entry in write_entries
+        ],
+        "closureSourceRecordIDs": closure_record_ids,
         "terminalSourceRecordID": last["recordID"],
     }
 
@@ -871,14 +1012,14 @@ def event_boundary_reason(event: dict[str, Any]) -> str | None:
 def prompt_onset_evidence(
     *,
     members: list[dict[str, Any]],
-    initial_value: str,
+    initial_value: str | None,
     initial_source: str,
     first_event: dict[str, Any],
     events: list[dict[str, Any]],
     began: dt.datetime,
 ) -> dict[str, Any]:
     requires_prompt_onset = prompt_submission_surface(members)
-    empty_prompt_onset = (
+    empty_prompt_onset = isinstance(initial_value, str) and (
         initial_source != "raw_before_value"
         or effectively_empty_prompt_value(initial_value)
     )
@@ -962,10 +1103,13 @@ def prompt_onset_evidence(
         "boundaryEventIDs": [
             event["sourceEventID"] for event in onset_boundary_events
         ],
-        "initialLogicalValueCharacters": len(initial_value),
-        "initialLogicalValueSHA256": hashlib.sha256(
-            initial_value.encode("utf-8")
-        ).hexdigest(),
+        "initialLogicalValueCharacters": (
+            len(initial_value) if isinstance(initial_value, str) else None
+        ),
+        "initialLogicalValueSHA256": (
+            hashlib.sha256(initial_value.encode("utf-8")).hexdigest()
+            if isinstance(initial_value, str) else None
+        ),
         "initialObservationSource": initial_source,
     }
 
@@ -977,6 +1121,19 @@ def neighborhood_write_events(
 ) -> list[dict[str, Any]]:
     anchors = examples[neighborhood.first - 1 : neighborhood.last]
     event_by_id = {event["sourceEventID"]: event for event in events}
+    if neighborhood.write_event_ids:
+        selected = []
+        for event_id in neighborhood.write_event_ids:
+            event = event_by_id.get(event_id)
+            if event is None or event.get("kind") != "write":
+                raise ReviewError(
+                    f"invalid explicit WRITE {event_id}: {neighborhood.label}"
+                )
+            selected.append(event)
+        return sorted(
+            selected,
+            key=lambda event: (event["beganAt"], event["sourceEventID"]),
+        )
     if neighborhood.mode == "causal_sequence":
         return sorted(
             [event_by_id[anchor["targetEventID"]] for anchor in anchors],
@@ -1196,18 +1353,21 @@ def build_candidate(
     first_raw = raw_records[first_member["sourceRecordID"]]["record"]
     last_raw = raw_records[last_member["terminalSourceRecordID"]]["record"]
     initial_observation = first_raw.get("before")
-    if not isinstance(initial_observation, dict):
+    if not isinstance(initial_observation, dict) and not neighborhood.allow_incomplete_onset:
         raise ReviewError("first member has no complete BEFORE observation")
     first_conditioning = first_member.get("conditioningState")
     if not isinstance(first_conditioning, dict):
         raise ReviewError("first member has no conditioning state")
-    initial_value, initial_source = logical_initial_value(
-        {"conditioningState": first_conditioning}, initial_observation
-    )
+    if isinstance(initial_observation, dict):
+        initial_value, initial_source = logical_initial_value(
+            {"conditioningState": first_conditioning}, initial_observation
+        )
+    else:
+        initial_value, initial_source = None, "missing_raw_before_observation"
     terminal_value = last_member["selectedTerminalLogicalValue"]
     net_edit = (
         minimal_edit(initial_value, terminal_value)
-        if isinstance(terminal_value, str)
+        if isinstance(initial_value, str) and isinstance(terminal_value, str)
         else None
     )
     first_event = candidate_events[0]
@@ -1223,7 +1383,10 @@ def build_candidate(
         initial_length = 0
         selected_text = ""
         coordinate_unit = "logical_unpopulated_field"
-    elif not isinstance(initial_location, int) or not isinstance(initial_length, int):
+    elif (
+        isinstance(initial_observation, dict)
+        and (not isinstance(initial_location, int) or not isinstance(initial_length, int))
+    ):
         initial_location = initial_observation.get("selectedRangeLocation")
         initial_length = initial_observation.get("selectedRangeLength")
         selected_text = (
@@ -1252,7 +1415,7 @@ def build_candidate(
         and bool(net_edit["content"])
     )
     semantic_anchor = semantic_anchor_diagnostic(
-        initial_value, net_edit, cursor_context
+        initial_value or "", net_edit, cursor_context
     )
     semantic_anchor_aligned = bool(
         net_edit is not None
@@ -1268,7 +1431,14 @@ def build_candidate(
     alignment_proven = numeric_selection_aligned or semantic_anchor_aligned
 
     began = timestamp(first_member["beganAt"])
-    closed = timestamp(last_member["availableAt"])
+    candidate_available_at = last_member["availableAt"]
+    if isinstance(last_member.get("submissionObservedAt"), str):
+        candidate_available_at = max(
+            candidate_available_at,
+            last_member["submissionObservedAt"],
+            key=timestamp,
+        )
+    closed = timestamp(candidate_available_at)
     member_set = set(member_event_ids)
     intervening = intervening_events(events, member_set, began, closed)
     intervening_reads = [event for event in intervening if event["kind"] == "read"]
@@ -1374,7 +1544,7 @@ def build_candidate(
         "memberWriteEventIDs": member_event_ids,
         "sourceRecordIDs": source_record_ids,
         "beganAt": first_member["beganAt"],
-        "candidateAvailableAt": last_member["availableAt"],
+        "candidateAvailableAt": candidate_available_at,
         "durationSeconds": (closed - began).total_seconds(),
         "predictionOpportunity": {
             "modelFacingExampleID": onset_example_id,
@@ -1398,6 +1568,11 @@ def build_candidate(
         "finalObservationSource": last_member["selectedTerminalObservationSource"],
         "finalObservation": last_member["selectedTerminalObservation"],
         "members": members,
+        "pasteAuthorshipEvidence": [
+            member["pasteAuthorshipEvidence"]
+            for member in members
+            if member.get("pasteAuthorshipEvidence", {}).get("status") == "proven"
+        ],
         "causalEvidence": {
             "interveningReadCount": len(intervening_reads),
             "novelInterveningReadCount": len(novel_intervening_reads),
@@ -2006,6 +2181,14 @@ def main() -> int:
         type=Path,
         help="versioned JSON selection containing labeled review neighborhoods",
     )
+    selection_group.add_argument(
+        "--all-write-singletons",
+        action="store_true",
+        help=(
+            "emit one raw-evidence primitive for every semantic WRITE; this is "
+            "the neutral input substrate for the raw episode assembler"
+        ),
+    )
     parser.add_argument(
         "--proposals-file",
         type=Path,
@@ -2040,6 +2223,11 @@ def main() -> int:
         neighborhoods, selection_manifest = load_selection(
             selection_path, manifest["corpusID"]
         )
+    elif arguments.all_write_singletons:
+        # The actual neighborhoods are constructed after the chronological
+        # examples and semantic events have been loaded. No hand-selected IDs
+        # or dispositions enter this mode.
+        neighborhoods = []
     else:
         neighborhoods = arguments.neighborhood or []
     if arguments.proposals_file is not None and selection_manifest is None:
@@ -2050,6 +2238,45 @@ def main() -> int:
             raise ReviewError(f"corpus artifact changed: {name}")
     examples = load_jsonl(corpus_path / "examples.jsonl")
     events = load_jsonl(corpus_path / "events.jsonl")
+    if arguments.all_write_singletons:
+        ordered_writes = sorted(
+            (event for event in events if event.get("kind") == "write"),
+            key=lambda event: (
+                event.get("beganAt") or event["availableAt"],
+                event["sourceEventID"],
+            ),
+        )
+        if not examples:
+            raise ReviewError("all-WRITE primitive mode requires at least one context anchor")
+        neighborhoods = []
+        for ordinal, event in enumerate(ordered_writes, 1):
+            anchor = next(
+                (
+                    example["chronologicalOrdinal"] + 1
+                    for example in examples
+                    if example["targetBeganAt"] >= (event.get("beganAt") or "")
+                ),
+                len(examples),
+            )
+            neighborhoods.append(
+                Neighborhood(
+                    label=f"raw_primitive_{ordinal:04d}",
+                    first=anchor,
+                    last=anchor,
+                    category="raw_authoritative_semantic_primitive",
+                    rationale=(
+                        "All semantic WRITEs are projected uniformly from their "
+                        "bound raw evidence before episode construction."
+                    ),
+                    write_event_ids=(event["sourceEventID"],),
+                    allow_incomplete_onset=True,
+                )
+            )
+        selection_manifest = {
+            "selectionID": "all-write-singletons",
+            "corpusID": manifest["corpusID"],
+            "status": "algorithmic_complete_write_coverage",
+        }
     context_blocks = indexed(
         load_jsonl(corpus_path / "context-blocks.jsonl"),
         "contextBlockID",
@@ -2228,6 +2455,8 @@ def main() -> int:
                     "rationale": value.rationale,
                     "mode": value.mode,
                     "leadingWriteEventIDs": list(value.leading_write_event_ids),
+                    "writeEventIDs": list(value.write_event_ids),
+                    "allowIncompleteOnset": value.allow_incomplete_onset,
                 }
                 for value in neighborhoods
             ],

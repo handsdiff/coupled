@@ -195,6 +195,11 @@ jq -e -s --slurpfile manifest "$manifest" --slurpfile examples "$examples" --slu
        (.minimumTrimmedAuthoredCharacters
          == $m.eligibility.minimumTrimmedAuthoredCharactersForTextOnlyTarget) and
        (.trimmedAuthoredCharacterCount < .minimumTrimmedAuthoredCharacters)
+     elif .reason == "pre_first_mutation_conditioning_unavailable" then
+       ((.sourceRecordIDs | type) == "array") and
+       ((.sourceRecordIDs | length) >= 2) and
+       ((($by_id[.sourceEventID].auditSerialized | fromjson).stateContinuity)
+         == "incomplete_pre_mutation_conditioning")
      else false end)
   )
 ' "$events" >/dev/null

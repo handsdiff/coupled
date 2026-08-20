@@ -51,8 +51,15 @@ python3 -m py_compile \
   "$project_dir/scripts/check-phase1-real-runners.py" \
   "$project_dir/scripts/audit-phase1-real-experiment.py" \
   "$project_dir/scripts/build-phase1-episode-review.py" \
+  "$project_dir/scripts/construct-phase1-closed-episode-corpus.py" \
+  "$project_dir/scripts/construct-phase1-raw-episode-corpus.py" \
+  "$project_dir/scripts/audit-phase1-closed-episode-corpus.py" \
+  "$project_dir/scripts/check-phase1-episode-regressions.py" \
+  "$project_dir/scripts/check-phase1-raw-episode.py" \
+  "$project_dir/scripts/inspect-phase1-episode-corpus.py" \
   "$project_dir/scripts/check-phase1-episode-review.py" \
   "$project_dir/scripts/serve-phase1-episode-design-review.py" \
+  "$project_dir/scripts/phase1-data-inspector.py" \
   "$project_dir/scripts/phase1_prediction_metrics.py" \
   "$project_dir/scripts/check-phase1-prediction-metrics.py" \
   "$project_dir/scripts/check-phase1-subscription-responses.py" \
@@ -77,6 +84,7 @@ python3 "$project_dir/scripts/check-phase1-corpus.py"
 PYTHONPYCACHEPREFIX="$project_dir/.build/python-cache" \
 python3 "$project_dir/scripts/check-phase1-subscription-responses.py"
 python3 "$project_dir/scripts/check-phase1-episode-review.py"
+python3 "$project_dir/scripts/check-phase1-raw-episode.py"
 python3 "$project_dir/scripts/check-phase1-real-runners.py"
 python3 "$project_dir/scripts/check-phase1-prediction-metrics.py"
 python3 "$project_dir/scripts/check-phase1-cost-latency.py"

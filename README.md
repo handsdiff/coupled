@@ -275,6 +275,69 @@ concatenate independently compiled `examples.jsonl` files. Multi-session corpus
 assembly requires an explicit compatibility and coverage-gap manifest and is
 not yet part of the public command-line workflow.
 
+## Construct closed-composition training data
+
+Phase 1 training does not treat each debounced editable-field transition as a
+separate target. The raw-authoritative episode assembler groups faithful
+micro-WRITEs into closed compositions: the completed human thought is the
+loss-bearing unit, while the underlying edits remain audit lineage.
+
+```sh
+python3 scripts/construct-phase1-raw-episode-corpus.py \
+  --corpus ./coupled-data/my-micro-corpus \
+  --primitives ./coupled-data/my-raw-write-primitives \
+  --output ./coupled-data/my-episode-corpus
+
+python3 scripts/audit-phase1-closed-episode-corpus.py \
+  ./coupled-data/my-episode-corpus
+```
+
+Production construction has no adjudication or forced-decision input. A
+separate reviewer-approved fixture tests known difficult traces without making
+their identities part of the conversion rule. Ambiguous evidence is retained
+for audit or later history and withheld from loss rather than repaired by
+guessing.
+
+## Inspect a Phase 1 experiment
+
+After an experiment has produced a corpus, packed dataset, and comparison
+results, open the read-only local inspector. This command requires Python 3.10
+or newer but no third-party Python packages:
+
+```sh
+./scripts/coupled inspect
+```
+
+The inspector finds the latest completed results under `coupled-data/`, verifies
+the linked corpus and packing artifacts by their frozen digests, starts a server
+bound only to `127.0.0.1`, and opens it in the default browser. It does not edit
+the artifacts or load any remote assets.
+
+Use it to:
+
+- search and filter examples by chronological block, application, target type,
+  or model outcome;
+- read the exact retained causal READ/WRITE stream and conditioning query;
+- compare the human target with frozen Qwen, personalized Qwen, and frontier
+  predictions;
+- inspect cursor, destination, clipboard, token packing, loss masks, context
+  truncation, and raw JSON lineage.
+
+Pass a specific results directory when more than one experiment exists:
+
+```sh
+./scripts/coupled inspect \
+  --results ./coupled-data/my-phase1-results
+```
+
+The matching corpus and packed dataset are discovered from the result manifest.
+Override them explicitly with `--corpus` and `--packed` only when diagnosing an
+incomplete or moved artifact chain. Use `--no-open` to start the server without
+opening a browser, or `--check` to validate the complete chain and exit.
+
+The UI displays highly sensitive captured content. Although it is localhost-only,
+close it when inspection is complete.
+
 ## Inspect before training
 
 A passing mechanical audit proves hashes, lineage, reconstruction invariants,

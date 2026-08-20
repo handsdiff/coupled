@@ -7,14 +7,22 @@ executable="$app_dir/Contents/MacOS/coupled"
 logs_app_dir="$project_dir/dist/Coupled Logs.app"
 launch_log_dir="$project_dir/.coupled-launch"
 
-if [[ ! -x "$executable" ]]; then
-  print -u2 "Coupled.app is missing. Run ./scripts/package-app.sh first."
-  exit 1
-fi
-
 command_name="${1:-help}"
 if (( $# > 0 )); then
   shift
+fi
+
+if [[ "$command_name" == "inspect" ]]; then
+  if ! command -v python3 >/dev/null; then
+    print -u2 "The Phase 1 inspector requires Python 3.10 or newer."
+    exit 1
+  fi
+  exec python3 "$project_dir/scripts/phase1-data-inspector.py" "$@"
+fi
+
+if [[ ! -x "$executable" ]]; then
+  print -u2 "Coupled.app is missing. Run ./scripts/package-app.sh first."
+  exit 1
 fi
 
 normalize_paths() {
@@ -54,6 +62,7 @@ case "$command_name" in
     print "  ./scripts/coupled events [event options]"
     print "  ./scripts/coupled reduce --input SESSION --output REDUCTION"
     print "  ./scripts/coupled compile --input REDUCTION --source SESSION --output DATASET"
+    print "  ./scripts/coupled inspect [--results EXPERIMENT_RESULTS]"
     print "  ./scripts/coupled collect [collector options]"
     print "  ./scripts/coupled snapshot [collector options]"
     print "  ./scripts/coupled logs [--full-text|--raw]"

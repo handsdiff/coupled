@@ -18,8 +18,8 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-EPISODE_VERSION = "phase1-episode-v3"
-CONVERSION_VERSION = "phase1-episode-causal-v3"
+EPISODE_VERSION = "phase1-episode-v5"
+CONVERSION_VERSION = "phase1-episode-causal-v5"
 
 
 def canonical_bytes(value: Any) -> bytes:
@@ -87,6 +87,14 @@ def resolved_history_segments(target: dict[str, Any]) -> list[dict[str, Any]]:
         if not isinstance(segment, dict):
             raise ValueError("invalid target segment")
         kind = segment.get("type")
+        if kind in {"unresolved_paste_transition", "unresolved_authorship"}:
+            content = segment.get("content")
+            if not isinstance(content, str) or not resolved.startswith(content, cursor):
+                return []
+            return [
+                [dict(segment), *tail]
+                for tail in parse(index + 1, cursor + len(content))
+            ]
         if kind == "authored_text":
             content = segment.get("content")
             if not isinstance(content, str) or not resolved.startswith(content, cursor):
@@ -97,6 +105,16 @@ def resolved_history_segments(target: dict[str, Any]) -> list[dict[str, Any]]:
             ]
         if kind != "paste":
             raise ValueError(f"unsupported target segment type: {kind}")
+        history_content = segment.get("historyContent")
+        if isinstance(history_content, str):
+            if not history_content or not resolved.startswith(history_content, cursor):
+                return []
+            historical = dict(segment)
+            historical["content"] = historical.pop("historyContent")
+            return [
+                [historical, *tail]
+                for tail in parse(index + 1, cursor + len(history_content))
+            ]
         if index + 1 < len(source) and source[index + 1].get("type") == "paste":
             raise ValueError("adjacent paste payloads cannot be separated")
         next_authored = (
@@ -134,7 +152,10 @@ def model_target(target: dict[str, Any]) -> dict[str, Any]:
     result = json.loads(json.dumps(target))
     for segment in result.get("segments", []):
         if isinstance(segment, dict) and segment.get("type") == "paste":
-            for key in ("content", "payload", "resolvedContent", "clipboardContent"):
+            for key in (
+                "content", "payload", "resolvedContent", "clipboardContent",
+                "historyContent",
+            ):
                 segment.pop(key, None)
     return result
 
@@ -174,6 +195,12 @@ def require_candidate_gate(
     members = adjudication.get("memberWriteEventIDs")
     if candidate.get("memberWriteEventIDs") != members:
         raise ValueError(f"candidate/member mismatch: {adjudication.get('label')}")
+    if candidate.get("authority") == "semantic_resolved_history_projection":
+        if adjudication.get("decision") != "closed_history_episode":
+            raise ValueError("semantic history projection cannot receive loss")
+        if candidate.get("semanticHistoryProjection") != adjudication.get("finalizedTarget"):
+            raise ValueError("semantic history projection target changed")
+        return
     causal = candidate.get("causalEvidence") or {}
     surface = candidate.get("surfaceEvidence") or {}
     continuity = candidate.get("continuityEvidence") or {}
@@ -192,7 +219,7 @@ def require_candidate_gate(
             f"{adjudication.get('label')}"
         )
     onset = candidate.get("onsetEvidence") or {}
-    if (
+    if adjudication.get("decision") == "closed_loss_episode" and (
         onset.get("requiresProvenPromptOnset")
         and onset.get("promptOnsetProven") is not True
     ):
@@ -269,13 +296,28 @@ def construct(
         )
 
     closed_thresholds = {
-        (row.get("minimumAuthoredCharacters"), row.get("minimumWords"))
+        (
+            row.get("minimumAuthoredCharacters"),
+            row.get("minimumWords"),
+            row.get("minimumSubmittedAuthoredCharacters"),
+        )
         for row, _ in closed
     }
     if len(closed_thresholds) != 1:
         raise ValueError(f"closed episode thresholds disagree: {closed_thresholds}")
-    minimum_authored_characters, minimum_words = next(iter(closed_thresholds))
-    if not isinstance(minimum_authored_characters, int) or not isinstance(minimum_words, int):
+    (
+        minimum_authored_characters,
+        minimum_words,
+        minimum_submitted_authored_characters,
+    ) = next(iter(closed_thresholds))
+    if not all(
+        isinstance(value, int)
+        for value in (
+            minimum_authored_characters,
+            minimum_words,
+            minimum_submitted_authored_characters,
+        )
+    ):
         raise ValueError("closed episode thresholds are missing")
 
     normalized_events: list[dict[str, Any]] = []
@@ -298,6 +340,7 @@ def construct(
                 "exact_repeat_available_at_episode_onset",
                 "exact_repeat_already_in_episode_onset_model_input",
                 "repeated_non_novel_read",
+                "self_derived_active_composition_read",
             } and isinstance(assessment.get("eventID"), str):
                 suppressed_repeated_reads.add(assessment["eventID"])
 
@@ -305,17 +348,26 @@ def construct(
         history_segments = resolved_history_segments(full_target)
         destination = serialized_destination(member_events[0])
         began_at = min(event["beganAt"] for event in member_events)
-        available_at = max(event["availableAt"] for event in member_events)
+        available_at = max(
+            max(event["availableAt"] for event in member_events),
+            candidate.get("candidateAvailableAt") or "",
+        )
         source_record_ids = sorted({
             record_id
             for event in member_events
             for record_id in event.get("sourceRecordIDs", [])
         })
+        unresolved_authorship = any(
+            segment.get("type") == "unresolved_paste_transition"
+            for segment in history_segments
+        )
         compact = {
             "kind": "write",
             "destination": destination,
             "operation": "closed_composition_episode",
-            "authorshipResolution": "resolved",
+            "authorshipResolution": (
+                "unresolved" if unresolved_authorship else "resolved"
+            ),
             "authorshipSegments": history_segments,
         }
         audit = {
@@ -327,6 +379,10 @@ def construct(
             "closureReason": adjudication.get("closureReason"),
             "decision": adjudication["decision"],
             "onsetEvidence": candidate.get("onsetEvidence"),
+            "reconstructionStatus": adjudication.get("reconstructionStatus"),
+            "closureStatus": adjudication.get("closureStatus"),
+            "lossEligibility": adjudication.get("lossEligibility"),
+            "decisionReason": adjudication.get("reason"),
         }
         event = {
             "schemaVersion": 1,
@@ -344,6 +400,9 @@ def construct(
             "memberCount": len(members),
             "episodeDecision": adjudication["decision"],
             "candidateID": adjudication["candidateID"],
+            "reconstructionStatus": adjudication.get("reconstructionStatus"),
+            "closureStatus": adjudication.get("closureStatus"),
+            "lossEligibility": adjudication.get("lossEligibility"),
         }
         normalized_events.append(event)
         normalized_by_id[episode_event_id] = event
@@ -411,10 +470,26 @@ def construct(
     episode_examples: list[dict[str, Any]] = []
     for adjudication, candidate, event in loss_units:
         members = adjudication["memberWriteEventIDs"]
+        member_events = [event_by_id[value] for value in members]
         member_examples = [example_by_target[value] for value in members if value in example_by_target]
-        if not member_examples:
-            raise ValueError(f"loss episode has no source target: {adjudication.get('label')}")
-        first = min(member_examples, key=lambda row: (row["targetBeganAt"], row["exampleID"]))
+        if member_examples:
+            first = min(
+                member_examples,
+                key=lambda row: (row["targetBeganAt"], row["exampleID"]),
+            )
+            inherited_cursor_fidelity = first.get("cursorFidelity")
+        else:
+            later = [
+                row for row in source_examples
+                if row["targetBeganAt"] > event["beganAt"]
+            ]
+            if not later:
+                raise ValueError(
+                    f"loss episode has no source or later context anchor: "
+                    f"{adjudication.get('label')}"
+                )
+            first = min(later, key=lambda row: (row["targetBeganAt"], row["exampleID"]))
+            inherited_cursor_fidelity = None
         conditioning = candidate.get("initialConditioningState")
         if not isinstance(conditioning, dict):
             raise ValueError(f"candidate lacks initial conditioning: {adjudication.get('label')}")
@@ -436,6 +511,9 @@ def construct(
             "conversionVersion": CONVERSION_VERSION,
             "exampleID": stable_id("example_", {"episodeEventID": event["sourceEventID"]}),
             "targetEventID": event["sourceEventID"],
+            "sessionID": event.get("sessionID"),
+            "sourceSessionOrdinal": member_events[0].get("sourceSessionOrdinal"),
+            "cursorFidelity": inherited_cursor_fidelity,
             "targetUnitID": event["episodeID"],
             "targetUnitType": "closed_composition_episode",
             "targetBeganAt": event["beganAt"],
@@ -544,9 +622,14 @@ def construct(
                 ],
                 "minimumTrimmedAuthoredCharacters": minimum_authored_characters,
                 "minimumAuthoredWords": minimum_words,
+                "minimumSubmittedAuthoredCharacters": minimum_submitted_authored_characters,
+                "automaticSubmittedShortMinimumEnabled": False,
+                "reviewedConciseSubmissionsMayOverrideGeneralMinimum": True,
+                "reviewedRegressionDecisionsOverrideLengthHeuristics": True,
                 "groundedPasteActionBypassesMinimumAuthoredContent": False,
                 "closedButBelowThresholdRemainsHistoryOnly": True,
-                "unresolvedOrUnclosedMicroWritesAppearInModelHistory": False,
+                "resolvedTransitionsWithoutTargetEligibilityRemainHistoryOnly": True,
+                "unresolvedOrUnclosedMicroWritesAppearInModelHistory": True,
             },
             "timing": manifest["timing"],
             "counts": {
