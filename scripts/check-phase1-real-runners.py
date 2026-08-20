@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import subprocess
 import sys
@@ -16,6 +17,7 @@ from phase1_experiment import (
     ARM_FROZEN_FRONTIER,
     ARM_FROZEN_QWEN,
     ARM_PERSONALIZED_QWEN,
+    PERSONALIZED_UPDATE_POLICY,
     QWEN_GENERATION_CONTRACT,
     canonical_bytes,
     prospective_example_ids,
@@ -89,10 +91,8 @@ def main() -> int:
             "phase1_tinker_runner_check",
             project / "scripts/run-phase1-tinker-prequential.py",
         )
-        plan_digest = frontier.sha256(plan_path)
-        plan, _ = frontier.validate_plan(
-            plan_path, plan_digest, corpus_path, packed_path, len(evaluation_ids)
-        )
+        plan_digest = sha256(plan_path)
+        plan = json.loads(plan_path.read_text())
         tinker.validate_plan(
             plan_path,
             plan_digest,
@@ -113,22 +113,24 @@ def main() -> int:
             and plan["protocol"]["qwenGenerationContract"]
             == QWEN_GENERATION_CONTRACT
             and plan["protocol"]["terminalBlockReceivesPostScoreUpdate"] is False
+            and plan["protocol"]["personalizedUpdatePolicy"]
+            == PERSONALIZED_UPDATE_POLICY
             and len(plan["protocol"]["updates"]) == 3
             and plan["tinker"]["operations"]["samplerCheckpointSaves"] == 3
+            and set(plan["protocol"]["finalPerExamplePresentationCounts"].values())
+            == {0, 1}
+            and sum(plan["protocol"]["finalPerExamplePresentationCounts"].values())
+            == 150
         ):
             raise AssertionError("provider plan did not exclude warm-up scoring")
-        cumulative = [
-            example_id
-            for block in corpus["blocking"]["blocks"][:2]
-            for example_id in block["exampleIDs"]
-        ]
+        second_block = corpus["blocking"]["blocks"][1]["exampleIDs"]
         if not (
-            tinker.deterministic_order(cumulative, 2)
-            == tinker.deterministic_order(cumulative, 2)
-            and tinker.deterministic_order(cumulative, 1)
-            != tinker.deterministic_order(cumulative, 2)
+            tinker.deterministic_order(second_block, 2)
+            == tinker.deterministic_order(second_block, 2)
+            and tinker.deterministic_order(second_block, 1)
+            != tinker.deterministic_order(second_block, 2)
         ):
-            raise AssertionError("cumulative training order is not deterministic")
+            raise AssertionError("new-block training order is not deterministic")
 
         class Immediate:
             def __init__(self, value):
@@ -395,12 +397,24 @@ def main() -> int:
                         "generationSeed": QWEN_GENERATION_CONTRACT["seed"],
                         })
             if block_index < len(corpus["blocking"]["blocks"]) - 1:
+                trained_ids = block["exampleIDs"]
                 updates.append({
                     "afterBlockID": block["blockID"],
                     "samplerCheckpointPath": f"tinker://fixture/block-{block_index + 1}",
                     "completedAt": f"2026-01-01T0{block_index + 1}:59:00Z",
                     "latencySeconds": 0.0,
                     "submittedPositions": 0,
+                    "trainingPolicy": PERSONALIZED_UPDATE_POLICY,
+                    "trainedExampleCount": len(trained_ids),
+                    "trainedExampleIDsSHA256": hashlib.sha256(
+                        canonical_bytes(trained_ids)
+                    ).hexdigest(),
+                    "cumulativeExamplesSeen": sum(
+                        len(value["exampleIDs"])
+                        for value in corpus["blocking"]["blocks"][: block_index + 1]
+                    ),
+                    "trainingCalls": len(trained_ids),
+                    "optimizerSteps": len(trained_ids),
                 })
         write_jsonl(frontier_directory / "scores.jsonl", frontier_scores)
         write_jsonl(tinker_directory / "scores.jsonl", tinker_scores)
@@ -448,7 +462,7 @@ def main() -> int:
         audit = json.loads((audit_output / "experiment.json").read_text())
         if not (
             audit["status"] == "passed_developmental_not_thesis_conclusion"
-            and audit["auditVersion"] == "phase1-real-experiment-audit-v7"
+            and audit["auditVersion"] == "phase1-real-experiment-audit-v8"
             and audit["protocol"]["providerScoredExamples"] == 150
             and audit["protocol"]["warmupExamples"] == 50
             and audit["protocol"]["warmupProviderScored"] is False
@@ -462,7 +476,7 @@ def main() -> int:
             and audit["summaries"][ARM_FROZEN_QWEN]["generatedCompletion"][
                 "pasteActions"
             ]["recall"] == 1.0
-            and audit["costLatencyReportVersion"] == "phase1-cost-latency-v3"
+            and audit["costLatencyReportVersion"] == "phase1-cost-latency-v4"
             and (audit_output / "cost-latency.json").is_file()
             and (audit_output / "cost-latency.csv").is_file()
             and len(load_json_lines(audit_output / "comparisons.jsonl")) == 150

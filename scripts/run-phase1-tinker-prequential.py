@@ -22,6 +22,7 @@ from typing import Any
 from phase1_experiment import (
     ARM_FROZEN_QWEN,
     ARM_PERSONALIZED_QWEN,
+    PERSONALIZED_UPDATE_POLICY,
     QWEN_GENERATION_CONTRACT,
     RUNNER_VERSION,
     TINKER_TRAINING_CONTRACT,
@@ -50,8 +51,8 @@ from phase1_training_contract import (
 )
 
 
-TINKER_RUNNER_VERSION = "phase1-tinker-prequential-v4"
-EXPECTED_PLAN_VERSION = "phase1-provider-plan-v7"
+TINKER_RUNNER_VERSION = "phase1-tinker-prequential-v5"
+EXPECTED_PLAN_VERSION = "phase1-provider-plan-v8"
 GENERATION_TOKEN_CEILING = 512
 EPOCHS_PER_UPDATE = 1
 
@@ -208,7 +209,7 @@ def validate_plan(
         == GENERATION_TOKEN_CEILING
         and plan.get("protocol", {}).get("scoreCompleteBlockBeforeUpdate") is True
         and plan.get("protocol", {}).get("personalizedUpdatePolicy")
-        == "warm_start_then_train_full_cumulative_corpus_except_terminal_block"
+        == PERSONALIZED_UPDATE_POLICY
         and plan.get("protocol", {}).get("terminalBlockReceivesPostScoreUpdate")
         is False
         and plan.get("protocol", {}).get("qwenGenerationContract")
@@ -258,7 +259,7 @@ def validate_resume_state(
         )
     if manifest.get("activeUpdate"):
         raise TrainingContractError(
-            "a partially executed paid update cannot be replayed under the $40 plan"
+            "a partially executed paid update cannot be replayed under the current authorized plan"
         )
 
 
@@ -267,9 +268,11 @@ def validate_frontier(
     corpus_path: Path,
     packed_path: Path,
     example_ids: list[str],
+    plan: dict[str, Any],
 ) -> dict[str, Any]:
     manifest = json.loads((directory / "frontier.json").read_text(encoding="utf-8"))
     scores = load_jsonl(directory / "scores.jsonl")
+    reused = plan.get("openai", {}).get("reusedArtifact", {})
     if not (
         manifest.get("status") == "complete"
         and manifest.get("source", {}).get("corpusSHA256")
@@ -279,6 +282,11 @@ def validate_frontier(
         and manifest.get("artifactDigestsSHA256", {}).get("scores.jsonl")
         == sha256(directory / "scores.jsonl")
         and [row.get("exampleID") for row in scores] == example_ids
+        and plan.get("openai", {}).get("execution")
+        == "reuse_complete_frozen_output_no_new_provider_calls"
+        and plan.get("openai", {}).get("operations", {}).get("responseCalls") == 0
+        and reused.get("manifestSHA256") == sha256(directory / "frontier.json")
+        and reused.get("scoresSHA256") == sha256(directory / "scores.jsonl")
     ):
         raise TrainingContractError("frontier arm is not complete for this corpus")
     return manifest
@@ -286,13 +294,13 @@ def validate_frontier(
 
 def deterministic_order(example_ids: list[str], update_ordinal: int) -> list[str]:
     if len(set(example_ids)) != len(example_ids):
-        raise TrainingContractError("cumulative training IDs are not unique")
+        raise TrainingContractError("new-block training IDs are not unique")
     return sorted(
         example_ids,
         key=lambda value: (
             hashlib.sha256(
                 (
-                    "phase1-prequential:"
+                    "phase1-prequential-new-block:"
                     f"{TINKER_TRAINING_CONTRACT['seed']}:{update_ordinal}:{value}"
                 ).encode()
             ).digest(),
@@ -503,7 +511,7 @@ def run() -> int:
         arguments.maximum_usd,
     )
     frontier = validate_frontier(
-        frontier_path, corpus_path, packed_path, evaluation_example_ids
+        frontier_path, corpus_path, packed_path, evaluation_example_ids, plan
     )
     contracts = adapt_dataset_to_tinker(packed)
     datums, _, sdk_version = build_and_validate_sdk_datums(contracts)
@@ -553,7 +561,7 @@ def run() -> int:
                 "model": BASE_MODEL,
                 "trainingContract": plan["tinker"]["trainingContract"],
                 "generationContract": plan["protocol"]["qwenGenerationContract"],
-                "epochsPerCumulativeUpdate": EPOCHS_PER_UPDATE,
+                "epochsPerNewBlockUpdate": EPOCHS_PER_UPDATE,
             },
             "counts": {"completedScores": 0, "completedUpdates": 0},
         }
@@ -596,7 +604,7 @@ def run() -> int:
     service = tinker.ServiceClient(
         project_id=arguments.dedicated_private_project_id,
         user_metadata={
-            "purpose": "phase1-initial-prequential-experiment",
+            "purpose": "phase1-incremental-prequential-rerun",
             "provider_plan_sha256": plan_digest,
         },
     )
@@ -627,7 +635,7 @@ def run() -> int:
             train_mlp=training_contract["trainMLP"],
             train_attn=training_contract["trainAttention"],
             train_unembed=training_contract["trainUnembedding"],
-            user_metadata={"purpose": "phase1-initial-prequential-experiment"},
+            user_metadata={"purpose": "phase1-incremental-prequential-rerun"},
         )
     training_contract = plan["tinker"]["trainingContract"]
     optimizer_contract = training_contract["optimizer"]
@@ -707,12 +715,8 @@ def run() -> int:
         if observed_scores != expected_prefix:
             raise TrainingContractError("attempted update before complete block scoring")
 
-        cumulative_ids = [
-            example_id
-            for value in corpus["blocking"]["blocks"][:block_ordinal]
-            for example_id in value["exampleIDs"]
-        ]
-        order = deterministic_order(cumulative_ids, block_ordinal)
+        trained_ids = list(block["exampleIDs"])
+        order = deterministic_order(trained_ids, block_ordinal)
         training_nll = 0.0
         training_weighted = 0
         update_started = time.monotonic()
@@ -768,7 +772,7 @@ def run() -> int:
             if position % 10 == 0 or position == len(order):
                 print(
                     "tinker-update "
-                    f"{block_ordinal}/{len(corpus['blocking']['blocks'])} "
+                    f"{block_ordinal}/{len(update_blocks(corpus['blocking']['blocks']))} "
                     f"step={position}/{len(order)}",
                     flush=True,
                 )
@@ -806,11 +810,15 @@ def run() -> int:
             "optimizerStatePath": state_path,
             "checkpointTTLSeconds": training_contract["checkpointTTLSeconds"],
             "trainingPolicy": (
-                "warm_start_then_train_full_cumulative_corpus_except_terminal_block"
+                PERSONALIZED_UPDATE_POLICY
             ),
-            "epochsOverCumulativeCorpus": EPOCHS_PER_UPDATE,
-            "cumulativeExampleCount": len(cumulative_ids),
-            "cumulativeExampleIDsSHA256": hashlib.sha256(canonical_bytes(cumulative_ids)).hexdigest(),
+            "epochsOverNewBlock": EPOCHS_PER_UPDATE,
+            "trainedExampleCount": len(trained_ids),
+            "trainedExampleIDsSHA256": hashlib.sha256(canonical_bytes(trained_ids)).hexdigest(),
+            "cumulativeExamplesSeen": sum(
+                len(value["exampleIDs"])
+                for value in corpus["blocking"]["blocks"][:block_ordinal]
+            ),
             "exampleOrderSHA256": hashlib.sha256(canonical_bytes(order)).hexdigest(),
             "trainingCalls": len(order),
             "optimizerSteps": len(order),

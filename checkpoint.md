@@ -2113,3 +2113,49 @@ Historical screenshots can be recropped when retained, but their capture time
 cannot be moved retroactively. This qualification does not break causal
 ordering, but later prospective confirmation should use homogeneous
 one-second READ / ten-percent crop sessions.
+
+## Phase 1 developmental execution and incremental correction
+
+The provider-backed v7 developmental run completed on 2026-08-20 from commit
+`f3bb64d`. It retained all 174 common prospective predictions, paired Qwen
+target likelihoods, query timing and usage, four sampler checkpoints, and four
+optimizer-state checkpoints. Personalized Qwen reduced micro target-token NLL
+from `3.657050` to `3.077763` and saved `4542.220` cumulative prequential bits
+relative to frozen Qwen. Those results are evidence for the executed
+warm-started cumulative-rehearsal baseline, not yet for a clean continual
+append-only update: blocks 1–4 received respectively four, three, two, and one
+training presentations. The authoritative audit is
+`coupled-data/phase1-raw-episode-experiment-v7-v6-v10-20260820`.
+
+The superseding continual protocol is `phase1-prequential-v4`:
+
+```text
+base LoRA + optimizer -> train block 1 -> score block 2
+checkpoint 1          -> train block 2 -> score block 3
+checkpoint 2          -> train block 3 -> score block 4
+checkpoint 3          -> train block 4 -> score block 5
+stop; do not train the terminal block
+```
+
+Every one of the first 200 examples is therefore presented exactly once; the
+terminal 24 examples receive zero training presentations. Each update restores
+the preceding optimizer-state checkpoint and trains only the newly available
+block. It neither replays earlier blocks nor initializes a fresh adapter from
+the base model. The no-network rehearsal
+`coupled-data/phase1-raw-episode-mock-v6-v10-incremental-v4-r1-20260820`
+passes with four 50-example updates, 6,410 loss-bearing-token presentations,
+and 6,402,010 submitted training positions. The audit rejects a larger update
+membership, broken parent checkpoint, repeated presentation, changed order, or
+post-terminal update.
+
+Provider plan v8 reuses the completed 174-row GPT frontier artifact without a
+new subscription call, rescores both Qwen arms at temperature `0.6` and seed
+`17`, and applies only the corrected personalized updates. Its projected Tinker
+maximum is `$25.778716` including a `$1.00` checkpoint reserve: `$9.366141`
+training, `$15.057115` prefill, and `$0.355461` maximum sampling. The reviewed
+local plan is
+`coupled-data/phase1-raw-episode-provider-plan-v8-incremental-30usd-r2-20260820.json`,
+SHA-256
+`800bb8fcc67f42315974f809f82ec65c2872c016038e89db1c944edb8f8e1e1e`.
+No authenticated or paid operation has used this plan; it requires a new
+explicit Tinker ceiling authorization before execution.

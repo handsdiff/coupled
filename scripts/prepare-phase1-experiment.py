@@ -10,8 +10,10 @@ from decimal import Decimal
 from pathlib import Path
 
 from phase1_experiment import (
+    PERSONALIZED_UPDATE_POLICY,
     QWEN_GENERATION_CONTRACT,
     TINKER_TRAINING_CONTRACT,
+    load_jsonl,
     prospective_blocks,
     prospective_example_ids,
     update_blocks,
@@ -20,7 +22,7 @@ from phase1_experiment import (
 from phase1_training_contract import TrainingContractError, sha256
 
 
-PLAN_VERSION = "phase1-provider-plan-v7"
+PLAN_VERSION = "phase1-provider-plan-v8"
 QWEN_MODEL = "Qwen/Qwen3.5-9B-Base"
 OPENAI_MODEL = "gpt-5.6-sol"
 OPENAI_REASONING_EFFORT = "xhigh"
@@ -49,6 +51,11 @@ def main() -> int:
     parser.add_argument("--packed", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--tinker-project-id", required=True)
+    parser.add_argument(
+        "--reuse-frontier-output",
+        type=Path,
+        help="Existing complete frontier output for the same corpus and pack",
+    )
     parser.add_argument("--epochs-per-update", type=int, default=1)
     parser.add_argument("--qwen-generation-token-ceiling", type=int, default=512)
     parser.add_argument("--openai-max-output-tokens", type=int, default=8192)
@@ -74,7 +81,7 @@ def main() -> int:
     ):
         raise TrainingContractError("epochs and generation ceiling must be positive")
     if arguments.epochs_per_update != TINKER_TRAINING_CONTRACT[
-        "epochsPerCumulativeUpdate"
+        "epochsPerNewBlockUpdate"
     ]:
         raise TrainingContractError(
             "epochs per update differ from the frozen Tinker training contract"
@@ -94,7 +101,6 @@ def main() -> int:
     evaluation_examples = [
         example for example in examples if example["exampleID"] in evaluation_id_set
     ]
-    cumulative: list[dict] = []
     update_plans = []
     total_training_positions = 0
     total_loss_presentations = 0
@@ -103,21 +109,24 @@ def main() -> int:
     for ordinal, (block, rows) in enumerate(
         zip(training_blocks, block_rows[: len(training_blocks)], strict=True), 1
     ):
-        cumulative.extend(rows)
         positions = arguments.epochs_per_update * sum(
-            len(row["inputIDs"]) - 1 for row in cumulative
+            len(row["inputIDs"]) - 1 for row in rows
         )
         loss_presentations = arguments.epochs_per_update * sum(
-            row["targetTokenCount"] for row in cumulative
+            row["targetTokenCount"] for row in rows
         )
-        for row in cumulative:
+        for row in rows:
             presentation_counts[row["exampleID"]] += arguments.epochs_per_update
         total_training_positions += positions
         total_loss_presentations += loss_presentations
         update_plans.append({
             "updateOrdinal": ordinal,
             "afterBlockID": block["blockID"],
-            "cumulativeExamples": len(cumulative),
+            "trainedExamples": len(rows),
+            "cumulativeExamplesSeen": sum(
+                len(value["exampleIDs"])
+                for value in training_blocks[:ordinal]
+            ),
             "epochs": arguments.epochs_per_update,
             "submittedPositions": positions,
             "lossBearingTokenPresentations": loss_presentations,
@@ -241,6 +250,42 @@ def main() -> int:
             "requiresNoAdditionalCreditAuthorization": True,
         })
 
+    reused_frontier = None
+    if arguments.reuse_frontier_output is not None:
+        frontier_path = arguments.reuse_frontier_output.expanduser().resolve()
+        manifest_path = frontier_path / "frontier.json"
+        scores_path = frontier_path / "scores.jsonl"
+        if not (manifest_path.is_file() and scores_path.is_file()):
+            raise TrainingContractError("reused frontier output is incomplete")
+        frontier_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        frontier_scores = load_jsonl(scores_path)
+        if not (
+            frontier_manifest.get("status") == "complete"
+            and frontier_manifest.get("source", {}).get("corpusSHA256")
+            == sha256(corpus_path / "corpus.json")
+            and frontier_manifest.get("source", {}).get("packingSHA256")
+            == sha256(packed_path / "packing.json")
+            and frontier_manifest.get("artifactDigestsSHA256", {}).get("scores.jsonl")
+            == sha256(scores_path)
+            and [row.get("exampleID") for row in frontier_scores] == evaluation_ids
+        ):
+            raise TrainingContractError(
+                "reused frontier output differs from the frozen experiment"
+            )
+        reused_frontier = {
+            "directory": str(frontier_path),
+            "manifestSHA256": sha256(manifest_path),
+            "scoresSHA256": sha256(scores_path),
+            "examples": len(frontier_scores),
+        }
+        openai_plan.update({
+            "execution": "reuse_complete_frozen_output_no_new_provider_calls",
+            "reusedArtifact": reused_frontier,
+        })
+        openai_plan["operations"]["responseCalls"] = 0
+        openai_plan["operations"]["reusedResponseRows"] = len(frontier_scores)
+        openai_plan["requiresNoAdditionalCreditAuthorization"] = True
+
     project_directory = Path(__file__).resolve().parent.parent
     implementation_paths = [
         Path(__file__).resolve(),
@@ -280,6 +325,7 @@ def main() -> int:
             "packingSHA256": sha256(packed_path / "packing.json"),
             "packedExamplesSHA256": sha256(packed_path / "packed-examples.jsonl"),
             "contextPlansSHA256": sha256(packed_path / "context-plans.jsonl"),
+            "reusedFrontier": reused_frontier,
         },
         "protocol": {
             "examples": len(examples),
@@ -303,7 +349,7 @@ def main() -> int:
             ),
             "scoreCompleteBlockBeforeUpdate": True,
             "personalizedUpdatePolicy": (
-                "warm_start_then_train_full_cumulative_corpus_except_terminal_block"
+                PERSONALIZED_UPDATE_POLICY
             ),
             "terminalBlockReceivesPostScoreUpdate": False,
             "updates": update_plans,
@@ -353,6 +399,7 @@ def main() -> int:
             "hardCostCeilingFrozen": True,
             "hardCostCeilingSatisfied": cost_ceiling_satisfied,
             "providerExecutionPermittedByPlan": cost_ceiling_satisfied,
+            "newFrontierProviderCallsRequired": reused_frontier is None,
             "chatGPTSubscriptionCannotFundResponsesAPI": True,
         },
     }

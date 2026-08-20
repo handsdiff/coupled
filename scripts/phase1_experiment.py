@@ -22,7 +22,7 @@ from phase1_training_contract import (
 )
 
 
-RUNNER_VERSION = "phase1-prequential-v3"
+RUNNER_VERSION = "phase1-prequential-v4"
 ARM_FROZEN_QWEN = "frozen_qwen3.5_9b_base"
 ARM_FROZEN_FRONTIER = "frozen_gpt_5.6_sol_xhigh"
 ARM_PERSONALIZED_QWEN = "personalized_qwen3.5_9b_base"
@@ -32,6 +32,9 @@ QWEN_GENERATION_CONTRACT = {
     "temperature": 0.6,
     "seed": 17,
 }
+PERSONALIZED_UPDATE_POLICY = (
+    "warm_start_then_train_new_block_only_except_terminal_block"
+)
 
 
 def prospective_blocks(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -72,7 +75,7 @@ TINKER_TRAINING_CONTRACT = {
     "trainUnembedding": True,
     "seed": 17,
     "batchExamplesPerForwardBackward": 1,
-    "epochsPerCumulativeUpdate": 1,
+    "epochsPerNewBlockUpdate": 1,
     "checkpointTTLSeconds": 7 * 24 * 60 * 60,
     "optimizer": {
         "type": "adam",
@@ -84,9 +87,9 @@ TINKER_TRAINING_CONTRACT = {
         "gradientClipNorm": 1.0,
     },
     "exampleOrder": {
-        "version": "phase1-prequential-order-v1",
+        "version": "phase1-prequential-order-v2",
         "algorithm": "sha256_ascending_then_example_id",
-        "material": "phase1-prequential:{seed}:{updateOrdinal}:{exampleID}",
+        "material": "phase1-prequential-new-block:{seed}:{updateOrdinal}:{exampleID}",
     },
 }
 
@@ -204,7 +207,7 @@ class ExperimentBackend(Protocol):
     def update(
         self,
         prior_checkpoint_id: str | None,
-        cumulative_rows: list[dict[str, Any]],
+        new_block_rows: list[dict[str, Any]],
         update_ordinal: int,
         epochs: int,
     ) -> dict[str, Any]: ...
@@ -245,7 +248,7 @@ class DeterministicMockBackend:
     def update(
         self,
         prior_checkpoint_id: str | None,
-        cumulative_rows: list[dict[str, Any]],
+        new_block_rows: list[dict[str, Any]],
         update_ordinal: int,
         epochs: int,
     ) -> dict[str, Any]:
@@ -253,13 +256,13 @@ class DeterministicMockBackend:
             "parent": prior_checkpoint_id,
             "ordinal": update_ordinal,
             "epochs": epochs,
-            "examples": [row["exampleID"] for row in cumulative_rows],
+            "examples": [row["exampleID"] for row in new_block_rows],
         })[:24]
         return {
             "checkpointID": checkpoint_id,
             "optimizerStateID": "mock_optimizer_" + checkpoint_id.removeprefix("mock_checkpoint_"),
-            "submittedPositions": epochs * sum(len(row["inputIDs"]) - 1 for row in cumulative_rows),
-            "lossBearingTokenPresentations": epochs * sum(row["targetTokenCount"] for row in cumulative_rows),
+            "submittedPositions": epochs * sum(len(row["inputIDs"]) - 1 for row in new_block_rows),
+            "lossBearingTokenPresentations": epochs * sum(row["targetTokenCount"] for row in new_block_rows),
             "costUSD": 0.0,
         }
 
@@ -324,7 +327,7 @@ def run_mock_experiment(
     updates: list[dict[str, Any]] = []
     current_checkpoint: str | None = None
     scored_personalized: set[str] = set()
-    cumulative_ids: list[str] = []
+    seen_ids: list[str] = []
     presentations = {example["exampleID"]: 0 for example in examples}
 
     evaluation_block_ids = {block["blockID"] for block in prospective_blocks(blocks)}
@@ -369,26 +372,27 @@ def run_mock_experiment(
                         scored_personalized.add(example_id)
         if block_id in evaluation_block_ids and not set(block_ids).issubset(scored_personalized):
             raise AssertionError("personalized update attempted before complete block scoring")
-        cumulative_ids.extend(block_ids)
+        seen_ids.extend(block_ids)
         if block_id not in update_block_ids:
             continue
-        cumulative_rows = [packed_by_id[value] for value in cumulative_ids]
+        new_block_rows = [packed_by_id[value] for value in block_ids]
         update = backend.update(
-            current_checkpoint, cumulative_rows, len(updates) + 1, epochs_per_update
+            current_checkpoint, new_block_rows, len(updates) + 1, epochs_per_update
         )
-        for example_id in cumulative_ids:
+        for example_id in block_ids:
             presentations[example_id] += epochs_per_update
         update_record = {
             "schemaVersion": 1,
             "runnerVersion": RUNNER_VERSION,
             "afterBlockID": block_id,
             "parentCheckpointID": current_checkpoint,
-            "trainingPolicy": "warm_start_then_train_full_cumulative_corpus",
-            "epochsOverCumulativeCorpus": epochs_per_update,
-            "cumulativeExampleIDs": list(cumulative_ids),
-            "cumulativeExampleCount": len(cumulative_ids),
+            "trainingPolicy": PERSONALIZED_UPDATE_POLICY,
+            "epochsOverNewBlock": epochs_per_update,
+            "trainedExampleIDs": list(block_ids),
+            "trainedExampleCount": len(block_ids),
+            "cumulativeExamplesSeen": len(seen_ids),
             "perExamplePresentationsAfterUpdate": {
-                value: presentations[value] for value in cumulative_ids
+                value: presentations[value] for value in seen_ids
             },
             **update,
         }
@@ -441,7 +445,7 @@ def run_mock_experiment(
                 ],
                 "scoreCompleteBlockBeforeUpdate": True,
                 "personalizedUpdatePolicy": (
-                    "warm_start_then_train_full_cumulative_corpus_except_terminal_block"
+                    PERSONALIZED_UPDATE_POLICY
                 ),
                 "terminalBlockReceivesPostScoreUpdate": False,
                 "qwenGenerationContract": QWEN_GENERATION_CONTRACT,
@@ -493,7 +497,7 @@ def audit_mock_experiment(
             "terminalBlockReceivesPostScoreUpdate"
         ) is False
         and manifest.get("protocol", {}).get("personalizedUpdatePolicy")
-        == "warm_start_then_train_full_cumulative_corpus_except_terminal_block"
+        == PERSONALIZED_UPDATE_POLICY
     ):
         raise TrainingContractError("not a supported passing mock experiment")
     for name, expected in manifest.get("artifactDigestsSHA256", {}).items():
@@ -539,24 +543,28 @@ def audit_mock_experiment(
             raise TrainingContractError(f"score loss-bearing count changed: {example_id}")
         if score["arm"] != ARM_PERSONALIZED_QWEN and score.get("checkpointID") is not None:
             raise TrainingContractError("a frozen arm received a checkpoint")
-    cumulative_ids: list[str] = []
+    seen_ids: list[str] = []
     presentations = {value["exampleID"]: 0 for value in examples}
     parent: str | None = None
     epochs = manifest["protocol"]["epochsPerUpdate"]
     all_blocks = corpus["blocking"]["blocks"]
     training_blocks = update_blocks(all_blocks)
     for block, update in zip(training_blocks, updates, strict=True):
-        cumulative_ids.extend(block["exampleIDs"])
+        block_ids = block["exampleIDs"]
+        seen_ids.extend(block_ids)
         if not (
             update.get("afterBlockID") == block["blockID"]
             and update.get("parentCheckpointID") == parent
-            and update.get("cumulativeExampleIDs") == cumulative_ids
+            and update.get("trainingPolicy") == PERSONALIZED_UPDATE_POLICY
+            and update.get("trainedExampleIDs") == block_ids
+            and update.get("trainedExampleCount") == len(block_ids)
+            and update.get("cumulativeExamplesSeen") == len(seen_ids)
         ):
-            raise TrainingContractError("update lineage or cumulative membership disagrees")
-        for example_id in cumulative_ids:
+            raise TrainingContractError("update lineage or incremental membership disagrees")
+        for example_id in block_ids:
             presentations[example_id] += epochs
         if update.get("perExamplePresentationsAfterUpdate") != {
-            value: presentations[value] for value in cumulative_ids
+            value: presentations[value] for value in seen_ids
         }:
             raise TrainingContractError("per-example presentation accounting disagrees")
         checkpoint = update.get("checkpointID")

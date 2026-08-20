@@ -9,7 +9,7 @@ from decimal import Decimal
 from typing import Any
 
 
-COST_LATENCY_VERSION = "phase1-cost-latency-v3"
+COST_LATENCY_VERSION = "phase1-cost-latency-v4"
 MILLION = Decimal(1_000_000)
 OPENAI_API_EQUIVALENT_PRICE_CONTRACT = {
     "model": "gpt-5.6-sol",
@@ -407,9 +407,12 @@ def build_cost_latency_report(
         "personalizationTraining": {
             "latency": latency_summary(
                 updates,
-                "cumulative_training_update_including_sampler_and_optimizer_checkpoint_saves",
+                "incremental_new_block_training_update_including_sampler_and_optimizer_checkpoint_saves",
             ),
             "updates": len(updates),
+            "policy": (
+                updates[0].get("trainingPolicy") if updates else None
+            ),
             "submittedPositions": training_positions,
             "estimatedUSDAtFrozenRate": (
                 decimal_string(training_estimate) if training_estimate is not None else None

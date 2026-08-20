@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -18,6 +19,7 @@ from phase1_experiment import (
     ARM_FROZEN_FRONTIER,
     ARM_FROZEN_QWEN,
     ARM_PERSONALIZED_QWEN,
+    PERSONALIZED_UPDATE_POLICY,
     QWEN_GENERATION_CONTRACT,
     canonical_bytes,
     load_jsonl,
@@ -42,7 +44,7 @@ from phase1_cost_latency import (
 from phase1_training_contract import TrainingContractError, sha256
 
 
-AUDIT_VERSION = "phase1-real-experiment-audit-v7"
+AUDIT_VERSION = "phase1-real-experiment-audit-v8"
 
 
 def target_profile(example: dict[str, Any]) -> dict[str, Any]:
@@ -137,12 +139,17 @@ def main() -> int:
     if provider_plan_path is not None:
         provider_plan = json.loads(provider_plan_path.read_text())
         plan_digest = sha256(provider_plan_path)
-        if not (
-            tinker_manifest.get("source", {}).get("providerPlanSHA256") == plan_digest
-            and frontier_manifest.get("source", {}).get("providerPlanSHA256")
-            == plan_digest
-        ):
-            raise TrainingContractError("provider plan lineage differs")
+        if tinker_manifest.get("source", {}).get("providerPlanSHA256") != plan_digest:
+            raise TrainingContractError("Tinker provider plan lineage differs")
+        if frontier_manifest.get("source", {}).get("providerPlanSHA256") != plan_digest:
+            reused = provider_plan.get("openai", {}).get("reusedArtifact", {})
+            if not (
+                provider_plan.get("openai", {}).get("execution")
+                == "reuse_complete_frozen_output_no_new_provider_calls"
+                and reused.get("manifestSHA256") == sha256(frontier_path / "frontier.json")
+                and reused.get("scoresSHA256") == sha256(frontier_path / "scores.jsonl")
+            ):
+                raise TrainingContractError("reused frontier plan lineage differs")
     if (
         arguments.verified_tinker_charge_usd is not None
         and arguments.verified_tinker_charge_usd < 0
@@ -214,6 +221,23 @@ def main() -> int:
     training_blocks = update_blocks(blocks)
     if list(update_by_block) != [row["blockID"] for row in training_blocks]:
         raise TrainingContractError("update blocks differ from frozen protocol")
+    cumulative_seen = 0
+    for block in training_blocks:
+        update = update_by_block[block["blockID"]]
+        trained_ids = block["exampleIDs"]
+        cumulative_seen += len(trained_ids)
+        if not (
+            update.get("trainingPolicy") == PERSONALIZED_UPDATE_POLICY
+            and update.get("trainedExampleCount") == len(trained_ids)
+            and update.get("trainedExampleIDsSHA256")
+            == hashlib.sha256(canonical_bytes(trained_ids)).hexdigest()
+            and update.get("cumulativeExamplesSeen") == cumulative_seen
+            and update.get("trainingCalls") == len(trained_ids)
+            and update.get("optimizerSteps") == len(trained_ids)
+        ):
+            raise TrainingContractError(
+                "incremental update membership or exposure differs"
+            )
     for ordinal, block in enumerate(blocks):
         scored_block_ids = [
             example_id for example_id in block["exampleIDs"]
@@ -481,7 +505,7 @@ def main() -> int:
                 "scoreCompleteBlockBeforeUpdate": True,
                 "frontierHasComparableTokenNLL": False,
                 "personalizedUpdatePolicy": (
-                    "warm_start_then_train_full_cumulative_corpus_except_terminal_block"
+                    PERSONALIZED_UPDATE_POLICY
                 ),
                 "terminalBlockReceivesPostScoreUpdate": False,
                 "qwenGenerationContract": QWEN_GENERATION_CONTRACT,

@@ -26,7 +26,7 @@ def main() -> int:
     )
     print(
         f"Phase 1 mock experiment passed: {manifest['counts']['scores']} scores, "
-        f"{manifest['counts']['updates']} cumulative updates "
+        f"{manifest['counts']['updates']} incremental updates "
         "(first block is training-only warm-up)"
     )
     print("No model, network, authentication, or paid operation was used.")
