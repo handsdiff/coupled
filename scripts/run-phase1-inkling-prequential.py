@@ -442,9 +442,16 @@ def score_example(
         "stopReason": stop_reason,
         "generationDisposition": disposition,
         "generationEligibleForEvaluation": generation_eligible,
-        "predictionMetrics": (
+        "predictionMetrics": score_prediction(
+            expected,
+            prediction if generation_eligible else "",
+            target_paste_actions=row["pasteActionCount"],
+        ),
+        "validOnlyPredictionMetrics": (
             score_prediction(
-                expected, prediction, target_paste_actions=row["pasteActionCount"]
+                expected,
+                prediction,
+                target_paste_actions=row["pasteActionCount"],
             )
             if generation_eligible
             else None

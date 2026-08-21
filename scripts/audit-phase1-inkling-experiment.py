@@ -79,9 +79,12 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "macroExampleAverageNLL": statistics.mean(value["meanNLL"] for value in rows),
         "microTargetTokenNLL": sum(value["weightedNLLSum"] for value in rows) / weighted,
         "weightedTokens": weighted,
-        "generatedCompletion": (
+        "generatedCompletion": summarize_prediction_metrics(
+            [value["predictionMetrics"] for value in rows]
+        ),
+        "generatedCompletionConditionalOnValid": (
             summarize_prediction_metrics(
-                [value["predictionMetrics"] for value in accepted]
+                [value["validOnlyPredictionMetrics"] for value in accepted]
             )
             if accepted
             else None
@@ -188,6 +191,11 @@ def main() -> int:
             min(batch_size, len(block["exampleIDs"]) - start)
             for start in range(0, len(block["exampleIDs"]), batch_size)
         ]
+        if (
+            not plan["protocol"]["trainingContract"]["partialFinalBatchAllowed"]
+            and any(value != batch_size for value in expected_batch_sizes)
+        ):
+            raise InklingContractError("planned update contains a partial optimizer batch")
         if update["parentOptimizerStatePath"] != prior:
             raise InklingContractError("optimizer checkpoint chain differs")
         if not (
@@ -224,7 +232,12 @@ def main() -> int:
                 else GENERATION_CONTRACT["missingFinalDisposition"]
             )
         )
-        expected_metrics = (
+        expected_primary_metrics = score_prediction(
+            expected_target,
+            score["prediction"] if valid_final else "",
+            target_paste_actions=row["pasteActionCount"],
+        )
+        expected_valid_metrics = (
             score_prediction(
                 expected_target,
                 score["prediction"],
@@ -244,7 +257,8 @@ def main() -> int:
             and score["target"] == expected_target
             and score["semanticModelInputSHA256"] == row["semanticModelInputSHA256"]
             and score["weightedTokenCount"] == row["targetTokenCount"]
-            and score["predictionMetrics"] == expected_metrics
+            and score["predictionMetrics"] == expected_primary_metrics
+            and score["validOnlyPredictionMetrics"] == expected_valid_metrics
             and score["generationDisposition"] == expected_disposition
             and score["generationEligibleForEvaluation"] == valid_final
             and score["generationTokenCeiling"]
@@ -311,6 +325,8 @@ def main() -> int:
                 "macro_character_similarity",
                 "exact_match_rate",
                 "correct_prefix_mean_characters",
+                "valid_only_macro_character_similarity",
+                "valid_only_exact_match_rate",
                 "median_latency_seconds",
                 "mean_latency_seconds",
                 "estimated_query_cost_usd",
@@ -320,6 +336,7 @@ def main() -> int:
         writer.writeheader()
         for arm, summary in summaries.items():
             generated = summary["generatedCompletion"]
+            valid_only = summary["generatedCompletionConditionalOnValid"]
             writer.writerow({
                 "arm": arm,
                 "examples": summary["examples"],
@@ -330,18 +347,20 @@ def main() -> int:
                     "generationExcludedExamples"
                 ],
                 "micro_target_token_nll": summary["microTargetTokenNLL"],
-                "macro_character_similarity": (
+                "macro_character_similarity": generated[
+                    "macroNormalizedLevenshteinSimilarity"
+                ],
+                "exact_match_rate": generated["exactMatchRate"],
+                "correct_prefix_mean_characters": generated["correctPrefix"][
+                    "meanCharactersPerExample"
+                ],
+                "valid_only_macro_character_similarity": (
                     None
-                    if generated is None
-                    else generated["macroNormalizedLevenshteinSimilarity"]
+                    if valid_only is None
+                    else valid_only["macroNormalizedLevenshteinSimilarity"]
                 ),
-                "exact_match_rate": (
-                    None if generated is None else generated["exactMatchRate"]
-                ),
-                "correct_prefix_mean_characters": (
-                    None
-                    if generated is None
-                    else generated["correctPrefix"]["meanCharactersPerExample"]
+                "valid_only_exact_match_rate": (
+                    None if valid_only is None else valid_only["exactMatchRate"]
                 ),
                 "median_latency_seconds": summary["latency"]["medianSeconds"],
                 "mean_latency_seconds": summary["latency"]["meanSeconds"],

@@ -117,7 +117,7 @@ def main() -> int:
     first_id = blocks[1]["exampleIDs"][0]
     raw_contracts = [
         runner.datum_contract(value)
-        for value in load_jsonl(pack_path / "reasoning_off-packed-examples.jsonl")[:8]
+        for value in load_jsonl(pack_path / "reasoning_off-packed-examples.jsonl")[:10]
     ]
     normalized, target_tokens, token_weight = (
         runner.micro_normalized_batch_contracts(raw_contracts)
@@ -130,6 +130,12 @@ def main() -> int:
         {weight for weight in value.weights if weight} == {token_weight}
         for value in normalized
     )
+    try:
+        runner.optimizer_batches([value.example_id for value in raw_contracts[:8]])
+    except runner.InklingContractError:
+        pass
+    else:
+        raise AssertionError("partial optimizer batch was accepted")
 
     for condition, effort in REASONING_CONDITIONS.items():
         rows = {
@@ -164,6 +170,7 @@ def main() -> int:
         ][condition]
         assert score["generationDisposition"] == "accepted"
         assert score["generationEligibleForEvaluation"] is True
+        assert score["predictionMetrics"] == score["validOnlyPredictionMetrics"]
         assert score["targetLikelihoodLatencySeconds"] >= 0
         assert score["generationLatencySeconds"] >= 0
         assert score["latencySeconds"] >= score["targetLikelihoodLatencySeconds"]
@@ -196,7 +203,9 @@ def main() -> int:
     )
     assert incomplete["generationDisposition"] == "truncated_without_valid_final"
     assert incomplete["generationEligibleForEvaluation"] is False
-    assert incomplete["predictionMetrics"] is None
+    assert incomplete["predictionMetrics"] is not None
+    assert incomplete["predictionMetrics"]["predictionEmpty"] is True
+    assert incomplete["validOnlyPredictionMetrics"] is None
 
     with tempfile.TemporaryDirectory(prefix="phase1-inkling-audit-check-") as raw:
         temporary = Path(raw)
@@ -230,9 +239,9 @@ def main() -> int:
                     "parentOptimizerStatePath": parent[condition],
                     "optimizerStatePath": state,
                     "samplerCheckpointPath": sampler,
-                    "optimizerBatchSizes": [8, 8, 8, 8, 8, 8, 2],
-                    "trainingCalls": 7,
-                    "optimizerSteps": 7,
+                    "optimizerBatchSizes": [10, 10, 10, 10, 10],
+                    "trainingCalls": 5,
+                    "optimizerSteps": 5,
                     "lossReduction": runner.TRAINING_CONTRACT["lossReduction"],
                 }
                 updates.append(update)
@@ -270,6 +279,9 @@ def main() -> int:
                 "meanNLL": 1.0,
                 "prediction": target,
                 "predictionMetrics": score_prediction(
+                    target, target, target_paste_actions=row["pasteActionCount"]
+                ),
+                "validOnlyPredictionMetrics": score_prediction(
                     target, target, target_paste_actions=row["pasteActionCount"]
                 ),
                 "checkpointID": (

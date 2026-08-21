@@ -13,11 +13,11 @@ from phase1_experiment import canonical_bytes
 
 
 INKLING_MODEL = "thinkingmachines/Inkling-Small"
-INKLING_CONTRACT_VERSION = "phase1-inkling-contract-v2"
+INKLING_CONTRACT_VERSION = "phase1-inkling-contract-v3"
 INKLING_PACK_VERSION = "phase1-inkling-pack-v1"
-INKLING_PLAN_VERSION = "phase1-inkling-plan-v2"
-INKLING_RUNNER_VERSION = "phase1-inkling-prequential-v2"
-INKLING_AUDIT_VERSION = "phase1-inkling-audit-v2"
+INKLING_PLAN_VERSION = "phase1-inkling-plan-v3"
+INKLING_RUNNER_VERSION = "phase1-inkling-prequential-v3"
+INKLING_AUDIT_VERSION = "phase1-inkling-audit-v3"
 REASONING_CONDITIONS = {
     "reasoning_off": 0.0,
     "reasoning_on": 0.9,
@@ -50,8 +50,8 @@ TRAINING_CONTRACT = {
     "trainAttention": True,
     "trainMLP": True,
     "trainUnembedding": True,
-    "optimizerBatchExamples": 8,
-    "partialFinalBatchAllowed": True,
+    "optimizerBatchExamples": 10,
+    "partialFinalBatchAllowed": False,
     "lossReduction": {
         "name": "micro_target_token_average_per_optimizer_batch",
         "relativeEpisodeWeighting": "proportional_to_loss_bearing_target_tokens",
