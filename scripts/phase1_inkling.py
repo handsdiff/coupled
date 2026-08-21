@@ -13,11 +13,11 @@ from phase1_experiment import canonical_bytes
 
 
 INKLING_MODEL = "thinkingmachines/Inkling-Small"
-INKLING_CONTRACT_VERSION = "phase1-inkling-contract-v3"
+INKLING_CONTRACT_VERSION = "phase1-inkling-contract-v4"
 INKLING_PACK_VERSION = "phase1-inkling-pack-v1"
-INKLING_PLAN_VERSION = "phase1-inkling-plan-v3"
-INKLING_RUNNER_VERSION = "phase1-inkling-prequential-v3"
-INKLING_AUDIT_VERSION = "phase1-inkling-audit-v3"
+INKLING_PLAN_VERSION = "phase1-inkling-plan-v4"
+INKLING_RUNNER_VERSION = "phase1-inkling-prequential-v4"
+INKLING_AUDIT_VERSION = "phase1-inkling-audit-v4"
 REASONING_CONDITIONS = {
     "reasoning_off": 0.0,
     "reasoning_on": 0.9,
@@ -73,6 +73,13 @@ TRAINING_CONTRACT = {
         "material": "phase1-prequential-new-block:{seed}:{updateOrdinal}:{exampleID}",
     },
     "checkpointTTLSeconds": 604800,
+}
+RECOVERY_CONTRACT = {
+    "maximumAutomaticScoreRetriesTotal": 1,
+    "maximumAutomaticTrainingBlockRestartsTotal": 1,
+    "scoreRecovery": "retry_nonmutating_nll_and_generation_from_same_checkpoint",
+    "trainingRecovery": "discard_uncertain_branch_restore_parent_and_restart_whole_block",
+    "costAccounting": "planned_worst_case_plus_abandoned_attempt_maximums",
 }
 
 

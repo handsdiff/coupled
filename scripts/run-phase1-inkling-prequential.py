@@ -26,6 +26,7 @@ from phase1_inkling import (
     INKLING_MODEL,
     INKLING_PLAN_VERSION,
     INKLING_RUNNER_VERSION,
+    RECOVERY_CONTRACT,
     REASONING_CONDITIONS,
     TRAINING_CONTRACT,
     InklingContractError,
@@ -305,6 +306,8 @@ def validate_plan(
         == GENERATION_CONTRACT
         and plan.get("protocol", {}).get("trainingContract")
         == TRAINING_CONTRACT
+        and plan.get("protocol", {}).get("recoveryContract")
+        == RECOVERY_CONTRACT
         and Decimal(plan["tinker"]["hardExecutionCeilingUSD"])
         == arguments.maximum_usd
         and plan["tinker"]["projectedCostWithinHardCeiling"] is True
@@ -312,7 +315,12 @@ def validate_plan(
         == arguments.dedicated_private_project_id
     ):
         raise InklingContractError("provider plan differs from the frozen contract")
-    if Decimal(plan["tinker"]["projectedCostUSD"]["totalIncludingReserve"]) > arguments.maximum_usd:
+    if (
+        Decimal(
+            plan["tinker"]["projectedCostUSD"]["totalIncludingRecoveryReserve"]
+        )
+        > arguments.maximum_usd
+    ):
         raise InklingContractError("projected Inkling cost exceeds the ceiling")
     expected_source = {
         "corpusSHA256": sha256(corpus_path / "corpus.json"),
@@ -348,6 +356,129 @@ def cost_string(tokens: int, rate: str) -> str:
         (Decimal(tokens) * Decimal(rate) / Decimal(1_000_000)).quantize(
             Decimal("0.000001")
         )
+    )
+
+
+def recovery_identity(
+    active_update: dict[str, Any] | None,
+    inflight: dict[str, Any] | None,
+) -> tuple[str, dict[str, Any], Decimal] | None:
+    if active_update:
+        identity = {
+            "condition": active_update["condition"],
+            "updateOrdinal": active_update["ordinal"],
+        }
+        return (
+            "training_block_restart",
+            identity,
+            Decimal(active_update["maximumReplayCostUSD"]),
+        )
+    if inflight and inflight.get("kind") == "score_nll_and_generation":
+        identity = {
+            "blockID": inflight["blockID"],
+            "arm": inflight["arm"],
+            "exampleID": inflight["exampleID"],
+        }
+        return (
+            "score_retry",
+            identity,
+            Decimal(inflight["maximumReplayCostUSD"]),
+        )
+    if inflight:
+        raise InklingContractError(
+            f"unsupported interrupted operation: {inflight.get('kind')}"
+        )
+    return None
+
+
+def recover_interrupted_manifest(
+    *,
+    manifest: dict[str, Any],
+    scores: list[dict[str, Any]],
+    updates: list[dict[str, Any]],
+    maximum_usd: Decimal,
+    planned_cost_usd: Decimal,
+) -> bool:
+    active = manifest.get("activeUpdate")
+    inflight = manifest.get("inflightOperation")
+    recovery = recovery_identity(active, inflight)
+    if recovery is None:
+        return False
+    kind, identity, maximum_cost = recovery
+    score_keys = {
+        (value["blockID"], value["arm"], value["exampleID"]) for value in scores
+    }
+    update_keys = {
+        (value["condition"], value["updateOrdinal"]) for value in updates
+    }
+    already_committed = (
+        kind == "score_retry"
+        and (identity["blockID"], identity["arm"], identity["exampleID"])
+        in score_keys
+    ) or (
+        kind == "training_block_restart"
+        and (identity["condition"], identity["updateOrdinal"]) in update_keys
+    )
+    attempts = manifest.setdefault("abandonedAttempts", [])
+    if already_committed:
+        manifest.setdefault("recoveryEvents", []).append({
+            "kind": "stale_marker_after_committed_operation",
+            "operationKind": kind,
+            "identity": identity,
+            "recoveredAt": iso8601(),
+        })
+    else:
+        limit_key = (
+            "maximumAutomaticScoreRetriesTotal"
+            if kind == "score_retry"
+            else "maximumAutomaticTrainingBlockRestartsTotal"
+        )
+        if sum(value["kind"] == kind for value in attempts) >= RECOVERY_CONTRACT[limit_key]:
+            raise InklingContractError(f"automatic {kind} allowance exhausted")
+        if any(value["kind"] == kind and value["identity"] == identity for value in attempts):
+            raise InklingContractError(f"interrupted {kind} was already retried")
+        projected = planned_cost_usd + maximum_cost + sum(
+            Decimal(value["maximumEstimatedProviderCostUSD"]) for value in attempts
+        )
+        if projected > maximum_usd:
+            raise InklingContractError("recovery would exceed the hard cost ceiling")
+        attempts.append({
+            "attemptID": str(uuid.uuid4()),
+            "kind": kind,
+            "identity": identity,
+            "abandonedAt": iso8601(),
+            "maximumEstimatedProviderCostUSD": str(maximum_cost),
+            "projectedRunMaximumAfterRecoveryUSD": str(projected),
+            "activeUpdate": active,
+            "inflightOperation": inflight,
+            "resolution": (
+                RECOVERY_CONTRACT["scoreRecovery"]
+                if kind == "score_retry"
+                else RECOVERY_CONTRACT["trainingRecovery"]
+            ),
+        })
+    manifest.pop("inflightOperation", None)
+    manifest.pop("activeUpdate", None)
+    failure = manifest.pop("failure", None)
+    interrupted_at = manifest.pop("interruptedAt", None)
+    manifest.setdefault("recoveryEvents", []).append({
+        "kind": "resume_after_interruption",
+        "operationKind": kind,
+        "identity": identity,
+        "failure": failure,
+        "interruptedAt": interrupted_at,
+        "resumedAt": iso8601(),
+    })
+    manifest["status"] = "recovering"
+    return True
+
+
+def abandoned_attempt_count(
+    manifest: dict[str, Any], kind: str, identity: dict[str, Any]
+) -> int:
+    return sum(
+        value.get("kind") == kind and value.get("identity") == identity
+        for value in manifest.get("abandonedAttempts", [])
     )
 
 
@@ -503,6 +634,7 @@ def run() -> int:
         for condition, rows in rows_by_condition.items()
     }
     plan, plan_digest = validate_plan(arguments, corpus_path, pack_path)
+    prices = plan["tinker"]["pricesPerMillionUSD"]
 
     contracts_by_condition: dict[str, dict[str, TinkerDatumContract]] = {}
     for condition, rows in rows_by_condition.items():
@@ -548,8 +680,10 @@ def run() -> int:
                 "reasoningConditions": REASONING_CONDITIONS,
                 "generationContract": GENERATION_CONTRACT,
                 "trainingContract": TRAINING_CONTRACT,
+                "recoveryContract": RECOVERY_CONTRACT,
             },
             "counts": {"completedScores": 0, "completedUpdates": 0},
+            "abandonedAttempts": [],
         }
         atomic_json(manifest_path, manifest)
         scores: list[dict[str, Any]] = []
@@ -559,8 +693,6 @@ def run() -> int:
         current = implementation_record(plan)
         if current["workingTreeDirtyAtStart"] or manifest.get("implementation") != current:
             raise InklingContractError("resume implementation or revision changed")
-        if manifest.get("inflightOperation") or manifest.get("activeUpdate"):
-            raise InklingContractError("uncertain paid work cannot be replayed")
         if not (
             manifest.get("source", {}).get("providerPlanSHA256") == plan_digest
             and manifest.get("source", {}).get("preflightSHA256")
@@ -569,6 +701,17 @@ def run() -> int:
             raise InklingContractError("resume lineage changed")
         scores = load_jsonl(scores_path) if scores_path.exists() else []
         updates = load_jsonl(updates_path) if updates_path.exists() else []
+        recovered = recover_interrupted_manifest(
+            manifest=manifest,
+            scores=scores,
+            updates=updates,
+            maximum_usd=arguments.maximum_usd,
+            planned_cost_usd=Decimal(
+                plan["tinker"]["projectedCostUSD"]["totalIncludingReserve"]
+            ),
+        )
+        if recovered:
+            atomic_json(manifest_path, manifest)
 
     blocks = load_experiment_blocks(corpus_path)
     expected_scores = expected_score_sequence(blocks)
@@ -640,7 +783,6 @@ def run() -> int:
     })
     atomic_json(manifest_path, manifest)
 
-    prices = plan["tinker"]["pricesPerMillionUSD"]
     for block_ordinal, block in enumerate(blocks, 1):
         if block_ordinal > 1:
             for condition in REASONING_CONDITIONS:
@@ -658,13 +800,31 @@ def run() -> int:
                         if key in observed_scores:
                             continue
                         row = row_by_condition[condition][example_id]
+                        score_identity = {
+                            "blockID": block["blockID"],
+                            "arm": arm,
+                            "exampleID": example_id,
+                        }
+                        maximum_score_cost = Decimal(
+                            cost_string(
+                                len(row["inputIDs"]) + row["modelInputTokenCount"],
+                                prices["prefill"],
+                            )
+                        ) + Decimal(
+                            cost_string(generation_ceiling(condition), prices["sample"])
+                        )
+                        score_attempt_ordinal = 1 + abandoned_attempt_count(
+                            manifest, "score_retry", score_identity
+                        )
                         manifest["inflightOperation"] = {
                             "kind": "score_nll_and_generation",
                             "blockID": block["blockID"],
                             "condition": condition,
                             "arm": arm,
                             "exampleID": example_id,
-                            "replayAllowed": False,
+                            "attemptOrdinal": score_attempt_ordinal,
+                            "maximumReplayCostUSD": str(maximum_score_cost),
+                            "replayPolicy": RECOVERY_CONTRACT["scoreRecovery"],
                         }
                         atomic_json(manifest_path, manifest)
                         score = score_example(
@@ -682,6 +842,7 @@ def run() -> int:
                             usage=usage,
                             prices=prices,
                         )
+                        score["attemptOrdinal"] = score_attempt_ordinal
                         append_jsonl(scores_path, score)
                         scores.append(score)
                         observed_scores.append(key)
@@ -712,13 +873,24 @@ def run() -> int:
             training_nll = 0.0
             training_weighted = 0
             update_started = time.monotonic()
+            submitted = sum(contracts[value].length for value in order)
+            training_identity = {
+                "condition": condition,
+                "updateOrdinal": block_ordinal,
+            }
+            training_attempt_ordinal = 1 + abandoned_attempt_count(
+                manifest, "training_block_restart", training_identity
+            )
             manifest["activeUpdate"] = {
                 "condition": condition,
                 "ordinal": block_ordinal,
                 "totalSteps": len(batches),
                 "totalExamples": len(order),
                 "completedStepsNotCheckpointed": 0,
-                "replayAllowed": False,
+                "attemptOrdinal": training_attempt_ordinal,
+                "submittedPositions": submitted,
+                "maximumReplayCostUSD": cost_string(submitted, prices["training"]),
+                "replayPolicy": RECOVERY_CONTRACT["trainingRecovery"],
             }
             atomic_json(manifest_path, manifest)
             for position, batch_ids in enumerate(batches, 1):
@@ -739,7 +911,7 @@ def run() -> int:
                     "lossBearingTargetTokens": batch_target_tokens,
                     "perTargetTokenWeight": token_weight,
                     "submittedPositions": sum(value.length for value in raw_contracts),
-                    "replayAllowed": False,
+                    "replayPolicy": "restart_whole_block_from_parent_checkpoint",
                 }
                 atomic_json(manifest_path, manifest)
                 result = client.forward_backward(batch_datums, "cross_entropy").result()
@@ -771,13 +943,13 @@ def run() -> int:
                 atomic_json(manifest_path, manifest)
             prefix = (
                 f"phase1-inkling-{condition}-{corpus['corpusID'][:12]}-"
-                f"block-{block_ordinal:02d}"
+                f"block-{block_ordinal:02d}-attempt-{training_attempt_ordinal:02d}"
             )
             manifest["inflightOperation"] = {
                 "kind": "save_sampler_checkpoint",
                 "condition": condition,
                 "updateOrdinal": block_ordinal,
-                "replayAllowed": False,
+                "replayPolicy": "restart_whole_block_from_parent_checkpoint",
             }
             atomic_json(manifest_path, manifest)
             sampler_path = client.save_weights_for_sampler(
@@ -788,7 +960,7 @@ def run() -> int:
                 "kind": "save_optimizer_state",
                 "condition": condition,
                 "updateOrdinal": block_ordinal,
-                "replayAllowed": False,
+                "replayPolicy": "restart_whole_block_from_parent_checkpoint",
             }
             atomic_json(manifest_path, manifest)
             state_path = client.save_state(
@@ -797,13 +969,13 @@ def run() -> int:
             ).result().path
             usage.checkpoint_saves += 2
             prior = latest_update.get(condition)
-            submitted = sum(contracts[value].length for value in order)
             update = {
                 "schemaVersion": 1,
                 "runnerVersion": INKLING_RUNNER_VERSION,
                 "condition": condition,
                 "effort": REASONING_CONDITIONS[condition],
                 "updateOrdinal": block_ordinal,
+                "trainingAttemptOrdinal": training_attempt_ordinal,
                 "afterBlockID": block["blockID"],
                 "parentOptimizerStatePath": None if prior is None else prior["optimizerStatePath"],
                 "samplerCheckpointPath": sampler_path,
@@ -855,10 +1027,40 @@ def run() -> int:
             Decimal("0.000001")
         )
     )
+    abandoned_maximum = sum(
+        (
+            Decimal(value["maximumEstimatedProviderCostUSD"])
+            for value in manifest.get("abandonedAttempts", [])
+        ),
+        Decimal(0),
+    )
+    actual["abandonedAttemptMaximumUSD"] = str(
+        abandoned_maximum.quantize(Decimal("0.000001"))
+    )
+    actual["maximumIncludingAbandonedAttemptsBeforeCheckpointStorage"] = str(
+        (
+            Decimal(actual["subtotalBeforeCheckpointStorage"])
+            + abandoned_maximum
+        ).quantize(Decimal("0.000001"))
+    )
     manifest["status"] = "complete"
     manifest["completedAt"] = iso8601()
     manifest["usage"] = usage.as_dict()
     manifest["estimatedCost"] = actual
+    manifest["recoverySummary"] = {
+        "abandonedAttempts": len(manifest.get("abandonedAttempts", [])),
+        "scoreRetries": sum(
+            value["kind"] == "score_retry"
+            for value in manifest.get("abandonedAttempts", [])
+        ),
+        "trainingBlockRestarts": sum(
+            value["kind"] == "training_block_restart"
+            for value in manifest.get("abandonedAttempts", [])
+        ),
+        "maximumEstimatedProviderCostUSD": str(
+            abandoned_maximum.quantize(Decimal("0.000001"))
+        ),
+    }
     manifest["finalCheckpoints"] = {
         condition: {
             "samplerCheckpointPath": latest_update[condition]["samplerCheckpointPath"],
@@ -875,24 +1077,46 @@ def run() -> int:
     return 0
 
 
+def record_interruption(error: Exception) -> bool:
+    arguments = parse_arguments()
+    path = arguments.output.expanduser().resolve() / "inkling.json"
+    if not path.exists():
+        return False
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["status"] = "interrupted"
+    manifest["interruptedAt"] = iso8601()
+    manifest["failure"] = {
+        "type": type(error).__name__,
+        "message": str(error),
+        "traceback": traceback.format_exc(),
+    }
+    atomic_json(path, manifest)
+    return bool(
+        manifest.get("activeUpdate")
+        or manifest.get("inflightOperation", {}).get("kind")
+        == "score_nll_and_generation"
+    )
+
+
 def main() -> int:
-    try:
-        return run()
-    except BaseException as error:
+    automatic_restarts = 0
+    maximum_automatic_restarts = (
+        RECOVERY_CONTRACT["maximumAutomaticScoreRetriesTotal"]
+        + RECOVERY_CONTRACT["maximumAutomaticTrainingBlockRestartsTotal"]
+    )
+    while True:
         try:
-            arguments = parse_arguments()
-            path = arguments.output.expanduser().resolve() / "inkling.json"
-            if path.exists():
-                manifest = json.loads(path.read_text(encoding="utf-8"))
-                manifest["status"] = "interrupted"
-                manifest["interruptedAt"] = iso8601()
-                manifest["failure"] = {
-                    "type": type(error).__name__,
-                    "message": str(error),
-                    "traceback": traceback.format_exc(),
-                }
-                atomic_json(path, manifest)
-        finally:
+            return run()
+        except Exception as error:
+            recoverable = record_interruption(error)
+            if recoverable and automatic_restarts < maximum_automatic_restarts:
+                automatic_restarts += 1
+                print(
+                    "inkling-recovery restarting runner from committed artifacts "
+                    f"attempt={automatic_restarts}/{maximum_automatic_restarts}",
+                    flush=True,
+                )
+                continue
             raise
 
 

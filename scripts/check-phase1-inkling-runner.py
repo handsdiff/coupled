@@ -208,6 +208,74 @@ def main() -> int:
     assert incomplete["predictionMetrics"]["exactMatch"] is False
     assert incomplete["validOnlyPredictionMetrics"] is None
 
+    score_interruption = {
+        "status": "interrupted",
+        "inflightOperation": {
+            "kind": "score_nll_and_generation",
+            "blockID": "block-0002",
+            "arm": ARM_NAMES["reasoning_on"]["frozen"],
+            "exampleID": first_id,
+            "maximumReplayCostUSD": "0.050000",
+        },
+        "abandonedAttempts": [],
+    }
+    assert runner.recover_interrupted_manifest(
+        manifest=score_interruption,
+        scores=[],
+        updates=[],
+        maximum_usd=runner.Decimal("60.00"),
+        planned_cost_usd=runner.Decimal("55.657355"),
+    )
+    assert score_interruption["abandonedAttempts"][0]["kind"] == "score_retry"
+    assert "inflightOperation" not in score_interruption
+    score_interruption["inflightOperation"] = {
+        "kind": "score_nll_and_generation",
+        "blockID": "block-0002",
+        "arm": ARM_NAMES["reasoning_on"]["frozen"],
+        "exampleID": first_id,
+        "maximumReplayCostUSD": "0.050000",
+    }
+    try:
+        runner.recover_interrupted_manifest(
+            manifest=score_interruption,
+            scores=[],
+            updates=[],
+            maximum_usd=runner.Decimal("60.00"),
+            planned_cost_usd=runner.Decimal("55.657355"),
+        )
+    except runner.InklingContractError:
+        pass
+    else:
+        raise AssertionError("the same interrupted score was retried twice")
+
+    for failed_batch in (2, 3):
+        training_interruption = {
+            "status": "interrupted",
+            "activeUpdate": {
+                "condition": "reasoning_off",
+                "ordinal": 1,
+                "maximumReplayCostUSD": "2.500000",
+            },
+            "inflightOperation": {
+                "kind": "micro_batch_forward_backward_and_optimizer_step",
+                "condition": "reasoning_off",
+                "updateOrdinal": 1,
+                "position": failed_batch,
+            },
+            "abandonedAttempts": [],
+        }
+        assert runner.recover_interrupted_manifest(
+            manifest=training_interruption,
+            scores=[],
+            updates=[],
+            maximum_usd=runner.Decimal("60.00"),
+            planned_cost_usd=runner.Decimal("55.657355"),
+        )
+        attempt = training_interruption["abandonedAttempts"][0]
+        assert attempt["kind"] == "training_block_restart"
+        assert attempt["inflightOperation"]["position"] == failed_batch
+        assert "activeUpdate" not in training_interruption
+
     with tempfile.TemporaryDirectory(prefix="phase1-inkling-audit-check-") as raw:
         temporary = Path(raw)
         plan_path = temporary / "plan.json"
@@ -219,6 +287,7 @@ def main() -> int:
                 "--inkling-pack", str(pack_path),
                 "--output", str(plan_path),
                 "--tinker-project-id", "10b258ab-25fe-45e0-a54b-fef023154281",
+                "--hard-ceiling-usd", "60.00",
             ],
             check=False,
             capture_output=True,
@@ -240,6 +309,7 @@ def main() -> int:
                     "parentOptimizerStatePath": parent[condition],
                     "optimizerStatePath": state,
                     "samplerCheckpointPath": sampler,
+                    "trainingAttemptOrdinal": 1,
                     "optimizerBatchSizes": [10, 10, 10, 10, 10],
                     "trainingCalls": 5,
                     "optimizerSteps": 5,
@@ -281,6 +351,7 @@ def main() -> int:
                 "weightedNLLSum": float(row["targetTokenCount"]),
                 "meanNLL": 1.0,
                 "prediction": prediction,
+                "attemptOrdinal": 1,
                 "predictionMetrics": score_prediction(
                     target, prediction, target_paste_actions=row["pasteActionCount"]
                 ),
@@ -337,6 +408,13 @@ def main() -> int:
             },
             "usage": {"fixture": True},
             "estimatedCost": {"fixture": True},
+            "abandonedAttempts": [],
+            "recoverySummary": {
+                "abandonedAttempts": 0,
+                "scoreRetries": 0,
+                "trainingBlockRestarts": 0,
+                "maximumEstimatedProviderCostUSD": "0.000000",
+            },
         }
         (run_path / "inkling.json").write_bytes(canonical_bytes(manifest))
         audit_path = temporary / "audit"

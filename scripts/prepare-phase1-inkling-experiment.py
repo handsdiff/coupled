@@ -16,6 +16,7 @@ from phase1_inkling import (
     GENERATION_CONTRACT,
     INKLING_MODEL,
     INKLING_PLAN_VERSION,
+    RECOVERY_CONTRACT,
     REASONING_CONDITIONS,
     TRAINING_CONTRACT,
     InklingContractError,
@@ -169,13 +170,38 @@ def main() -> int:
         "checkpointReserveUSD": CHECKPOINT_RESERVE,
     }
     projected = sum(cost.values(), Decimal(0))
+    maximum_score_retry = max(
+        money(len(value["inputIDs"]) + value["modelInputTokenCount"], PREFILL_PER_MILLION)
+        + money(
+            GENERATION_CONTRACT["maximumTokensByCondition"][condition],
+            SAMPLE_PER_MILLION,
+        )
+        for condition, rows in rows_by_condition.items()
+        for value in rows
+        if value["exampleID"] in evaluation_ids
+    )
+    maximum_training_restart = money(
+        max(
+            value["submittedPositions"]
+            for condition_updates in updates.values()
+            for value in condition_updates
+        ),
+        TRAIN_PER_MILLION,
+    )
+    recovery_reserve = (
+        maximum_score_retry
+        * RECOVERY_CONTRACT["maximumAutomaticScoreRetriesTotal"]
+        + maximum_training_restart
+        * RECOVERY_CONTRACT["maximumAutomaticTrainingBlockRestartsTotal"]
+    )
+    projected_with_recovery = projected + recovery_reserve
     ceiling = arguments.hard_ceiling_usd
     status = (
         "awaiting_explicit_cost_ceiling"
         if ceiling is None
         else (
             "authorized_for_execution"
-            if projected <= ceiling
+            if projected_with_recovery <= ceiling
             else "blocked_projected_cost_exceeds_ceiling"
         )
     )
@@ -229,6 +255,7 @@ def main() -> int:
             "reasoningConditions": REASONING_CONDITIONS,
             "generationContract": GENERATION_CONTRACT,
             "trainingContract": TRAINING_CONTRACT,
+            "recoveryContract": RECOVERY_CONTRACT,
             "updates": updates,
         },
         "tinker": {
@@ -255,15 +282,20 @@ def main() -> int:
             "projectedCostUSD": {
                 **{key: decimal_string(value) for key, value in cost.items()},
                 "totalIncludingReserve": decimal_string(projected),
+                "maximumScoreRetryUSD": decimal_string(maximum_score_retry),
+                "maximumTrainingBlockRestartUSD": decimal_string(
+                    maximum_training_restart
+                ),
+                "recoveryReserveUSD": decimal_string(recovery_reserve),
+                "totalIncludingRecoveryReserve": decimal_string(
+                    projected_with_recovery
+                ),
             },
             "hardExecutionCeilingUSD": None if ceiling is None else str(ceiling),
             "projectedCostWithinHardCeiling": (
-                None if ceiling is None else projected <= ceiling
+                None if ceiling is None else projected_with_recovery <= ceiling
             ),
-            "interruptionPolicy": {
-                "inFlightOperationReplayAllowed": False,
-                "partialUpdateReplayAllowed": False,
-            },
+            "interruptionPolicy": RECOVERY_CONTRACT,
         },
         "implementation": {
             "fileDigestsSHA256": {

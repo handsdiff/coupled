@@ -18,6 +18,7 @@ from phase1_inkling import (
     INKLING_AUDIT_VERSION,
     INKLING_MODEL,
     INKLING_RUNNER_VERSION,
+    RECOVERY_CONTRACT,
     REASONING_CONDITIONS,
     InklingContractError,
     load_experiment_blocks,
@@ -167,6 +168,25 @@ def main() -> int:
     if observed_updates != expected_update_rows:
         raise InklingContractError("Inkling update order differs")
 
+    abandoned = manifest.get("abandonedAttempts", [])
+    score_retries = [value for value in abandoned if value.get("kind") == "score_retry"]
+    training_restarts = [
+        value for value in abandoned if value.get("kind") == "training_block_restart"
+    ]
+    if not (
+        len(score_retries)
+        <= RECOVERY_CONTRACT["maximumAutomaticScoreRetriesTotal"]
+        and len(training_restarts)
+        <= RECOVERY_CONTRACT["maximumAutomaticTrainingBlockRestartsTotal"]
+        and Decimal(plan["tinker"]["projectedCostUSD"]["totalIncludingReserve"])
+        + sum(
+            (Decimal(value["maximumEstimatedProviderCostUSD"]) for value in abandoned),
+            Decimal(0),
+        )
+        <= Decimal(plan["tinker"]["hardExecutionCeilingUSD"])
+    ):
+        raise InklingContractError("recovery attempts exceed the frozen policy or ceiling")
+
     rows_by_condition = {
         condition: {
             value["exampleID"]: value
@@ -198,7 +218,17 @@ def main() -> int:
             raise InklingContractError("planned update contains a partial optimizer batch")
         if update["parentOptimizerStatePath"] != prior:
             raise InklingContractError("optimizer checkpoint chain differs")
+        expected_attempt = 1 + sum(
+            value["identity"]
+            == {
+                "condition": condition,
+                "updateOrdinal": update["updateOrdinal"],
+            }
+            for value in training_restarts
+        )
         if not (
+            update.get("trainingAttemptOrdinal") == expected_attempt
+            and
             update.get("optimizerBatchSizes") == expected_batch_sizes
             and update.get("trainingCalls") == len(expected_batch_sizes)
             and update.get("optimizerSteps") == len(expected_batch_sizes)
@@ -251,12 +281,21 @@ def main() -> int:
         prior_update = update_by_block_condition[
             (prior_block_by_block[score["blockID"]], condition)
         ]
+        score_identity = {
+            "blockID": score["blockID"],
+            "arm": score["arm"],
+            "exampleID": score["exampleID"],
+        }
+        expected_score_attempt = 1 + sum(
+            value["identity"] == score_identity for value in score_retries
+        )
         if not (
             score["arm"] == expected_arm
             and score["effort"] == REASONING_CONDITIONS[condition]
             and score["target"] == expected_target
             and score["semanticModelInputSHA256"] == row["semanticModelInputSHA256"]
             and score["weightedTokenCount"] == row["targetTokenCount"]
+            and score.get("attemptOrdinal") == expected_score_attempt
             and score["predictionMetrics"] == expected_primary_metrics
             and score["validOnlyPredictionMetrics"] == expected_valid_metrics
             and score["generationDisposition"] == expected_disposition
@@ -301,6 +340,8 @@ def main() -> int:
             ),
             "trainingContract": plan["protocol"]["trainingContract"],
             "generationContract": plan["protocol"]["generationContract"],
+            "recoveryContract": plan["protocol"]["recoveryContract"],
+            "recoverySummary": manifest.get("recoverySummary"),
         },
         "summaries": summaries,
         "usage": manifest["usage"],
