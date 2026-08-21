@@ -2225,7 +2225,7 @@ the invalid-generation denominator regression was completed at `1c141d8`:
   seven-day sampler and optimizer-state checkpoints.
 
 The matching Phase 1 objective and algorithm prose is committed in the Notes
-vault at `6197ea2`. The review-only provider plan is:
+vault at `6197ea2`. The earlier review-only provider plan is:
 
 ```text
 coupled-data/phase1-inkling-plan-v3-pre-run-review-20260820.json
@@ -2235,8 +2235,40 @@ SHA-256 ae88a20f3037c7f2390c3acf88c32f1d074c16a178923495e76a14061f433242
 It covers 224 examples, 174 prospective scores per arm, 696 target-likelihood
 calls, 696 generations, 40 batch training calls, 11,974,128 submitted training
 positions, and 12,478 loss-bearing token presentations. The worst-case frozen
-projection is `$55.657355`, including a `$2.00` checkpoint reserve. Its status
-is `awaiting_explicit_cost_ceiling`; no executable `$60` plan, authenticated
-preflight, or full Inkling run exists yet. Reasoning-on remains an offline
-capability arm at the observed latency rather than a plausible live-suggestion
-configuration.
+base projection is `$55.657355`, including a `$2.00` checkpoint reserve.
+
+Before full execution, contract v4 added bounded interruption recovery. A
+non-mutating score operation may be retried once from the same accepted
+checkpoint. One interrupted 50-example training block may be discarded and
+restarted from its parent optimizer checkpoint on a new branch; uncertain
+mutable state is never continued. Abandoned attempts, selected branches, and
+their maximum possible costs remain auditable. A second score retry or second
+training-block restart is refused. Fault injection covers score interruption
+and training interruption during optimizer batches two and three. The full
+repository suite passes at code revision `5b2f403`.
+
+The user-authorized executable plan is:
+
+```text
+coupled-data/phase1-inkling-plan-v4-60usd-final-5b2f403-20260820.json
+SHA-256 52956119634bd1a3012e67369d7167092b2320b8c43cda7ace9e64d5461e6992
+```
+
+Its `$58.367464` hard-envelope projection comprises the `$55.657355` base
+maximum plus `$0.060239` for one abandoned maximum-size score and `$2.649870`
+for one abandoned maximum-size training block. This remains below the exact
+`$60.00` execution ceiling.
+
+The authenticated metadata-only preflight passed against Inkling-Small's
+server-reported 65,536-token context and compared all 20,415 token IDs used by
+the frozen pack. The local and official Cookbook-resolved mappings are
+byte-identical. It created one sampling client but submitted zero examples and
+made zero NLL, generation, training, or checkpoint calls:
+
+```text
+coupled-data/phase1-inkling-preflight-v4-60usd-5b2f403-20260820.json
+```
+
+Reasoning-on remains an offline capability arm at the observed latency rather
+than a plausible live-suggestion configuration. The full four-arm run has not
+yet begun at this checkpoint.
