@@ -36,16 +36,25 @@ def require_loopback_url(value: str) -> str:
     return value
 
 
-def build_request(model_input: str) -> dict[str, Any]:
+def build_request(
+    model_input: str,
+    *,
+    model: str = MODEL,
+    reasoning_effort: str = REASONING_EFFORT,
+) -> dict[str, Any]:
     if not isinstance(model_input, str) or not model_input:
         raise SubscriptionResponseError("model input must be nonempty text")
+    if not model.startswith("chatgpt/gpt-5"):
+        raise SubscriptionResponseError("subscription model must use an explicit chatgpt/gpt-5 route")
+    if reasoning_effort not in {"high", "xhigh"}:
+        raise SubscriptionResponseError("unsupported reasoning effort")
     request = {
-        "model": MODEL,
+        "model": model,
         "input": [{
             "role": "user",
             "content": [{"type": "input_text", "text": model_input}],
         }],
-        "reasoning": {"effort": REASONING_EFFORT},
+        "reasoning": {"effort": reasoning_effort},
         "stream": True,
         "tools": [],
     }
@@ -128,9 +137,16 @@ def request_completion(
     local_proxy_key: str | None = None,
     timeout_seconds: float = 300.0,
     urlopen: Callable[..., Any] = urllib.request.urlopen,
+    *,
+    model: str = MODEL,
+    reasoning_effort: str = REASONING_EFFORT,
 ) -> tuple[str, dict[str, Any]]:
     endpoint = require_loopback_url(endpoint)
-    payload = build_request(model_input)
+    payload = build_request(
+        model_input,
+        model=model,
+        reasoning_effort=reasoning_effort,
+    )
     headers = {"Content-Type": "application/json"}
     if local_proxy_key:
         headers["Authorization"] = f"Bearer {local_proxy_key}"
@@ -143,6 +159,20 @@ def request_completion(
     try:
         with urlopen(request, timeout=timeout_seconds) as response:
             body = decode_response(response.read())
+    except urllib.error.HTTPError as error:
+        try:
+            error_body = json.loads(error.read().decode(errors="replace"))
+            detail = error_body.get("detail") if isinstance(error_body, dict) else None
+            if not isinstance(detail, str) and isinstance(error_body, dict):
+                nested = error_body.get("error")
+                if isinstance(nested, dict):
+                    detail = nested.get("message")
+        except (json.JSONDecodeError, OSError):
+            detail = None
+        suffix = f": {detail}" if isinstance(detail, str) and detail else ""
+        raise SubscriptionResponseError(
+            f"LiteLLM request failed with HTTP {error.code}{suffix}"
+        ) from error
     except urllib.error.URLError as error:
         raise SubscriptionResponseError(f"LiteLLM request failed: {error}") from error
     if not isinstance(body, dict):

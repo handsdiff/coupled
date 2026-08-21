@@ -1,0 +1,21 @@
+#!/bin/zsh
+set -euo pipefail
+
+project_dir="${0:A:h:h}"
+litellm="$project_dir/.build/litellm-venv/bin/litellm"
+token_dir="$project_dir/.build/litellm-chatgpt-auth"
+
+if [[ ! -x "$litellm" ]]; then
+  print -u2 "LiteLLM is not installed in $project_dir/.build/litellm-venv"
+  exit 1
+fi
+
+mkdir -p "$token_dir"
+CHATGPT_TOKEN_DIR="$token_dir" \
+LITELLM_LOCAL_MODEL_COST_MAP=true \
+exec "$litellm" \
+  --config "$project_dir/scripts/litellm-phase1-frontier-model-arc.yaml" \
+  --host 127.0.0.1 \
+  --port 4000 \
+  --num_workers 1 \
+  --telemetry False

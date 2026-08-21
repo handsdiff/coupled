@@ -44,6 +44,12 @@ python3 -m py_compile \
   "$project_dir/scripts/audit-phase1-experiment.py" \
   "$project_dir/scripts/prepare-phase1-experiment.py" \
   "$project_dir/scripts/phase1_subscription_responses.py" \
+  "$project_dir/scripts/phase1_frontier_model_arc.py" \
+  "$project_dir/scripts/prepare-phase1-frontier-model-arc.py" \
+  "$project_dir/scripts/preflight-phase1-frontier-model-arc.py" \
+  "$project_dir/scripts/run-phase1-frontier-model-arc.py" \
+  "$project_dir/scripts/audit-phase1-frontier-model-arc.py" \
+  "$project_dir/scripts/check-phase1-frontier-model-arc.py" \
   "$project_dir/scripts/preflight-phase1-subscription.py" \
   "$project_dir/scripts/preflight-phase1-paste-example.py" \
   "$project_dir/scripts/run-phase1-frontier-arm.py" \
@@ -83,6 +89,7 @@ python3 "$project_dir/scripts/check-phase1-corpus.py"
 
 PYTHONPYCACHEPREFIX="$project_dir/.build/python-cache" \
 python3 "$project_dir/scripts/check-phase1-subscription-responses.py"
+python3 "$project_dir/scripts/check-phase1-frontier-model-arc.py"
 python3 "$project_dir/scripts/check-phase1-episode-review.py"
 python3 "$project_dir/scripts/check-phase1-raw-episode.py"
 python3 "$project_dir/scripts/check-phase1-real-runners.py"

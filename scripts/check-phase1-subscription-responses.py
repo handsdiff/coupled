@@ -95,6 +95,25 @@ def main() -> int:
         raise AssertionError("subscription Responses input shape changed")
     if received.get("reasoning") != {"effort": "xhigh"}:
         raise AssertionError("subscription reasoning effort changed")
+    custom_received: dict = {}
+
+    def custom_urlopen(request: object, timeout: float) -> MockResponse:
+        del timeout
+        custom_received.update(json.loads(request.data))
+        return MockResponse()
+
+    request_completion(
+        "http://127.0.0.1:4000/v1/responses",
+        "public historical-model fixture",
+        urlopen=custom_urlopen,
+        model="chatgpt/gpt-5",
+        reasoning_effort="high",
+    )
+    if not (
+        custom_received.get("model") == "chatgpt/gpt-5"
+        and custom_received.get("reasoning") == {"effort": "high"}
+    ):
+        raise AssertionError("parameterized subscription route changed")
     if FORBIDDEN_REQUEST_FIELDS & set(received):
         raise AssertionError("subscription request contains a rejected field")
     if received.get("stream") is not True:

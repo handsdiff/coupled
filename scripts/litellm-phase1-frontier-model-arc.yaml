@@ -1,0 +1,28 @@
+model_list:
+  - model_name: chatgpt/gpt-5
+    model_info:
+      mode: responses
+    litellm_params:
+      model: chatgpt/gpt-5
+  - model_name: chatgpt/gpt-5.2
+    model_info:
+      mode: responses
+    litellm_params:
+      model: chatgpt/gpt-5.2
+  - model_name: chatgpt/gpt-5.3
+    model_info:
+      mode: responses
+    litellm_params:
+      model: chatgpt/gpt-5.3
+  - model_name: chatgpt/gpt-5.4
+    model_info:
+      mode: responses
+    litellm_params:
+      model: chatgpt/gpt-5.4
+  - model_name: chatgpt/gpt-5.5
+    model_info:
+      mode: responses
+    litellm_params:
+      model: chatgpt/gpt-5.5
+# No fallback is configured. Unsupported historical routes must fail rather
+# than silently use another model or OpenAI API credits.
