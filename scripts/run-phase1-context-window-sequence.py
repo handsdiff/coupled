@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Wait for the frontier arc, then run GPT-5.6 context arms strictly sequentially."""
+"""Wait for the frontier arc, then run the GPT-5.6 128K context arm."""
 
 from __future__ import annotations
 
@@ -11,10 +11,15 @@ import sys
 import time
 from pathlib import Path
 
-from phase1_context_window_ablation import ContextWindowError, atomic_json, sha256
+from phase1_context_window_ablation import (
+    WINDOWS,
+    ContextWindowError,
+    atomic_json,
+    sha256,
+)
 
 
-SEQUENCE_VERSION = "phase1-gpt56-context-window-sequence-v1"
+SEQUENCE_VERSION = "phase1-gpt56-context-window-sequence-v2"
 
 
 def iso8601() -> str:
@@ -92,9 +97,7 @@ def main() -> int:
             "gpt-5.4-xhigh",
             "gpt-5.5-xhigh",
             "frontier-model-arc-audit",
-            "gpt-5.6-sol-xhigh-8k",
-            "gpt-5.6-sol-xhigh-16k",
-            "gpt-5.6-sol-xhigh-64k",
+            "gpt-5.6-sol-xhigh-128k",
             "context-window-audit",
         ],
     }
@@ -129,7 +132,7 @@ def main() -> int:
     project = Path(__file__).resolve().parent.parent
     corpus = arguments.corpus.expanduser().resolve()
     packs = arguments.context_packs.expanduser().resolve()
-    for key in ("8k", "16k", "64k"):
+    for key in (key for key in WINDOWS if key != "32k"):
         command = [
             sys.executable,
             str(project / "scripts/run-phase1-context-window-ablation.py"),

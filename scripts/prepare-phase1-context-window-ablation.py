@@ -107,7 +107,7 @@ def main() -> int:
             "instructionQueryAndTargetIdenticalAcrossWindows": True,
             "onlyRetainedHistoryBudgetChanges": True,
             "examplesPerWindow": len(expected_ids),
-            "newSubscriptionCalls": len(expected_ids) * 3,
+            "newSubscriptionCalls": len(expected_ids) * (len(WINDOWS) - 1),
             "warmupBlockScored": False,
             "trainingOperations": 0,
         },

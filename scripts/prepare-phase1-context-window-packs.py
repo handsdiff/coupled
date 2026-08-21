@@ -21,7 +21,7 @@ from phase1_experiment import canonical_bytes, target_text
 from phase1_inkling import load_experiment_blocks, load_jsonl
 
 
-PACK_VERSION = "phase1-gpt56-context-semantic-pack-v1"
+PACK_VERSION = "phase1-gpt56-context-semantic-pack-v2"
 
 
 def load_packer(project: Path):

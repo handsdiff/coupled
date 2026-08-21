@@ -41,7 +41,11 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--packed", required=True, type=Path)
     parser.add_argument("--plan", required=True, type=Path)
     parser.add_argument("--plan-sha256", required=True)
-    parser.add_argument("--window-key", required=True, choices=["8k", "16k", "64k"])
+    parser.add_argument(
+        "--window-key",
+        required=True,
+        choices=[key for key in WINDOWS if key != "32k"],
+    )
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--endpoint", default="http://127.0.0.1:4000/v1/responses")
     parser.add_argument("--maximum-calls", required=True, type=int)

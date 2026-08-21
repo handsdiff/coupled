@@ -18,20 +18,18 @@ from phase1_frontier_model_arc import (
 from phase1_prediction_metrics import summarize_prediction_metrics
 
 
-ABLATION_VERSION = "phase1-gpt56-context-window-v1"
-PLAN_VERSION = "phase1-gpt56-context-window-plan-v1"
-RUNNER_VERSION = "phase1-gpt56-context-window-runner-v1"
-AUDIT_VERSION = "phase1-gpt56-context-window-audit-v1"
+ABLATION_VERSION = "phase1-gpt56-context-window-v2"
+PLAN_VERSION = "phase1-gpt56-context-window-plan-v2"
+RUNNER_VERSION = "phase1-gpt56-context-window-runner-v2"
+AUDIT_VERSION = "phase1-gpt56-context-window-audit-v2"
 MODEL = {
     "route": "chatgpt/gpt-5.6-sol",
     "requestedModel": "gpt-5.6-sol",
     "reasoningEffort": "xhigh",
 }
 WINDOWS = {
-    "8k": 8192,
-    "16k": 16384,
     "32k": 32768,
-    "64k": 65536,
+    "128k": 131072,
 }
 API_EQUIVALENT_PRICES_PER_MILLION_USD = {
     "input": "5.00",

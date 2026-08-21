@@ -2386,3 +2386,32 @@ The mechanical audit verifies exact chronological IDs, checkpoint ancestry,
 one presentation per training example, all 20 batch records, loss-mask-derived
 metrics, invalid-generation zero scoring, canonical artifact hashes, recovery
 evidence, and hard-ceiling accounting. The full repository check suite passes.
+
+## GPT-5.6 Sol 32K versus 128K context ablation
+
+The earlier planned `8K / 16K / 32K / 64K` context sequence is superseded
+before any new GPT-5.6 calls. Its 8K runner attempted to start after GPT-5.4,
+GPT-5.5, and the frontier audit completed, but the sandbox blocked its first
+loopback connection to LiteLLM. The retained interrupted artifact contains
+zero scores and no provider response.
+
+Context-ablation v2 asks the smaller initial question: compare the existing
+immutable 32K GPT-5.6 Sol xhigh arm with one new 128K arm. Both use the same
+174 prospective examples, task instruction, right-edge conditioning query,
+target, event-aware history suffix algorithm, model route, and xhigh reasoning
+effort. Only the retained causal-history budget changes. The budget is measured
+with the same frozen Qwen tokenizer used by the canonical 32K pack; actual
+provider input usage remains recorded per query. The new plan requires exactly
+174 ChatGPT-subscription calls and no training operations.
+
+The deterministic packs reproduce the frozen 32K semantic inputs exactly. The
+128K pack retains up to 131,072 packing-token positions per example; the
+largest untruncated history requires 621,121 positions, so 128K remains a real
+sliding-window condition rather than full history for every example.
+
+```text
+coupled-data/phase1-gpt56-context-packs-v2-32k-128k-20260821
+
+coupled-data/phase1-gpt56-context-window-plan-v2-32k-128k-20260821.json
+SHA-256 bd8e13d6d9ace9c1234d696178696b5af88026c56035b165bb5598af40222570
+```

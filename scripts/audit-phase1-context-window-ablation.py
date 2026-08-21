@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Audit and summarize GPT-5.6 Sol across 8K/16K/32K/64K history packs."""
+"""Audit GPT-5.6 Sol xhigh across reused 32K and new 128K history packs."""
 
 from __future__ import annotations
 

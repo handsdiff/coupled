@@ -22,9 +22,7 @@ from phase1_prediction_metrics import score_prediction
 
 
 def main() -> int:
-    assert list(WINDOWS.items()) == [
-        ("8k", 8192), ("16k", 16384), ("32k", 32768), ("64k", 65536)
-    ]
+    assert list(WINDOWS.items()) == [("32k", 32768), ("128k", 131072)]
     assert MODEL == {
         "route": "chatgpt/gpt-5.6-sol",
         "requestedModel": "gpt-5.6-sol",
@@ -36,7 +34,7 @@ def main() -> int:
     assert cost["totalUSD"] == "35.000000"
     assert cost["billingMode"] == "api_equivalent_not_subscription_charge"
     project = Path(__file__).resolve().parent.parent
-    root = project / "coupled-data/phase1-gpt56-context-packs-v1-r2-20260820"
+    root = project / "coupled-data/phase1-gpt56-context-packs-v2-32k-128k-20260821"
     reference = (
         project / "coupled-data/phase1-raw-episode-pack-v6-v10-canonical-20260820"
     )
@@ -54,9 +52,9 @@ def main() -> int:
         assert all([value["exampleID"] for value in rows[key]] == ids for key in WINDOWS)
         for ordinal, example_id in enumerate(ids):
             previous = []
-            target = rows["8k"][ordinal]["target"]
-            query_hash = rows["8k"][ordinal]["rightEdgeQuerySHA256"]
-            instruction = rows["8k"][ordinal]["taskInstruction"]
+            target = rows["32k"][ordinal]["target"]
+            query_hash = rows["32k"][ordinal]["rightEdgeQuerySHA256"]
+            instruction = rows["32k"][ordinal]["taskInstruction"]
             for key, budget in WINDOWS.items():
                 row = rows[key][ordinal]
                 retained = [
@@ -105,7 +103,7 @@ def main() -> int:
             plan = json.loads(plan_path.read_text())
             expected_ids = plan["source"]["prospectiveExampleIDs"]
             runs = temporary / "runs"
-            for key in ("8k", "16k", "64k"):
+            for key in (key for key in WINDOWS if key != "32k"):
                 directory = runs / key
                 directory.mkdir(parents=True)
                 by_id = {value["exampleID"]: value for value in rows[key]}
