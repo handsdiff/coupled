@@ -79,7 +79,22 @@ python3 -m py_compile \
   "$project_dir/scripts/check-phase1-training-contract.py" \
   "$project_dir/scripts/check-phase1-tinker-overfit-contract.py" \
   "$project_dir/scripts/phase1_cost_latency.py" \
-  "$project_dir/scripts/check-phase1-cost-latency.py"
+  "$project_dir/scripts/check-phase1-cost-latency.py" \
+  "$project_dir/scripts/phase1_inkling.py" \
+  "$project_dir/scripts/prepare-phase1-inkling-pack.py" \
+  "$project_dir/scripts/prepare-phase1-inkling-experiment.py" \
+  "$project_dir/scripts/preflight-phase1-inkling.py" \
+  "$project_dir/scripts/run-phase1-inkling-prequential.py" \
+  "$project_dir/scripts/audit-phase1-inkling-experiment.py" \
+  "$project_dir/scripts/check-phase1-inkling.py" \
+  "$project_dir/scripts/check-phase1-inkling-runner.py" \
+  "$project_dir/scripts/phase1_context_window_ablation.py" \
+  "$project_dir/scripts/prepare-phase1-context-window-packs.py" \
+  "$project_dir/scripts/prepare-phase1-context-window-ablation.py" \
+  "$project_dir/scripts/run-phase1-context-window-ablation.py" \
+  "$project_dir/scripts/run-phase1-context-window-sequence.py" \
+  "$project_dir/scripts/audit-phase1-context-window-ablation.py" \
+  "$project_dir/scripts/check-phase1-context-window-ablation.py"
 
 PYTHONPYCACHEPREFIX="$project_dir/.build/python-cache" \
 python3 "$project_dir/scripts/check-phase1-training-contract.py"
@@ -95,9 +110,19 @@ python3 "$project_dir/scripts/check-phase1-raw-episode.py"
 python3 "$project_dir/scripts/check-phase1-real-runners.py"
 python3 "$project_dir/scripts/check-phase1-prediction-metrics.py"
 python3 "$project_dir/scripts/check-phase1-cost-latency.py"
+python3 "$project_dir/scripts/check-phase1-context-window-ablation.py"
 
 if [[ -x "$project_dir/.build/tinker-venv/bin/python" ]]; then
   PYTHONPYCACHEPREFIX="$project_dir/.build/python-cache" \
   "$project_dir/.build/tinker-venv/bin/python" \
     "$project_dir/scripts/check-phase1-tinker-overfit-contract.py"
+fi
+
+if [[ -x "$project_dir/.build/inkling-arm64-venv/bin/python" ]]; then
+  PYTHONPYCACHEPREFIX="$project_dir/.build/python-cache" \
+  "$project_dir/.build/inkling-arm64-venv/bin/python" \
+    "$project_dir/scripts/check-phase1-inkling.py"
+  PYTHONPYCACHEPREFIX="$project_dir/.build/python-cache" \
+  "$project_dir/.build/inkling-arm64-venv/bin/python" \
+    "$project_dir/scripts/check-phase1-inkling-runner.py"
 fi
