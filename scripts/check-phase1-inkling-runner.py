@@ -205,6 +205,7 @@ def main() -> int:
     assert incomplete["generationEligibleForEvaluation"] is False
     assert incomplete["predictionMetrics"] is not None
     assert incomplete["predictionMetrics"]["predictionEmpty"] is True
+    assert incomplete["predictionMetrics"]["exactMatch"] is False
     assert incomplete["validOnlyPredictionMetrics"] is None
 
     with tempfile.TemporaryDirectory(prefix="phase1-inkling-audit-check-") as raw:
@@ -266,6 +267,8 @@ def main() -> int:
             kind = "personalized" if arm.startswith("personalized_") else "frozen"
             row = rows_by_condition[condition][example_id]
             target = target_text(examples[example_id]["target"])
+            invalid = not scores
+            prediction = "" if invalid else target
             scores.append({
                 "blockID": block_id,
                 "condition": condition,
@@ -277,12 +280,18 @@ def main() -> int:
                 "weightedTokenCount": row["targetTokenCount"],
                 "weightedNLLSum": float(row["targetTokenCount"]),
                 "meanNLL": 1.0,
-                "prediction": target,
+                "prediction": prediction,
                 "predictionMetrics": score_prediction(
-                    target, target, target_paste_actions=row["pasteActionCount"]
+                    target, prediction, target_paste_actions=row["pasteActionCount"]
                 ),
-                "validOnlyPredictionMetrics": score_prediction(
-                    target, target, target_paste_actions=row["pasteActionCount"]
+                "validOnlyPredictionMetrics": (
+                    None
+                    if invalid
+                    else score_prediction(
+                        target,
+                        target,
+                        target_paste_actions=row["pasteActionCount"],
+                    )
                 ),
                 "checkpointID": (
                     None
@@ -291,15 +300,17 @@ def main() -> int:
                 ),
                 "reasoning": "" if condition == "reasoning_off" else "fixture",
                 "responseParse": {
-                    "status": "parsed",
-                    "prediction": target,
+                    "status": "parse_failed" if invalid else "parsed",
+                    "prediction": prediction,
                 },
                 "generationTokenCeiling": GENERATION_CONTRACT[
                     "maximumTokensByCondition"
                 ][condition],
-                "stopReason": "stop",
-                "generationDisposition": "accepted",
-                "generationEligibleForEvaluation": True,
+                "stopReason": "length" if invalid else "stop",
+                "generationDisposition": (
+                    "truncated_without_valid_final" if invalid else "accepted"
+                ),
+                "generationEligibleForEvaluation": not invalid,
                 "latencySeconds": 1.0,
                 "generationLatencySeconds": 0.75,
                 "targetLikelihoodLatencySeconds": 0.25,
@@ -350,6 +361,12 @@ def main() -> int:
         assert report["protocol"]["scoreRows"] == 696
         assert report["protocol"]["updates"] == 8
         assert report["protocol"]["terminalBlockUpdated"] is False
+        first_arm = ARM_NAMES["reasoning_off"]["frozen"]
+        assert report["summaries"][first_arm]["generationExcludedExamples"] == 1
+        assert report["summaries"][first_arm]["generatedCompletion"]["examples"] == 174
+        assert report["summaries"][first_arm][
+            "generatedCompletionConditionalOnValid"
+        ]["examples"] == 173
         assert set(report["summaries"]) == {
             arm for condition in REASONING_CONDITIONS for arm in ARM_NAMES[condition].values()
         }
