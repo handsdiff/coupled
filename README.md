@@ -17,6 +17,9 @@ should be reviewed before it is used for training.
 
 ## Quick start
 
+For a teammate-facing setup, permission, collection, independent Logs app, and
+data-handoff walkthrough, see [COLLECTION_GUIDE.md](COLLECTION_GUIDE.md).
+
 ### Requirements
 
 - macOS 13 or newer
