@@ -2139,6 +2139,159 @@ expect(
     "causal compiler verifies mixed WRITE and closure raw lineage"
 )
 
+// A renderer may replace its editable after the first key, producing a
+// fast-start history-only WRITE whose lineage contains a failed attempt, the
+// surviving conditioned attempt, and later prompt-closure evidence. The
+// closure record is not itself a candidate conditioning attempt.
+let fastStartClosureInput = fixtureRoot.appendingPathComponent(
+    "fast-start-prompt-closure-input"
+)
+let fastStartClosureReduction = fixtureRoot.appendingPathComponent(
+    "fast-start-prompt-closure-reduction"
+)
+let fastStartClosureDataset = fixtureRoot.appendingPathComponent(
+    "fast-start-prompt-closure-dataset"
+)
+try! FileManager.default.createDirectory(
+    at: fastStartClosureInput, withIntermediateDirectories: true
+)
+try! jsonData([
+    "sessionID": "fast-start-prompt-closure-session",
+    "schemas": ["timingSemanticsVersion": 2, "rawActiveTapWrite": 15],
+], pretty: true).write(
+    to: fastStartClosureInput.appendingPathComponent("session.json")
+)
+var missingFirstMutationAttempt = rawFirstAttempt
+missingFirstMutationAttempt["recordID"] = "fast-start-missing-attempt"
+missingFirstMutationAttempt["sessionID"] = "fast-start-prompt-closure-session"
+missingFirstMutationAttempt["beganAt"] = "2026-01-01T00:00:12.000Z"
+missingFirstMutationAttempt["lastInputAt"] = "2026-01-01T00:00:12.000Z"
+missingFirstMutationAttempt["observedAt"] = "2026-01-01T00:00:12.050Z"
+missingFirstMutationAttempt["terminalDecisionAt"] = "2026-01-01T00:00:12.050Z"
+missingFirstMutationAttempt["boundaryReason"] = "target_changed"
+missingFirstMutationAttempt["beforeAXErrors"] = [
+    "focused_element:unsupported_role:AXGroup",
+]
+missingFirstMutationAttempt["afterAXErrors"] = ["target:unavailable"]
+missingFirstMutationAttempt.removeValue(forKey: "before")
+missingFirstMutationAttempt.removeValue(forKey: "after")
+missingFirstMutationAttempt.removeValue(forKey: "conditioningState")
+missingFirstMutationAttempt["mutationCheckpoints"] = []
+
+let survivingBefore = observation(
+    "h", at: "2026-01-01T00:00:12.100Z", selectionLocation: 1
+)
+let survivingCheckpoint = observation(
+    "he", at: "2026-01-01T00:00:12.250Z", selectionLocation: 2
+)
+let survivingAfter = observation(
+    "hello", at: "2026-01-01T00:00:15.100Z", selectionLocation: 5
+)
+var survivingConditioning = rawFirstConditioning
+survivingConditioning["inputInterceptedAt"] = "2026-01-01T00:00:12.100Z"
+survivingConditioning["capturedAt"] = "2026-01-01T00:00:12.100Z"
+survivingConditioning["sourceObservationID"] = survivingBefore["observationID"]
+survivingConditioning["cursorContext"] = [
+    "schemaVersion": 2,
+    "source": "accessibility_string_for_range",
+    "captureStatus": "complete",
+    "fieldState": "editable_text",
+    "leftContext": "h",
+    "selectedText": "",
+    "rightContext": "",
+]
+var survivingAttempt = rawFirstAttempt
+survivingAttempt["recordID"] = "fast-start-surviving-attempt"
+survivingAttempt["sessionID"] = "fast-start-prompt-closure-session"
+survivingAttempt["beganAt"] = "2026-01-01T00:00:12.100Z"
+survivingAttempt["lastInputAt"] = "2026-01-01T00:00:12.100Z"
+survivingAttempt["observedAt"] = "2026-01-01T00:00:15.100Z"
+survivingAttempt["terminalDecisionAt"] = "2026-01-01T00:00:15.100Z"
+survivingAttempt["terminalSnapshotAt"] = "2026-01-01T00:00:15.100Z"
+survivingAttempt["conditioningState"] = survivingConditioning
+survivingAttempt["before"] = survivingBefore
+survivingAttempt["after"] = survivingAfter
+survivingAttempt["mutationCheckpoints"] = [[
+    "checkpointID": "fast-start-surviving-checkpoint",
+    "inputObservedAt": "2026-01-01T00:00:12.100Z",
+    "eventTimestampNanoseconds": 2,
+    "captureRequestedAt": "2026-01-01T00:00:12.200Z",
+    "observation": survivingCheckpoint,
+    "axErrors": [],
+]]
+let fastStartClosureObservation: [String: Any] = [
+    "schemaVersion": 1,
+    "recordType": "prompt_submission_observation",
+    "recordID": "fast-start-closure-observation",
+    "sessionID": "fast-start-prompt-closure-session",
+    "sourceWriteRecordID": "fast-start-surviving-attempt",
+    "referenceRetainedAt": "2026-01-01T00:00:15.100Z",
+    "terminalObservationID": survivingAfter["observationID"] as! String,
+    "terminalValueSHA256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+    "terminalCharacterCount": 5,
+    "preActionObservation": survivingAfter,
+    "preActionAXErrors": [],
+    "action": [
+        "kind": "unmodified_return",
+        "observedAt": "2026-01-01T00:00:16.000Z",
+        "eventTimestampNanoseconds": 3,
+    ],
+    "observedAt": "2026-01-01T00:00:16.150Z",
+    "postActionAXErrors": ["AXValue:invalid_ui_element"],
+    "surfaceValidationErrors": [],
+    "disposition": "confirmed_field_disappeared",
+]
+writeFixtureJSONL(
+    [
+        missingFirstMutationAttempt,
+        survivingAttempt,
+        fastStartClosureObservation,
+    ],
+    to: fastStartClosureInput.appendingPathComponent("raw.jsonl")
+)
+_ = try! Phase1SemanticReducer().reduce(
+    sourceDirectory: fastStartClosureInput,
+    outputDirectory: fastStartClosureReduction
+)
+let fastStartClosureEvents = readFixtureJSONL(
+    fastStartClosureReduction.appendingPathComponent("events.jsonl")
+)
+let fastStartClosureEligibility = (
+    fastStartClosureEvents.first?["phase1TargetEligibility"]
+) as? [String: Any]
+expect(
+    fastStartClosureEvents.count == 1
+        && fastStartClosureEvents[0]["stateContinuity"] as? String
+            == "incomplete_pre_mutation_conditioning"
+        && fastStartClosureEligibility?["reason"] as? String
+            == "pre_first_mutation_conditioning_unavailable"
+        && fastStartClosureEvents[0]["sourceRecordIDs"] as? [String]
+            == [
+                "fast-start-missing-attempt",
+                "fast-start-surviving-attempt",
+                "fast-start-closure-observation",
+            ],
+    "fast-start prompt closure remains an explicit history-only WRITE"
+)
+_ = try! CausalDatasetCompiler().compile(
+    inputDirectory: fastStartClosureReduction,
+    sourceDirectory: fastStartClosureInput,
+    outputDirectory: fastStartClosureDataset
+)
+let fastStartClosureCompiledEvents = readFixtureJSONL(
+    fastStartClosureDataset.appendingPathComponent("events.jsonl")
+)
+let fastStartClosureExclusions = readFixtureJSONL(
+    fastStartClosureDataset.appendingPathComponent("target-exclusions.jsonl")
+)
+expect(
+    fastStartClosureCompiledEvents.count == 1
+        && fastStartClosureExclusions.count == 1
+        && fastStartClosureExclusions[0]["reason"] as? String
+            == "pre_first_mutation_conditioning_unavailable",
+    "compiler conditions on the surviving write attempt rather than closure evidence"
+)
+
 expect(
     promptClosureDisposition(
         observedLogicalValue: "",

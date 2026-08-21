@@ -381,11 +381,17 @@ public struct CausalDatasetCompiler {
                 $0.object.stringArray("sourceRecordIDs")
             }
             let targetSourceRecordIDs = target.object.stringArray("sourceRecordIDs")
-            let conditioningSourceID = target.object.string("stateContinuity")
-                == "incomplete_pre_mutation_conditioning"
-                ? targetSourceRecordIDs.last!
-                : targetSourceRecordIDs[0]
-            let attempt = attempts[conditioningSourceID]!
+            let sourceAttempts = targetSourceRecordIDs.compactMap { attempts[$0] }
+            guard let attempt = conditioningAttempt(
+                event: target.object,
+                sourceAttempts: sourceAttempts
+            ) else {
+                throw CausalDatasetCompilerError.invalidEvent(
+                    eventsURL.path,
+                    target.source.line,
+                    "write target has no conditioning attempt in raw lineage"
+                )
+            }
             let conditioningState = try writeConditioningState(
                 event: target.object,
                 attempt: attempt
@@ -745,8 +751,7 @@ private func verifyReducedWrite(
               ["active_tap_write_attempt", "prompt_submission_observation"]
                   .contains($0.string("recordType") ?? "")
           }),
-          !sourceAttempts.isEmpty,
-          let firstAttempt = sourceAttempts.first else {
+          !sourceAttempts.isEmpty else {
         return .failure("missing_raw_write_lineage")
     }
     let closureRecords = sourceRecords.filter {
@@ -787,10 +792,12 @@ private func verifyReducedWrite(
        }) {
         return .failure("authorship_observation_missing_from_raw_lineage")
     }
-    let conditioningAttempt = event.string("stateContinuity")
-        == "incomplete_pre_mutation_conditioning"
-        ? sourceAttempts.last!
-        : firstAttempt
+    guard let conditioningAttempt = conditioningAttempt(
+        event: event,
+        sourceAttempts: sourceAttempts
+    ) else {
+        return .failure("missing_raw_conditioning_attempt")
+    }
     guard let eventConditioning = event["conditioningState"] as? [String: Any],
           let rawConditioning = conditioningAttempt["conditioningState"] as? [String: Any],
           (try? canonicalJSONString(eventConditioning))
@@ -829,6 +836,20 @@ private func verifyReducedWrite(
         }
     }
     return .success(event)
+}
+
+/// Closure evidence may follow one or more active-tap attempts in the same
+/// finalized WRITE lineage. Conditioning is selected only from the write
+/// attempts: the first normally observed attempt, or the last attempt when a
+/// fast-start chain proves that pre-first-mutation conditioning was missed.
+private func conditioningAttempt(
+    event: [String: Any],
+    sourceAttempts: [[String: Any]]
+) -> [String: Any]? {
+    if event.string("stateContinuity") == "incomplete_pre_mutation_conditioning" {
+        return sourceAttempts.last
+    }
+    return sourceAttempts.first
 }
 
 private func rawObservationIDs(_ attempt: [String: Any]) -> Set<String> {
