@@ -17,7 +17,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from phase1_experiment import canonical_bytes
+from phase1_experiment import canonical_bytes, target_text
 from phase1_inkling import (
     GENERATION_CONTRACT,
     INKLING_MODEL,
@@ -33,6 +33,7 @@ from phase1_inkling import (
 )
 from phase1_tinker_overfit_contract import build_and_validate_sdk_datums
 from phase1_training_contract import git_revision, git_worktree_dirty
+from phase1_prediction_metrics import score_prediction
 
 
 RUNNER_VERSION = "phase1-inkling-native-loss-stability-v1"
@@ -135,6 +136,10 @@ def validate_plan(arguments: argparse.Namespace, project: Path) -> dict[str, Any
         and plan["protocol"]["targetLikelihoodCalls"] == 0
         and plan["protocol"]["frozenDuplicateArm"] is False
         and plan["protocol"]["reasoningOnArm"] is False
+        and plan["protocol"]["trainingExampleCountsAfterStage"]
+        == [0, 50, 100, 150, 200]
+        and plan["protocol"]["evaluationExampleCountsAfterUpdate"]
+        == [50, 50, 50, 24]
     ):
         raise InklingContractError("stability plan contract differs")
     if Decimal(plan["pricing"]["hardCeilingUSD"]) != arguments.maximum_usd:
@@ -200,7 +205,8 @@ def run() -> int:
     probe_ids = plan["protocol"]["probeExampleIDs"]
     output.mkdir(parents=True)
     manifest_path = output / "stability.json"
-    samples_path = output / "samples.jsonl"
+    sentinels_path = output / "base-sentinels.jsonl"
+    scores_path = output / "scores.jsonl"
     updates_path = output / "updates.jsonl"
     manifest: dict[str, Any] = {
         "schemaVersion": 1,
@@ -220,7 +226,13 @@ def run() -> int:
             "trainingContract": TRAINING_CONTRACT,
             "generationContract": GENERATION_CONTRACT,
         },
-        "counts": {"completedStages": 0, "completedUpdates": 0, "samples": 0},
+        "counts": {
+            "completedStages": 0,
+            "completedUpdates": 0,
+            "baseProbes": 0,
+            "evaluationScores": 0,
+            "samples": 0,
+        },
         "stages": [],
         "updates": [],
     }
@@ -249,13 +261,24 @@ def run() -> int:
         raise InklingContractError("Inkling model/context unavailable")
     base_sampler = service.create_sampling_client(base_model=INKLING_MODEL)
 
-    def sample_stage(*, stage: int, trained: int, sampler: Any) -> bool:
+    def sample_stage(
+        *,
+        stage: int,
+        trained: int,
+        sampler: Any,
+        example_ids: list[str],
+        purpose: str,
+        block_id: str | None,
+        checkpoint_id: str | None,
+        destination: Path,
+    ) -> bool:
         valid = 0
-        for example_id in probe_ids:
+        for example_id in example_ids:
             row = rows[example_id]
             prompt = row["inputIDs"][: row["modelInputTokenCount"]]
             manifest["inflightOperation"] = {
                 "kind": "free_generation_probe",
+                "purpose": purpose,
                 "stage": stage,
                 "exampleID": example_id,
                 "replayAllowedAutomatically": False,
@@ -286,42 +309,115 @@ def run() -> int:
             )
             accepted = probe_accepted(stop_reason=stop_reason, parsed=parsed)
             valid += int(accepted)
+            expected = target_text(examples[example_id]["target"])
+            prediction = parsed.get("prediction", "")
+            cost = (
+                Decimal(len(prompt))
+                * Decimal(plan["pricing"]["perMillionUSD"]["prefill"])
+                + Decimal(len(tokens))
+                * Decimal(plan["pricing"]["perMillionUSD"]["sample"])
+            ) / Decimal(1_000_000)
             append_jsonl(
-                samples_path,
+                destination,
                 {
+                    "schemaVersion": 1,
+                    "runnerVersion": RUNNER_VERSION,
+                    "purpose": purpose,
                     "stage": stage,
                     "trainedExamples": trained,
+                    "blockID": block_id,
+                    "arm": (
+                        "frozen_inkling_small_reasoning_off"
+                        if trained == 0
+                        else "personalized_inkling_small_reasoning_off"
+                    ),
+                    "checkpointID": checkpoint_id,
                     "exampleID": example_id,
+                    "targetEventID": examples[example_id]["targetEventID"],
                     "application": applications[example_id],
                     "accepted": accepted,
                     "stopReason": stop_reason,
                     "observedTokens": len(tokens),
-                    "prediction": parsed.get("prediction", ""),
+                    "predictionTokenIDs": tokens,
+                    "prediction": prediction,
+                    "target": expected,
+                    "pasteActionCount": row["pasteActionCount"],
+                    "semanticModelInputSHA256": row["semanticModelInputSHA256"],
+                    "modelInputTokenCount": row["modelInputTokenCount"],
                     "parseStatus": parsed.get("status"),
+                    "responseParse": parsed,
                     "rawDecoded": parsed.get("rawDecoded"),
-                    "latencySeconds": time.monotonic() - started,
+                    "generationDisposition": (
+                        "accepted"
+                        if accepted
+                        else (
+                            GENERATION_CONTRACT[
+                                "tokenCapWithoutValidFinalDisposition"
+                            ]
+                            if stop_reason == "length"
+                            else GENERATION_CONTRACT["missingFinalDisposition"]
+                        )
+                    ),
+                    "generationEligibleForEvaluation": accepted,
+                    "predictionMetrics": score_prediction(
+                        expected,
+                        prediction if accepted else "",
+                        target_paste_actions=row["pasteActionCount"],
+                    ),
+                    "validOnlyPredictionMetrics": (
+                        score_prediction(
+                            expected,
+                            prediction,
+                            target_paste_actions=row["pasteActionCount"],
+                        )
+                        if accepted
+                        else None
+                    ),
+                    "generationTemperature": GENERATION_CONTRACT["temperature"],
+                    "generationSeed": GENERATION_CONTRACT["seed"],
+                    "generationTokenCeiling": GENERATION_CONTRACT[
+                        "maximumTokensByCondition"
+                    ]["reasoning_off"],
+                    "generationLatencySeconds": time.monotonic() - started,
+                    "estimatedProviderCostUSDAtFrozenRates": str(
+                        cost.quantize(Decimal("0.000001"))
+                    ),
                     "completedAt": iso8601(),
                 },
             )
             manifest.pop("inflightOperation", None)
             manifest["counts"]["samples"] += 1
+            manifest["counts"][
+                "baseProbes" if purpose == "base_renderer_gate" else "evaluationScores"
+            ] += 1
             atomic_json(manifest_path, manifest)
         stage_result = {
             "stage": stage,
             "trainedExamples": trained,
-            "probes": len(probe_ids),
+            "purpose": purpose,
+            "blockID": block_id,
+            "samples": len(example_ids),
             "accepted": valid,
-            "status": "passed" if valid == len(probe_ids) else "failed",
+            "status": "passed" if valid == len(example_ids) else "failed",
         }
         manifest["stages"].append(stage_result)
         manifest["counts"]["completedStages"] += 1
         atomic_json(manifest_path, manifest)
-        return valid == len(probe_ids)
+        return valid == len(example_ids)
 
     manifest["status"] = "running"
     manifest["provider"]["sessionID"] = service.holder.get_session_id()
     atomic_json(manifest_path, manifest)
-    if not sample_stage(stage=0, trained=0, sampler=base_sampler):
+    if not sample_stage(
+        stage=0,
+        trained=0,
+        sampler=base_sampler,
+        example_ids=probe_ids,
+        purpose="base_renderer_gate",
+        block_id=plan["protocol"]["probeSourceBlockID"],
+        checkpoint_id=None,
+        destination=sentinels_path,
+    ):
         raise InklingContractError("base Inkling failed the free-generation gate")
 
     # Do not create a training client until the frozen model proves that this
@@ -411,7 +507,20 @@ def run() -> int:
         manifest.pop("inflightOperation", None)
         atomic_json(manifest_path, manifest)
         sampler = service.create_sampling_client(model_path=sampler_path)
-        if not sample_stage(stage=update_ordinal, trained=trained, sampler=sampler):
+        evaluation_block_id = plan["protocol"]["evaluationBlockIDsAfterUpdate"][
+            update_ordinal - 1
+        ]
+        evaluation_ids = blocks[evaluation_block_id]["exampleIDs"]
+        if not sample_stage(
+            stage=update_ordinal,
+            trained=trained,
+            sampler=sampler,
+            example_ids=evaluation_ids,
+            purpose="personalized_prequential_evaluation",
+            block_id=evaluation_block_id,
+            checkpoint_id=sampler_path,
+            destination=scores_path,
+        ):
             manifest["status"] = "complete_no_go"
             manifest["verdict"] = "native_loss_did_not_preserve_free_generation"
             manifest["completedAt"] = iso8601()
@@ -423,7 +532,8 @@ def run() -> int:
     manifest["verdict"] = "native_loss_preserved_free_generation_through_prior_collapse_point"
     manifest["completedAt"] = iso8601()
     manifest["artifactDigestsSHA256"] = {
-        "samples.jsonl": sha256(samples_path),
+        "base-sentinels.jsonl": sha256(sentinels_path),
+        "scores.jsonl": sha256(scores_path),
         "updates.jsonl": sha256(updates_path),
     }
     atomic_json(manifest_path, manifest)

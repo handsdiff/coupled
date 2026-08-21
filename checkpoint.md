@@ -2307,6 +2307,16 @@ previous collapse point, a second experiment may change only the batch/step
 schedule to Qwen's batch-size-one contract. Those variables must not change in
 the same causal test.
 
+The bounded v5 run starts from base Inkling-Small rather than a pre-existing
+adapter. It first applies a twelve-example cross-application renderer gate,
+then performs four append-only updates over examples 1–50, 51–100, 101–150,
+and 151–200. After each update it free-samples the complete next chronological
+block: 50, 50, 50, and finally 24 examples. These 174 personalized predictions
+retain targets, output token IDs, latency, cost attribution, parsing evidence,
+and deterministic completion metrics for comparison with the Qwen and GPT
+arms. Every completed evaluation block gates the following paid update; any
+invalid native completion stops the experiment before further training.
+
 No provider calls have been made under v5. The prior v4 artifacts remain
 immutable at:
 

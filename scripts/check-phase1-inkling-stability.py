@@ -72,7 +72,7 @@ def main() -> int:
                 "--tinker-project-id",
                 "10b258ab-25fe-45e0-a54b-fef023154281",
                 "--hard-ceiling-usd",
-                "15.00",
+                "20.00",
             ],
             check=False,
             capture_output=True,
@@ -84,14 +84,26 @@ def main() -> int:
         assert plan["causalChange"]["changed"] == (
             "custom_partial_response_loss_to_native_full_response_loss"
         )
-        assert plan["protocol"]["trainingExampleCountsAfterStage"] == [0, 50, 100, 150]
+        assert plan["protocol"]["trainingExampleCountsAfterStage"] == [
+            0,
+            50,
+            100,
+            150,
+            200,
+        ]
+        assert plan["protocol"]["evaluationExampleCountsAfterUpdate"] == [
+            50,
+            50,
+            50,
+            24,
+        ]
         assert plan["protocol"]["targetLikelihoodCalls"] == 0
         assert plan["protocol"]["frozenDuplicateArm"] is False
         assert plan["protocol"]["reasoningOnArm"] is False
-        assert plan["operations"]["trainingCalls"] == 15
-        assert plan["operations"]["sampleCalls"] == 48
+        assert plan["operations"]["trainingCalls"] == 20
+        assert plan["operations"]["sampleCalls"] == 186
         assert Decimal(plan["pricing"]["projectedUSD"]["totalIncludingReserve"]) < Decimal(
-            "11.00"
+            "17.00"
         )
         examples = {
             value["exampleID"]: value
@@ -213,7 +225,7 @@ def main() -> int:
             "--dedicated-private-project-id",
             "10b258ab-25fe-45e0-a54b-fef023154281",
             "--maximum-usd",
-            "15.00",
+            "20.00",
             "--confirm-personal-data-transfer",
             "--confirm-dedicated-private-project",
             "--confirm-current-prices",
@@ -231,11 +243,19 @@ def main() -> int:
         manifest = json.loads((output / "stability.json").read_text())
         assert manifest["status"] == "complete_go"
         assert manifest["counts"] == {
-            "completedStages": 4,
-            "completedUpdates": 3,
-            "samples": 48,
+            "completedStages": 5,
+            "completedUpdates": 4,
+            "baseProbes": 12,
+            "evaluationScores": 174,
+            "samples": 186,
         }
-        assert [value["accepted"] for value in manifest["stages"]] == [12] * 4
+        assert [value["accepted"] for value in manifest["stages"]] == [
+            12,
+            50,
+            50,
+            50,
+            24,
+        ]
 
         # A failed free-generation gate after update two must stop before the
         # third paid training block. This is the central spend-safety property
@@ -262,7 +282,7 @@ def main() -> int:
             "--dedicated-private-project-id",
             "10b258ab-25fe-45e0-a54b-fef023154281",
             "--maximum-usd",
-            "15.00",
+            "20.00",
             "--confirm-personal-data-transfer",
             "--confirm-dedicated-private-project",
             "--confirm-current-prices",

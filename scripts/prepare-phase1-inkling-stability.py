@@ -27,7 +27,7 @@ from phase1_training_contract import git_revision
 
 
 PLAN_VERSION = "phase1-inkling-native-loss-stability-plan-v1"
-TRAIN_BLOCKS = 3
+TRAIN_BLOCKS = 4
 PROBES_PER_APPLICATION = 3
 TRAIN_PER_MILLION = Decimal("1.73")
 PREFILL_PER_MILLION = Decimal("0.58")
@@ -112,9 +112,17 @@ def main() -> int:
     training_ids = [value for block in training_blocks for value in block["exampleIDs"]]
     training_positions = sum(len(by_id[value]["inputIDs"]) - 1 for value in training_ids)
     training_loss_tokens = sum(by_id[value]["targetTokenCount"] for value in training_ids)
-    stages = 1 + len(training_blocks)
-    sample_calls = stages * len(probe_ids)
-    sample_prefill = stages * sum(by_id[value]["modelInputTokenCount"] for value in probe_ids)
+    evaluation_blocks = blocks[1 : TRAIN_BLOCKS + 1]
+    base_probe_calls = len(probe_ids)
+    evaluation_calls = sum(len(value["exampleIDs"]) for value in evaluation_blocks)
+    sample_calls = base_probe_calls + evaluation_calls
+    sample_prefill = sum(
+        by_id[value]["modelInputTokenCount"] for value in probe_ids
+    ) + sum(
+        by_id[value]["modelInputTokenCount"]
+        for block in evaluation_blocks
+        for value in block["exampleIDs"]
+    )
     sample_ceiling = sample_calls * GENERATION_CONTRACT["maximumTokensByCondition"][
         "reasoning_off"
     ]
@@ -166,12 +174,20 @@ def main() -> int:
         },
         "protocol": {
             "trainingBlockIDs": [value["blockID"] for value in training_blocks],
-            "trainingExampleCountsAfterStage": [0, 50, 100, 150],
+            "trainingExampleCountsAfterStage": [0, 50, 100, 150, 200],
+            "evaluationBlockIDsAfterUpdate": [
+                value["blockID"] for value in evaluation_blocks
+            ],
+            "evaluationExampleCountsAfterUpdate": [
+                len(value["exampleIDs"]) for value in evaluation_blocks
+            ],
             "probeSourceBlockID": blocks[-1]["blockID"],
             "probeExampleIDs": probe_ids,
             "probesPerApplication": PROBES_PER_APPLICATION,
-            "freeGenerationStages": stages,
-            "validityGate": "all_probes_nonempty_parsed_final_and_normal_stop",
+            "baseProbeCalls": base_probe_calls,
+            "personalizedEvaluationCalls": evaluation_calls,
+            "freeGenerationStages": 1 + len(evaluation_blocks),
+            "validityGate": "all_base_probes_and_each_next_chronological_block_nonempty_parsed_final_and_normal_stop",
             "failurePolicy": "stop_before_next_training_block",
             "targetLikelihoodCalls": 0,
             "frozenDuplicateArm": False,
@@ -187,6 +203,8 @@ def main() -> int:
             "trainingSubmittedPositions": training_positions,
             "nativeLossTokenPresentations": training_loss_tokens,
             "sampleCalls": sample_calls,
+            "baseProbeCalls": base_probe_calls,
+            "personalizedEvaluationCalls": evaluation_calls,
             "generationPrefillTokens": sample_prefill,
             "sampledTokenCeiling": sample_ceiling,
             "samplerCheckpointSaves": len(training_blocks),
