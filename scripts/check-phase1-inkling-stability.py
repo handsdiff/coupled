@@ -143,6 +143,24 @@ def main() -> int:
             for row in rows
         }
 
+        lock_path = runner.acquire_output_lock(Path(raw) / "lock-probe")
+        lock_probe = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import fcntl,sys; "
+                    "h=open(sys.argv[1],'a+'); "
+                    "\ntry: fcntl.flock(h.fileno(),fcntl.LOCK_EX|fcntl.LOCK_NB)"
+                    "\nexcept BlockingIOError: raise SystemExit(17)"
+                    "\nraise SystemExit(0)"
+                ),
+                str(lock_path),
+            ],
+            check=False,
+        )
+        assert lock_probe.returncode == 17
+
         class Immediate:
             def __init__(self, value):
                 self.value = value
@@ -245,6 +263,14 @@ def main() -> int:
         runner.git_worktree_dirty = lambda _: False
         runner.validate_plan = lambda *_: plan
         runner.load_api_key = lambda _: "fixture"
+        recorded_interruptions: list[str] = []
+        original_record_interruption = runner.record_interruption
+
+        def record_interruption(error):
+            recorded_interruptions.append(f"{type(error).__name__}: {error}")
+            return original_record_interruption(error)
+
+        runner.record_interruption = record_interruption
         runner.build_and_validate_sdk_datums = lambda contracts: (
             contracts,
             [],
@@ -280,7 +306,11 @@ def main() -> int:
         ]
         try:
             with redirect_stdout(io.StringIO()):
-                assert runner.main() == 0
+                result = runner.main()
+            assert result == 0, recorded_interruptions
+        except Exception:
+            print(json.dumps(recorded_interruptions, indent=2), file=sys.stderr)
+            raise
         finally:
             sys.argv = prior_argv
             if prior_tinker is None:

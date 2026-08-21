@@ -2331,3 +2331,58 @@ immutable at:
 coupled-data/phase1-inkling-four-arm-v4-70145e1-20260820
 coupled-data/phase1-inkling-four-arm-audit-v4-70145e1-20260821
 ```
+
+## Inkling native-loss v5 result
+
+The bounded reasoning-off native-loss run completed from execution revision
+`1cc5d4b` under the user-authorized `$20.00` ceiling. It started from base
+Inkling-Small, trained rank-32 attention/MLP/unembedding LoRA on four new
+chronological blocks of 50 examples exactly once, and evaluated the following
+blocks after 50, 100, 150, and 200 preceding training examples. The final
+protocol contains 200 training presentations, 20 optimizer steps, and all 174
+planned personalized free generations. There was no terminal update after the
+last 24-example evaluation block.
+
+Native response supervision substantially improved structural stability over
+v4 but did not eliminate degeneration. Valid completions by stage were
+`50/50`, `50/50`, `46/50`, and `23/24`, or `169/174` overall. The five invalid
+outputs were retained and scored as empty incorrect predictions. Training
+mean pre-update NLL declined across the four updates from `3.4671` to `2.9167`,
+`2.7650`, and `2.6095`; this is a secondary optimization diagnostic, not the
+primary cross-model result. Primary deterministic generation metrics across
+all 174 rows were zero exact matches, macro normalized Levenshtein similarity
+`0.1666`, micro similarity `0.1686`, and mean correct prefix `0.259`
+characters. Median generation latency was `9.009` seconds and mean latency was
+`11.069` seconds. Holistic semantic review remains to be performed before a
+model-quality conclusion is drawn.
+
+The canonical frozen-rate estimate is `$10.357274` for training and
+`$3.114327` for the four base sentinels plus 174 canonical generations. During
+manual continuation, two runner processes were accidentally started against
+the same output. Fifteen duplicate provider calls cost an additional estimated
+`$0.262750`, for a fully accounted frozen-rate total of `$13.734351`, below the
+hard ceiling. The original raced 184-row stream is retained byte-for-byte;
+the canonical score stream deterministically keeps the earliest physical row
+for each example in protocol order. A nonblocking exclusive output lock and a
+no-network regression now prevent a second runner from opening the same run.
+
+Authoritative artifacts:
+
+```text
+coupled-data/phase1-inkling-native-loss-prequential-v2-1cc5d4b-20260821/stability.json
+SHA-256 c28857111c103a3fc80f32b679c9402bfdcebbeb55cb1c6a429cd325fda5377c
+
+coupled-data/phase1-inkling-native-loss-prequential-v2-1cc5d4b-20260821/scores.jsonl
+SHA-256 e202ece4974a17a62b9e44d6d00949c96a612bdebb2f36f7cbcbf84e40aa9f57
+
+coupled-data/phase1-inkling-native-loss-prequential-v2-1cc5d4b-20260821/scores.concurrent-resume-race.jsonl
+SHA-256 f0bf046f3b322b1b03e543f6dcb7cef4ac15e815ec2f0b6a06c32f7f6b5e61ac
+
+coupled-data/phase1-inkling-native-loss-prequential-v2-1cc5d4b-20260821-audit/audit.json
+SHA-256 4ac7b7449df92827241e99fa33bc39ffcf4bfac06832ef38eea9b4f224140db2
+```
+
+The mechanical audit verifies exact chronological IDs, checkpoint ancestry,
+one presentation per training example, all 20 batch records, loss-mask-derived
+metrics, invalid-generation zero scoring, canonical artifact hashes, recovery
+evidence, and hard-ceiling accounting. The full repository check suite passes.

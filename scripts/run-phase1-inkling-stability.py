@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import fcntl
 import importlib.metadata
 import importlib.util
 import json
@@ -38,6 +39,32 @@ from phase1_prediction_metrics import score_prediction
 
 RUNNER_VERSION = "phase1-inkling-native-loss-prequential-v2"
 PLAN_VERSION = "phase1-inkling-native-loss-prequential-plan-v2"
+RUNNER_LOCK_VERSION = "exclusive-adjacent-flock-v1"
+
+
+_OUTPUT_LOCK: tuple[Path, Any] | None = None
+
+
+def acquire_output_lock(output: Path) -> Path:
+    """Hold one process-wide nonblocking lock for an experiment output."""
+    global _OUTPUT_LOCK
+    lock_path = output.parent / f".{output.name}.runner.lock"
+    if _OUTPUT_LOCK is not None and _OUTPUT_LOCK[0] == lock_path:
+        return lock_path
+    if _OUTPUT_LOCK is not None:
+        _OUTPUT_LOCK[1].close()
+        _OUTPUT_LOCK = None
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = lock_path.open("a+")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as error:
+        handle.close()
+        raise InklingContractError(
+            f"another Inkling runner already owns output lock: {lock_path}"
+        ) from error
+    _OUTPUT_LOCK = (lock_path, handle)
+    return lock_path
 
 
 def load_production_runner() -> Any:
@@ -307,6 +334,7 @@ def run() -> int:
     semantic_pack = arguments.semantic_pack.expanduser().resolve()
     pack_path = arguments.inkling_pack.expanduser().resolve()
     output = arguments.output.expanduser().resolve()
+    acquire_output_lock(output)
     for path, expected in (
         (corpus_path / "corpus.json", plan["source"]["corpusSHA256"]),
         (semantic_pack / "packing.json", plan["source"]["semanticPackingSHA256"]),
