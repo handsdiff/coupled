@@ -147,6 +147,60 @@ def minimal_edit(before: str, after: str) -> dict[str, Any]:
     }
 
 
+def apply_edit(source: str, edit: dict[str, Any]) -> str | None:
+    offset = edit.get("characterOffset")
+    removed = edit.get("removedContent")
+    inserted = edit.get("content")
+    if not isinstance(offset, int) or offset < 0:
+        return None
+    if not isinstance(removed, str) or not isinstance(inserted, str):
+        return None
+    if source[offset:offset + len(removed)] != removed:
+        return None
+    return source[:offset] + inserted + source[offset + len(removed):]
+
+
+def verified_single_member_alignment(
+    episode: OpenEpisode,
+    before: str,
+    after: str,
+    canonical: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Preserve only a compiler-verified equivalent micro-WRITE alignment.
+
+    The causal compiler admits a non-canonical alignment only when the reducer
+    grounded it in ordered raw checkpoints and it is an equal-size edit which
+    reconstructs the identical terminal field state. The episode constructor
+    must not erase that evidence by recomputing the prefix-greedy diff. This
+    narrow bridge applies only to a singleton; multi-WRITE compositions remain
+    independently reconstructed from their complete initial/terminal states.
+    """
+    if len(episode.members) != 1:
+        return None
+    member = episode.members[0]
+    target = member.get("currentTarget") or {}
+    inserted = target.get("resolvedContent")
+    candidate = {
+        "operation": member.get("operation"),
+        "characterOffset": member.get("characterOffset"),
+        "removedContent": member.get("removedContent"),
+        "content": inserted,
+    }
+    if (
+        candidate["operation"] != canonical["operation"]
+        or not isinstance(inserted, str)
+        or not isinstance(candidate["removedContent"], str)
+        or len(inserted) != len(canonical["content"])
+        or len(candidate["removedContent"]) != len(canonical["removedContent"])
+        or apply_edit(before, candidate) != after
+    ):
+        return None
+    candidate["utf16Offset"] = utf16_length(
+        before[:candidate["characterOffset"]]
+    )
+    return candidate
+
+
 def serialized_content(event: dict[str, Any]) -> str:
     try:
         value = json.loads(event.get("serialized", "{}"))
@@ -692,6 +746,11 @@ def structured_target(
     raw_records: dict[str, dict[str, Any]],
 ) -> tuple[dict[str, Any] | None, str, dict[str, Any]]:
     edit = minimal_edit(before, after)
+    aligned_edit = verified_single_member_alignment(
+        episode, before, after, edit
+    )
+    if aligned_edit is not None:
+        edit = aligned_edit
     selected_text = (
         episode.first.get("conditioningState", {})
         .get("cursorContext", {})
@@ -715,7 +774,14 @@ def structured_target(
     paste_signal_count = sum(
         "paste" in set(member.get("inputHints", [])) for member in episode.members
     )
-    audit = {"netFieldEdit": edit, "pasteEvidenceCount": len(paste_evidence)}
+    audit = {
+        "netFieldEdit": edit,
+        "pasteEvidenceCount": len(paste_evidence),
+        "alignmentSource": (
+            "compiler_verified_single_member_alignment"
+            if aligned_edit is not None else "canonical_minimal_diff"
+        ),
+    }
     canceled_paste_evidence = [
         evidence for evidence in paste_evidence
         if evidence.get("status") == "canceled"

@@ -35,6 +35,39 @@ def main() -> int:
         "first\n\u200b\n-\n\u200b \nsecond"
     ) == "first\n\nsecond"
 
+    # Prefix-greedy minimal diffing rotates an insertion when the inserted
+    # text and unchanged suffix share a boundary character: inserting
+    # ``live `` before ``latest`` appears canonically as ``ive l``. The
+    # upstream reducer/compiler has already grounded the human alignment in
+    # ordered raw checkpoints. A singleton closed episode must preserve that
+    # equal-size, exactly reconstructing completion.
+    boundary_before = "update after reviewing the latest trace"
+    boundary_after = "update after reviewing the live latest trace"
+    boundary_member = {
+        "writeEventID": "range-aligned-boundary",
+        "operation": "insert",
+        "characterOffset": 27,
+        "removedContent": "",
+        "currentTarget": {
+            "resolvedContent": "live ",
+            "segments": [{"type": "authored_text", "content": "live "}],
+        },
+        "beforeLogicalValue": boundary_before,
+        "selectedTerminalLogicalValue": boundary_after,
+        "conditioningState": {"cursorContext": {"selectedText": ""}},
+        "inputHints": ["typed"],
+    }
+    boundary_episode = reducer.OpenEpisode(
+        [{"members": [boundary_member]}], "session_start"
+    )
+    target, reason, audit = reducer.structured_target(
+        boundary_episode, boundary_before, boundary_after, {}
+    )
+    assert reducer.minimal_edit(boundary_before, boundary_after)["content"] == "ive l"
+    assert reason == "complete_initial_to_terminal_minimal_diff"
+    assert target["resolvedContent"] == "live "
+    assert audit["alignmentSource"] == "compiler_verified_single_member_alignment"
+
     # A pointer relocation may let one character materialize between the
     # previous terminal observation and the next synchronous BEFORE. When the
     # exact same AX element, timing, and affected region prove that this is an
