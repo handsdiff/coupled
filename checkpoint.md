@@ -2180,3 +2180,63 @@ and saved `4,542.220` bits. Thus the cleaner append-only protocol improved the
 primary controlled result despite using far fewer repeated presentations. This
 is still developmental evidence over a small, pipeline-informed corpus rather
 than a thesis conclusion.
+
+## Inkling-Small provider smoke and pre-run contract
+
+The bounded Inkling-Small provider smoke completed from code revision
+`249b513`. It submitted the same eight selected personal examples under the two
+reasoning conditions, performed one micro-normalized optimizer step per
+condition, saved sampler and optimizer-state checkpoints, and generated from
+the saved sampler checkpoints. Both paths produced a parseable final answer
+and stopped normally:
+
+- reasoning off: 53 generated tokens, no reasoning text, `9.891` seconds;
+- reasoning on at effort `0.9`: 1,499 generated tokens, 7,116 reasoning
+  characters, `76.718` seconds.
+
+The estimated provider cost before checkpoint storage was `$0.468761` under a
+separately authorized `$2.00` smoke ceiling. This is mechanical provider
+evidence, not Phase 1 performance evidence. The immutable result is:
+
+```text
+coupled-data/phase1-inkling-smoke-v1-249b513-20260820/smoke.json
+SHA-256 59ffe1e88380a94fe525a3a60a762699ee892aeced5ec65dd7602a5a23e39bcc
+```
+
+The full-run contract was subsequently tightened at code revision `fb3c32f`;
+the invalid-generation denominator regression was completed at `1c141d8`:
+
+- rank-32 LoRA over attention, MLP, and unembedding;
+- Adam at `2e-4`, beta values `0.9/0.95`, epsilon `1e-12`, zero weight decay,
+  gradient clipping at `1.0`, and one pass over each newly available block;
+- five complete optimizer batches of ten examples for every 50-example update;
+  partial batches are forbidden;
+- micro target-token optimization, with every loss-bearing token assigned
+  weight `1/T_batch`, so longer closed compositions contribute proportionally
+  more signal while each optimizer batch has stable total loss weight;
+- separate reasoning-off and reasoning-on checkpoint chains with otherwise
+  identical training settings;
+- temperature `0.6`, seed `17`, and generation ceilings of 512 tokens off and
+  16,384 tokens on;
+- every attempted generation remains in primary prediction metrics. A token
+  cap, parse failure, or missing final answer is scored as an empty incorrect
+  completion; conditional-on-valid quality is reported separately;
+- four score-then-update intervals, no replay, no post-terminal update, and
+  seven-day sampler and optimizer-state checkpoints.
+
+The matching Phase 1 objective and algorithm prose is committed in the Notes
+vault at `6197ea2`. The review-only provider plan is:
+
+```text
+coupled-data/phase1-inkling-plan-v3-pre-run-review-20260820.json
+SHA-256 ae88a20f3037c7f2390c3acf88c32f1d074c16a178923495e76a14061f433242
+```
+
+It covers 224 examples, 174 prospective scores per arm, 696 target-likelihood
+calls, 696 generations, 40 batch training calls, 11,974,128 submitted training
+positions, and 12,478 loss-bearing token presentations. The worst-case frozen
+projection is `$55.657355`, including a `$2.00` checkpoint reserve. Its status
+is `awaiting_explicit_cost_ceiling`; no executable `$60` plan, authenticated
+preflight, or full Inkling run exists yet. Reasoning-on remains an offline
+capability arm at the observed latency rather than a plausible live-suggestion
+configuration.
