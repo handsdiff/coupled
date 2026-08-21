@@ -249,10 +249,6 @@ Do not commit session data to Git. `coupled-data/` is ignored by this
 repository, but that is not a privacy guarantee. Review the material and use an
 approved private transfer mechanism.
 
-Pause or stop before entering passwords, verification codes, financial or
-health information, private keys, or anything else that should not be retained.
-Secure-field detection is useful but is not a sufficient privacy boundary.
-
 ## Troubleshooting
 
 ### `Coupled.app is missing`
