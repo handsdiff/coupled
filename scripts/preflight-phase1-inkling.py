@@ -126,7 +126,25 @@ def main() -> int:
     if len(supported) != 1 or (supported[0].max_context_length or 0) < maximum:
         raise InklingContractError("Inkling-Small or required context is unavailable")
     sampler = service.create_sampling_client(base_model=INKLING_MODEL)
-    remote_tokenizer = sampler.get_tokenizer()
+    server_base_model = sampler.get_base_model()
+    if server_base_model != INKLING_MODEL:
+        raise InklingContractError(
+            f"server sampler resolved an unexpected base model: {server_base_model}"
+        )
+    tokenizer_resolution = "tinker_sampling_client"
+    try:
+        remote_tokenizer = sampler.get_tokenizer()
+    except ModuleNotFoundError as error:
+        # Tinker 0.25.0 delegates Inkling tokenizer loading to an optional
+        # tml_tokenizers module that is not published as a standalone package.
+        # The official Cookbook resolves the same server-reported model through
+        # tml-renderers, which is also the renderer used to freeze this pack.
+        if error.name != "tml_tokenizers":
+            raise
+        from tinker_cookbook.tokenizer_utils import get_tokenizer
+
+        remote_tokenizer = get_tokenizer(server_base_model)
+        tokenizer_resolution = "tinker_cookbook_from_server_reported_model"
     local_hash = mapping_hash(local_tokenizer, ordered_ids, remote=False)
     remote_hash = mapping_hash(remote_tokenizer, ordered_ids, remote=True)
     mismatches = [
@@ -149,6 +167,8 @@ def main() -> int:
         "maximumContextLength": supported[0].max_context_length,
         "requiredMaximumSequenceLength": maximum,
         "tokenizer": {
+            "serverReportedBaseModel": server_base_model,
+            "resolution": tokenizer_resolution,
             "usedTokenIDsCompared": len(ordered_ids),
             "minimumUsedTokenID": min(ordered_ids),
             "maximumUsedTokenID": max(ordered_ids),
@@ -158,6 +178,7 @@ def main() -> int:
         },
         "runtime": {
             "tinkerSDKVersion": importlib.metadata.version("tinker"),
+            "tinkerCookbookVersion": importlib.metadata.version("tinker-cookbook"),
             "tmlRenderersVersion": importlib.metadata.version("tml-renderers"),
             "torchVersion": importlib.metadata.version("torch"),
         },
@@ -183,4 +204,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
