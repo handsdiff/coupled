@@ -2272,3 +2272,45 @@ coupled-data/phase1-inkling-preflight-v4-60usd-5b2f403-20260820.json
 Reasoning-on remains an offline capability arm at the observed latency rather
 than a plausible live-suggestion configuration. The full four-arm run has not
 yet begun at this checkpoint.
+
+## Inkling v4 postmortem and v5 matched-isolation contract
+
+The four-arm v4 run subsequently completed with 696 score rows and eight
+updates. Personalized teacher-forced NLL improved, but free generation
+progressively collapsed under both reasoning conditions: later checkpoints
+either looped to the token ceiling or emitted the model-end-sampling token
+without a valid final response. This run is retained as evidence of a failed
+training contract, not as an Inkling-Small model-quality comparison.
+
+The failure exposed two material Qwen/Inkling harness differences. The v4
+adapter discarded the native TMLv0 renderer's supervision on the response
+opening and `end_message` tokens while retaining loss on authored content and
+`content_model_end_sampling`. Under teacher forcing, the model was handed the
+masked `end_message` token before being trained to predict the final stop, even
+though it was not trained to generate `end_message` itself. In addition, Qwen
+used one binary-weighted optimizer step per example, while Inkling used five
+micro-normalized batches of ten per 50-example block.
+
+Contract v5 isolates the primary confound for the next experiment:
+
+- use the official renderer's complete native response-envelope SFT weights;
+- require a parseable native final response for holistic semantic evaluation;
+- treat NLL as a secondary training diagnostic;
+- use reasoning off only;
+- retain v4's batch size ten, micro-normalized loss, rank-32 LoRA scope, Adam
+  hyperparameters, example order, one-pass append-only updates, temperature,
+  seed, and 512-token generation ceiling so the loss mask is the only changed
+  training variable.
+
+If native supervision does not preserve valid free generation through the
+previous collapse point, a second experiment may change only the batch/step
+schedule to Qwen's batch-size-one contract. Those variables must not change in
+the same causal test.
+
+No provider calls have been made under v5. The prior v4 artifacts remain
+immutable at:
+
+```text
+coupled-data/phase1-inkling-four-arm-v4-70145e1-20260820
+coupled-data/phase1-inkling-four-arm-audit-v4-70145e1-20260821
+```

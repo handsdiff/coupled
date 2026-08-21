@@ -46,12 +46,17 @@ def main() -> int:
             semantic_input=semantic, target=target, effort=effort
         )
         rows[condition] = row
-        assert row["targetTokenCount"] == row["targetContentTokenCount"] + 1
+        assert row["targetTokenCount"] == row["targetContentTokenCount"] + 4
+        assert row["targetFormatTokenCount"] == 4
         assert row["labels"][-1] == row["eosTokenID"]
-        assert row["labels"][-2] == IGNORE_LABEL
+        assert row["labels"][-2] != IGNORE_LABEL
         assert all(
             value == IGNORE_LABEL
-            for value in row["labels"][: row["modelInputTokenCount"] + 2]
+            for value in row["labels"][: row["modelInputTokenCount"]]
+        )
+        assert all(
+            value != IGNORE_LABEL
+            for value in row["labels"][row["modelInputTokenCount"] :]
         )
         completion = row["inputIDs"][row["modelInputTokenCount"] :]
         parsed = parse_completion(
@@ -61,11 +66,7 @@ def main() -> int:
         assert parsed["prediction"] == target
         assert not parsed["reasoning"]
         contracts.append(contract(row, condition))
-    assert rows["reasoning_off"]["inputIDs"] != rows["reasoning_on"]["inputIDs"]
-    assert (
-        rows["reasoning_off"]["targetContentTokenIDs"]
-        == rows["reasoning_on"]["targetContentTokenIDs"]
-    )
+    assert set(rows) == {"reasoning_off"}
     tokenizer = tokenizers.o200k_base_chat()
     renderer = v0.Renderer(tokenizer)
     author = chat.Author
@@ -88,7 +89,7 @@ def main() -> int:
     assert parsed_reasoning["prediction"] == target
     assert parsed_reasoning["reasoning"] == "private reasoning"
     datums, validations, sdk_version = build_and_validate_sdk_datums(contracts)
-    assert len(datums) == len(validations) == 2
+    assert len(datums) == len(validations) == 1
     assert sdk_version == "0.25.0"
     print("phase1 Inkling checks passed")
     return 0

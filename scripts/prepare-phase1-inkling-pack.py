@@ -140,9 +140,9 @@ def main() -> int:
             "targetPlacement": "single_model_text_message_then_ModelEndSampling",
             "lossMask": {
                 "semanticInput": False,
-                "assistantEnvelope": False,
+                "assistantEnvelope": True,
                 "authoredAndPasteMarkerText": True,
-                "endMessage": False,
+                "endMessage": True,
                 "modelEndSampling": True,
             },
         },
@@ -169,4 +169,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

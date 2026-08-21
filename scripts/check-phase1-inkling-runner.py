@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""No-network protocol checks for the four-arm Inkling runner."""
+"""No-network protocol checks for the reasoning-off Inkling runner."""
 
 from __future__ import annotations
 
@@ -107,12 +107,12 @@ def main() -> int:
     score_sequence = runner.expected_score_sequence(blocks)
     update_sequence = runner.expected_update_sequence(blocks)
     evaluation_count = sum(len(value["exampleIDs"]) for value in blocks[1:])
-    assert len(score_sequence) == 4 * evaluation_count == 696
+    assert len(score_sequence) == 2 * evaluation_count == 348
     assert len(set(score_sequence)) == len(score_sequence)
-    assert len(update_sequence) == 2 * (len(blocks) - 1) == 8
+    assert len(update_sequence) == len(blocks) - 1 == 4
     assert all(value[0] != blocks[-1]["blockID"] for value in update_sequence)
     assert score_sequence[0][1] == ARM_NAMES["reasoning_off"]["frozen"]
-    assert score_sequence[-1][1] == ARM_NAMES["reasoning_on"]["personalized"]
+    assert score_sequence[-1][1] == ARM_NAMES["reasoning_off"]["personalized"]
 
     first_id = blocks[1]["exampleIDs"][0]
     raw_contracts = [
@@ -191,8 +191,8 @@ def main() -> int:
     incomplete = runner.score_example(
         sampling_client=SamplingClient([], stop_reason="length"),
         tinker=Tinker,
-        condition="reasoning_on",
-        arm=ARM_NAMES["reasoning_on"]["frozen"],
+        condition="reasoning_off",
+        arm=ARM_NAMES["reasoning_off"]["frozen"],
         block_id=blocks[1]["blockID"],
         example=examples[first_id],
         row=rows[first_id],
@@ -213,7 +213,7 @@ def main() -> int:
         "inflightOperation": {
             "kind": "score_nll_and_generation",
             "blockID": "block-0002",
-            "arm": ARM_NAMES["reasoning_on"]["frozen"],
+            "arm": ARM_NAMES["reasoning_off"]["frozen"],
             "exampleID": first_id,
             "maximumReplayCostUSD": "0.050000",
         },
@@ -231,7 +231,7 @@ def main() -> int:
     score_interruption["inflightOperation"] = {
         "kind": "score_nll_and_generation",
         "blockID": "block-0002",
-        "arm": ARM_NAMES["reasoning_on"]["frozen"],
+        "arm": ARM_NAMES["reasoning_off"]["frozen"],
         "exampleID": first_id,
         "maximumReplayCostUSD": "0.050000",
     }
@@ -436,8 +436,8 @@ def main() -> int:
             raise AssertionError(f"Inkling synthetic audit failed: {audited.stderr}")
         report = json.loads((audit_path / "audit.json").read_text())
         assert report["status"] == "passed"
-        assert report["protocol"]["scoreRows"] == 696
-        assert report["protocol"]["updates"] == 8
+        assert report["protocol"]["scoreRows"] == 348
+        assert report["protocol"]["updates"] == 4
         assert report["protocol"]["terminalBlockUpdated"] is False
         first_arm = ARM_NAMES["reasoning_off"]["frozen"]
         assert report["summaries"][first_arm]["generationExcludedExamples"] == 1

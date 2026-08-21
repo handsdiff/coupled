@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare the four-arm Inkling-Small Phase 1 experiment plan locally."""
+"""Prepare the reasoning-off Inkling-Small Phase 1 experiment plan locally."""
 
 from __future__ import annotations
 

@@ -13,31 +13,27 @@ from phase1_experiment import canonical_bytes
 
 
 INKLING_MODEL = "thinkingmachines/Inkling-Small"
-INKLING_CONTRACT_VERSION = "phase1-inkling-contract-v4"
-INKLING_PACK_VERSION = "phase1-inkling-pack-v1"
-INKLING_PLAN_VERSION = "phase1-inkling-plan-v4"
-INKLING_RUNNER_VERSION = "phase1-inkling-prequential-v4"
-INKLING_AUDIT_VERSION = "phase1-inkling-audit-v4"
+INKLING_CONTRACT_VERSION = "phase1-inkling-contract-v5"
+INKLING_PACK_VERSION = "phase1-inkling-pack-v2"
+INKLING_PLAN_VERSION = "phase1-inkling-plan-v5"
+INKLING_RUNNER_VERSION = "phase1-inkling-prequential-v5"
+INKLING_AUDIT_VERSION = "phase1-inkling-audit-v5"
 REASONING_CONDITIONS = {
     "reasoning_off": 0.0,
-    "reasoning_on": 0.9,
 }
 ARM_NAMES = {
     "reasoning_off": {
         "frozen": "frozen_inkling_small_reasoning_off",
         "personalized": "personalized_inkling_small_reasoning_off",
     },
-    "reasoning_on": {
-        "frozen": "frozen_inkling_small_reasoning_on",
-        "personalized": "personalized_inkling_small_reasoning_on",
-    },
 }
 GENERATION_CONTRACT = {
     "temperature": 0.6,
     "seed": 17,
+    "evaluationAuthority": "holistic_semantic_judging_of_valid_parsed_final",
+    "nllRole": "secondary_training_diagnostic_only",
     "maximumTokensByCondition": {
         "reasoning_off": 512,
-        "reasoning_on": 16384,
     },
     "validFinalAnswerRequired": True,
     "tokenCapWithoutValidFinalDisposition": "truncated_without_valid_final",
@@ -53,9 +49,9 @@ TRAINING_CONTRACT = {
     "optimizerBatchExamples": 10,
     "partialFinalBatchAllowed": False,
     "lossReduction": {
-        "name": "micro_target_token_average_per_optimizer_batch",
-        "relativeEpisodeWeighting": "proportional_to_loss_bearing_target_tokens",
-        "targetTokenWeight": "1 / loss_bearing_target_tokens_in_optimizer_batch",
+        "name": "micro_native_loss_token_average_per_optimizer_batch",
+        "relativeEpisodeWeighting": "proportional_to_native_loss_bearing_tokens",
+        "targetTokenWeight": "1 / native_loss_bearing_tokens_in_optimizer_batch",
     },
     "epochsPerNewBlockUpdate": 1,
     "optimizer": {
@@ -228,19 +224,39 @@ def render_training_row(
     ]
     if full_ids[len(prompt_ids) :] != expected_completion:
         raise InklingContractError("Inkling completion envelope changed")
-    labels = [-100] * len(full_ids)
+    native_weights = [
+        float(value) for value in rendered[0].per_token_loss_weight_unshifted
+    ]
+    if len(native_weights) != len(full_ids) or any(
+        value not in (0.0, 1.0) for value in native_weights
+    ):
+        raise InklingContractError("Inkling native SFT weights changed")
+    labels = [
+        token_id if weight == 1.0 else -100
+        for token_id, weight in zip(full_ids, native_weights, strict=True)
+    ]
     content_start = len(prompt_ids) + 2
-    for position, token_id in enumerate(target_ids, content_start):
-        labels[position] = token_id
-    labels[-1] = end_sampling
-    if labels[-2] != -100:
-        raise InklingContractError("Inkling end-message token unexpectedly receives loss")
+    content_end = content_start + len(target_ids)
+    expected_loss_positions = list(range(len(prompt_ids), len(full_ids)))
+    observed_loss_positions = [
+        position for position, label in enumerate(labels) if label != -100
+    ]
+    if observed_loss_positions != expected_loss_positions:
+        raise InklingContractError(
+            "Inkling native renderer no longer supervises the complete response envelope"
+        )
+    if labels[-2:] != [end_message, end_sampling]:
+        raise InklingContractError("Inkling native closing tokens do not receive loss")
+    native_loss_count = len(observed_loss_positions)
     return {
         "inputIDs": full_ids,
         "labels": labels,
         "modelInputTokenCount": len(prompt_ids),
-        "targetTokenCount": len(target_ids) + 1,
+        "targetTokenCount": native_loss_count,
         "targetContentTokenCount": len(target_ids),
+        "targetFormatTokenCount": native_loss_count - len(target_ids),
+        "targetContentStartIndex": content_start,
+        "targetContentEndIndexExclusive": content_end,
         "targetContentTokenIDs": target_ids,
         "eosTokenID": end_sampling,
         "stopTokenIDs": [int(value) for value in renderer.stop()],

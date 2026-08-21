@@ -86,6 +86,9 @@ python3 -m py_compile \
   "$project_dir/scripts/preflight-phase1-inkling.py" \
   "$project_dir/scripts/run-phase1-inkling-prequential.py" \
   "$project_dir/scripts/run-phase1-inkling-smoke.py" \
+  "$project_dir/scripts/prepare-phase1-inkling-stability.py" \
+  "$project_dir/scripts/run-phase1-inkling-stability.py" \
+  "$project_dir/scripts/check-phase1-inkling-stability.py" \
   "$project_dir/scripts/audit-phase1-inkling-experiment.py" \
   "$project_dir/scripts/check-phase1-inkling.py" \
   "$project_dir/scripts/check-phase1-inkling-runner.py" \
@@ -126,4 +129,7 @@ if [[ -x "$project_dir/.build/inkling-arm64-venv/bin/python" ]]; then
   PYTHONPYCACHEPREFIX="$project_dir/.build/python-cache" \
   "$project_dir/.build/inkling-arm64-venv/bin/python" \
     "$project_dir/scripts/check-phase1-inkling-runner.py"
+  PYTHONPYCACHEPREFIX="$project_dir/.build/python-cache" \
+  "$project_dir/.build/inkling-arm64-venv/bin/python" \
+    "$project_dir/scripts/check-phase1-inkling-stability.py"
 fi

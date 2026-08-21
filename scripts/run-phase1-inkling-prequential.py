@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the four-arm continual Inkling-Small Phase 1 experiment on Tinker."""
+"""Run the reasoning-off frozen/personalized Inkling-Small experiment on Tinker."""
 
 from __future__ import annotations
 
@@ -177,6 +177,8 @@ def datum_contract(row: dict[str, Any]) -> TinkerDatumContract:
 
 
 def optimizer_batches(example_ids: list[str]) -> list[list[str]]:
+    if not example_ids:
+        raise InklingContractError("optimizer update may not be empty")
     size = TRAINING_CONTRACT["optimizerBatchExamples"]
     if type(size) is not int or size <= 0:
         raise InklingContractError("optimizer batch size must be a positive integer")
@@ -730,7 +732,7 @@ def run() -> int:
     service = tinker.ServiceClient(
         project_id=arguments.dedicated_private_project_id,
         user_metadata={
-            "purpose": "phase1-inkling-four-arm-prequential",
+            "purpose": "phase1-inkling-reasoning-off-prequential",
             "provider_plan_sha256": plan_digest,
         },
     )
