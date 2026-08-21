@@ -8,6 +8,9 @@ session.
 The supported capture surfaces are Google Chrome, Visual Studio Code, Codex,
 and Obsidian. Coupled is experimental, and its output can contain screenshots,
 document text, clipboard contents, window titles, and other private material.
+With the default screenshot retention, teammates should budget approximately
+**3 GiB of disk space per week** for collected data. Actual usage varies with
+the amount of screen activity.
 
 ## 1. Install the prerequisites
 
@@ -303,4 +306,3 @@ git pull --ff-only
 ```
 
 Rebuilding may require granting privacy permissions again.
-
