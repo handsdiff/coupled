@@ -948,16 +948,30 @@ private func canonicalWrite(
 
     let canonicalEdit = observedCanonicalEdit
     guard !canonicalEdit.isEmpty else { return .failure("canonical_raw_edit_is_empty") }
+    let sourceEdit = TextEdit(
+        operation: EditOperation(rawValue: operation) ?? .none,
+        characterOffset: offset,
+        removed: removed,
+        inserted: inserted
+    )
+    let reduction = event["reduction"] as? [String: Any]
+    let preservesCheckpointGroundedAlignment =
+        reduction?.string("alignmentRule") == "checkpoint_grounded_equivalent_diff_v1"
+        && sourceReconstructsObservation
+        && sourceEdit.operation == canonicalEdit.operation
+        && sourceEdit.removed.count == canonicalEdit.removed.count
+        && sourceEdit.inserted.count == canonicalEdit.inserted.count
+    let verifiedEdit = preservesCheckpointGroundedAlignment ? sourceEdit : canonicalEdit
     var canonicalEvent = event
-    canonicalEvent["operation"] = canonicalEdit.operation.rawValue
-    canonicalEvent["content"] = canonicalEdit.inserted
-    canonicalEvent["removedContent"] = canonicalEdit.removed
-    canonicalEvent["characterOffset"] = canonicalEdit.characterOffset
+    canonicalEvent["operation"] = verifiedEdit.operation.rawValue
+    canonicalEvent["content"] = verifiedEdit.inserted
+    canonicalEvent["removedContent"] = verifiedEdit.removed
+    canonicalEvent["characterOffset"] = verifiedEdit.characterOffset
     canonicalEvent["outcome"] = [
-        "operation": canonicalEdit.operation.rawValue,
-        "content": canonicalEdit.inserted,
-        "removedContent": canonicalEdit.removed,
-        "characterOffset": canonicalEdit.characterOffset,
+        "operation": verifiedEdit.operation.rawValue,
+        "content": verifiedEdit.inserted,
+        "removedContent": verifiedEdit.removed,
+        "characterOffset": verifiedEdit.characterOffset,
     ]
     canonicalEvent["sourceOutcomeMatchesCanonical"] = operation == canonicalEdit.operation.rawValue
         && inserted == canonicalEdit.inserted
@@ -984,12 +998,12 @@ private func canonicalWrite(
             return .failure("segmented_grounded_paste_evidence_invalid")
         }
     } else if let resolved = event.string("resolvedCompletion"),
-              resolved != canonicalEdit.inserted {
+              resolved != verifiedEdit.inserted {
         return .failure("single_epoch_completion_differs_from_observed_edit")
     }
     let cursorFidelity = cursorFidelityEvidence(
         attempt: attempt,
-        terminalEditOffset: canonicalEdit.characterOffset
+        terminalEditOffset: verifiedEdit.characterOffset
     )
     if let sourceCursorFidelity = event["cursorFidelity"] as? [String: Any],
        (try? canonicalJSONString(sourceCursorFidelity))

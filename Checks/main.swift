@@ -1988,6 +1988,17 @@ let motivatingExamples = readFixtureJSONL(
 let motivatingCompiledEvents = readFixtureJSONL(
     motivatingDataset.appendingPathComponent("events.jsonl")
 )
+let compiledRangeAlignedBoundary = motivatingCompiledEvents.first {
+    $0["sourceEventID"] as? String == rangeAlignedBoundaryEvent?["eventID"] as? String
+}
+let compiledRangeAlignedSerialized = compiledRangeAlignedBoundary
+    .flatMap { $0["auditSerialized"] as? String }
+    .flatMap { $0.data(using: .utf8) }
+    .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+expect(
+    compiledRangeAlignedSerialized?["content"] as? String == "live ",
+    "causal compiler preserves independently reconstructing checkpoint-grounded alignment"
+)
 expect(
     !motivatingExamples.contains {
         $0["targetEventID"] as? String == cutOnlyEvent?["eventID"] as? String
