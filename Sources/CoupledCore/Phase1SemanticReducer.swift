@@ -743,10 +743,11 @@ private struct TaggedReducerCharacter {
     let originalIndex: Int?
 }
 
-/// Uses ordered post-input field states only to choose among edits which are
-/// already equivalent minimal reconstructions of the same BEFORE and AFTER.
-/// It cannot introduce transient typo text or create a different document
-/// transition.
+/// Uses a complete range-native initial selection and ordered post-input field
+/// states to choose among edits which are already equivalent minimal
+/// reconstructions of the same BEFORE and AFTER. The cursor can resolve only
+/// the alignment of an otherwise ambiguous edit; it cannot change edit size,
+/// introduce transient typo text, or create a different document transition.
 private func checkpointGroundedEquivalentEdit(
     raw: [String: Any],
     beforeValue: String,
@@ -800,7 +801,7 @@ private func checkpointGroundedEquivalentEdit(
         TaggedReducerCharacter(character: $0.element, originalIndex: $0.offset)
     }
     var currentValue = beforeValue
-    var expectedCaret: Int?
+    var expectedCaret = rangeNativeInitialCaret(raw: raw, beforeValue: beforeValue)
     var usedObservationCount = 0
     let states = observations.map(\.value) + [afterValue]
     for state in states where state != currentValue {
@@ -867,6 +868,29 @@ private func checkpointGroundedEquivalentEdit(
         edit: edit, observationCount: usedObservationCount,
         rule: "checkpoint_grounded_equivalent_diff_v1"
     )
+}
+
+/// AX numeric selections were historically unreliable in rich editors, so a
+/// bare selectedRangeLocation must never steer reconstruction. A successful
+/// accessibility_string_for_range capture proves that the numeric selection
+/// and semantic left/selected/right strings came from the same synchronous
+/// pre-mutation observation. That evidence is safe to use only as a tie-break
+/// among equal-size edits which all reconstruct the identical AFTER state.
+private func rangeNativeInitialCaret(
+    raw: [String: Any],
+    beforeValue: String
+) -> Int? {
+    guard let conditioning = raw["conditioningState"] as? [String: Any],
+          let cursor = conditioning["cursorContext"] as? [String: Any],
+          stringValue(cursor["source"]) == "accessibility_string_for_range",
+          stringValue(cursor["captureStatus"]) == "complete",
+          let before = raw["before"] as? [String: Any],
+          let probe = before["axRangeCursorProbe"] as? [String: Any],
+          stringArray(probe["errors"]).isEmpty,
+          let selectionStartUTF16 = intValue(before["selectedRangeLocation"]) else {
+        return nil
+    }
+    return characterOffset(in: beforeValue, utf16Offset: selectionStartUTF16)
 }
 
 /// A minimal document diff is not always the human completion. If selected

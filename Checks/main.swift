@@ -1221,6 +1221,72 @@ let repeatedBoundaryWrite = schema15WriteFixture(
     }
 )
 
+let rangeAlignedBoundaryBefore = "update after reviewing the latest trace"
+let rangeAlignedBoundaryStates = [
+    "update after reviewing the llatest trace",
+    "update after reviewing the lilatest trace",
+    "update after reviewing the livlatest trace",
+    "update after reviewing the livelatest trace",
+    "update after reviewing the live latest trace",
+]
+var rangeAlignedBoundaryWrite = schema15WriteFixture(
+    id: "range-aligned-repeated-boundary",
+    beforeValue: rangeAlignedBoundaryBefore,
+    afterValue: rangeAlignedBoundaryStates.last!,
+    beganAt: "2026-01-01T00:00:20.100Z",
+    terminalAt: "2026-01-01T00:00:20.900Z",
+    inputHints: Array(repeating: "typed", count: 5),
+    mutationCheckpoints: rangeAlignedBoundaryStates.enumerated().map { index, value in
+        let timestamp = "2026-01-01T00:00:20.\(index + 2)00Z"
+        return [
+            "checkpointID": "range-aligned-boundary-\(index)",
+            "inputObservedAt": timestamp,
+            "eventTimestampNanoseconds": index + 1,
+            "captureRequestedAt": timestamp,
+            "observation": observation(
+                value, at: timestamp, selectionLocation: 28 + index
+            ),
+            "axErrors": [],
+        ] as [String: Any]
+    }
+)
+var rangeAlignedBoundaryBeforeObservation =
+    rangeAlignedBoundaryWrite["before"] as! [String: Any]
+rangeAlignedBoundaryBeforeObservation["selectedRangeLocation"] = 27
+rangeAlignedBoundaryBeforeObservation["selectedRangeLength"] = 0
+rangeAlignedBoundaryBeforeObservation["axRangeCursorProbe"] = [
+    "capturedAt": "2026-01-01T00:00:20.100Z",
+    "durationMilliseconds": 1,
+    "requestedSurroundingCharacterCount": 512,
+    "numberOfCharacters": rangeAlignedBoundaryBefore.utf16.count,
+    "selectedRangeLocation": 27,
+    "selectedRangeLength": 0,
+    "left": [
+        "rangeLocation": 0, "rangeLength": 27,
+        "text": "update after reviewing the ", "textWasTruncated": false,
+    ],
+    "selected": [
+        "rangeLocation": 27, "rangeLength": 0,
+        "text": "", "textWasTruncated": false,
+    ],
+    "right": [
+        "rangeLocation": 27,
+        "rangeLength": rangeAlignedBoundaryBefore.utf16.count - 27,
+        "text": "latest trace", "textWasTruncated": false,
+    ],
+    "errors": [],
+]
+rangeAlignedBoundaryWrite["before"] = rangeAlignedBoundaryBeforeObservation
+var rangeAlignedConditioning =
+    rangeAlignedBoundaryWrite["conditioningState"] as! [String: Any]
+rangeAlignedConditioning["cursorContext"] = [
+    "schemaVersion": 2, "source": "accessibility_string_for_range",
+    "captureStatus": "complete", "fieldState": "editable_text",
+    "leftContext": "update after reviewing the ",
+    "selectedText": "", "rightContext": "latest trace",
+]
+rangeAlignedBoundaryWrite["conditioningState"] = rangeAlignedConditioning
+
 let epochBefore = String(repeating: "old document ", count: 30)
 let epochStableOne = epochBefore + "human though"
 let epochStableFinal = epochBefore + "human thought"
@@ -1638,7 +1704,8 @@ writeFixtureJSONL([
         content: "stale content", triggerAt: "2026-01-01T00:00:01.500Z"
     ),
     semanticTimeWrite, geminiWrite, deleteOnlyWrite, unresolvedPaste,
-    repeatedBoundaryWrite, epochJumpWrite, formattingWrite,
+    repeatedBoundaryWrite, rangeAlignedBoundaryWrite,
+    epochJumpWrite, formattingWrite,
     fastStartWarmup, fastStartContinuation, sensitiveWrite,
     cutOnlyWrite, delayedPasteWrite, ambiguousPasteWrite, untrustworthyPasteWrite,
     autocompleteOne, autocompleteTwo, autocompleteThree,
@@ -1718,6 +1785,18 @@ expect(
         && (repeatedBoundaryEvent?["reduction"] as? [String: Any])?["alignmentRule"]
             as? String == "checkpoint_grounded_equivalent_diff_v1",
     "ordered checkpoints resolve repeated-boundary authorship without changing the observed transition"
+)
+let rangeAlignedBoundaryEvent = motivatingEvents.first {
+    ($0["sourceRecordIDs"] as? [String]) == ["range-aligned-repeated-boundary"]
+}
+expect(
+    rangeAlignedBoundaryEvent?["content"] as? String == "live "
+        && rangeAlignedBoundaryEvent?["characterOffset"] as? Int == 27
+        && (rangeAlignedBoundaryEvent?["observedNetEdit"] as? [String: Any])?["content"]
+            as? String == "ive l"
+        && (rangeAlignedBoundaryEvent?["reduction"] as? [String: Any])?["alignmentRule"]
+            as? String == "checkpoint_grounded_equivalent_diff_v1",
+    "range-native initial cursor resolves an ambiguous first-character boundary without changing the observed transition"
 )
 let recoveredEpochWrite = motivatingEvents.first {
     ($0["sourceRecordIDs"] as? [String]) == ["terminal-epoch-jump"]
