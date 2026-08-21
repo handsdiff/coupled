@@ -2157,5 +2157,26 @@ local plan is
 `coupled-data/phase1-raw-episode-provider-plan-v8-incremental-30usd-r2-20260820.json`,
 SHA-256
 `800bb8fcc67f42315974f809f82ec65c2872c016038e89db1c944edb8f8e1e1e`.
-No authenticated or paid operation has used this plan; it requires a new
-explicit Tinker ceiling authorization before execution.
+
+The user authorized a `$30.00` Tinker ceiling and the incremental v8 run
+completed successfully from code revision `cc0b52a`. It wrote to the new
+directory
+`coupled-data/phase1-raw-episode-tinker-v8-incremental-v6-v10-20260820`;
+the earlier v7 cumulative-rehearsal artifacts remain immutable and their three
+recorded hashes still match byte-for-byte. The v8 operation audit confirms 348
+paired Qwen scores, 200 optimizer steps, four sampler and optimizer-state
+checkpoint pairs, exactly one presentation for each of the first 200 examples,
+and zero presentations for the terminal 24 examples. It processed 6,402,010
+training positions and 6,410 loss-bearing target-token presentations. The
+frozen-rate estimate is `$24.592611` before checkpoint storage; the actual
+provider charge remains to be entered from the Tinker billing view.
+
+The authoritative incremental audit is
+`coupled-data/phase1-raw-episode-experiment-v8-incremental-v6-v10-20260820`.
+Across the same 174 prospective examples, personalized micro target-token NLL
+was `2.967753` versus frozen Qwen's `3.657216`, saving `5,406.117` prequential
+bits. The prior cumulative-rehearsal run produced personalized NLL `3.077763`
+and saved `4,542.220` bits. Thus the cleaner append-only protocol improved the
+primary controlled result despite using far fewer repeated presentations. This
+is still developmental evidence over a small, pipeline-informed corpus rather
+than a thesis conclusion.
