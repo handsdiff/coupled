@@ -13,6 +13,7 @@ from typing import Any
 MIN_AUTHORED_CHARACTERS = 40
 MIN_WORDS = 6
 MIN_SUBMITTED_AUTHORED_CHARACTERS = 4
+CHROMIUM_BROWSER_BUNDLES = {"com.google.Chrome", "company.thebrowser.Browser"}
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -59,7 +60,7 @@ def closure_reason(candidate: dict[str, Any]) -> str | None:
     if closure.get("returnObserved") and prompt_onset_is_proven(candidate) and (
         bundle == "com.openai.codex"
         or (
-            bundle == "com.google.Chrome"
+            bundle in CHROMIUM_BROWSER_BUNDLES
             and any(
                 marker in str(candidate.get("members", [{}])[0].get("windowTitle") or "").lower()
                 for marker in ("chatgpt", "claude", "gemini")

@@ -62,6 +62,7 @@ Supported applications:
 
 - Obsidian;
 - Chrome;
+- Arc;
 - Codex/ChatGPT;
 - Visual Studio Code, including its integrated terminal.
 

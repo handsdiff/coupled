@@ -145,6 +145,18 @@ expect(
     "reread after leaving a viewport"
 )
 expect(
+    isChromiumAuxiliarySurface(
+        bundleIdentifier: "com.google.Chrome", width: 1455, height: 158
+    )
+        && isChromiumAuxiliarySurface(
+            bundleIdentifier: "company.thebrowser.Browser", width: 1455, height: 158
+        )
+        && !isChromiumAuxiliarySurface(
+            bundleIdentifier: "com.google.Chrome", width: 1455, height: 1318
+        ),
+    "Chrome and Arc share Chromium auxiliary-surface suppression"
+)
+expect(
     writableCharacters(in: "aé👨‍👩‍👧‍👦") == ["a", "é", "👨‍👩‍👧‍👦"],
     "unicode grapheme splitting"
 )

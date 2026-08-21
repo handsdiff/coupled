@@ -24,6 +24,7 @@ struct Configuration {
         "com.google.Chrome",
         "com.microsoft.VSCode",
         "com.openai.codex",
+        "company.thebrowser.Browser",
         "md.obsidian",
     ]
     var excludedBundles: Set<String> = [

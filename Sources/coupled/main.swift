@@ -24,7 +24,7 @@ OPTIONS
   --viewport-side-crop NUMBER  Fraction removed from each side for OCR (default: 0.1)
   --viewport-top-crop NUMBER   Fraction removed from the top for OCR (default: 0.1)
   --viewport-bottom-crop NUM   Fraction removed from the bottom for OCR (default: 0.1)
-  --allow-bundle ID            Add a bundle to the default Obsidian/Chrome/Codex/VS Code allowlist
+  --allow-bundle ID            Add a bundle to the default Obsidian/Chrome/Arc/Codex/VS Code allowlist
   --exclude-bundle ID          Remove a bundle from capture; may be repeated
   --exclude-app-name NAME      Ignore an application name; may be repeated
   --max-characters COUNT       Maximum OCR/field text retained (default: 30000)

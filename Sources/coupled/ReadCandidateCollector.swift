@@ -391,7 +391,7 @@ final class ReadCandidateCollector {
             after: pending.lastActivityAt,
             capturedAt: capturedAt
         )
-        let suppressesChromeAuxiliarySurface = isChromeAuxiliarySurface(
+        let suppressesChromiumAuxiliarySurface = isChromiumAuxiliarySurface(
             bundleIdentifier: surface.bundleIdentifier,
             width: surface.windowBounds.width,
             height: surface.windowBounds.height
@@ -399,7 +399,7 @@ final class ReadCandidateCollector {
         let derivedSuppressionReason = surfaceChangedDuringCapture
             ? "surface_changed_during_capture"
             : supersedingWrite != nil ? "read_candidate_superseded_by_write"
-            : suppressesChromeAuxiliarySurface ? "chrome_auxiliary_surface" : nil
+            : suppressesChromiumAuxiliarySurface ? "chrome_auxiliary_surface" : nil
         var sourceRecordIDs: [String] = []
         if let rawWriter {
             do {

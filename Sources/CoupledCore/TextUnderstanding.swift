@@ -372,7 +372,7 @@ public func unpopulatedSurfacePrompt(
     if bundleIdentifier == "com.openai.codex", visible == "Do anything" {
         return visible
     }
-    if bundleIdentifier == "com.google.Chrome",
+    if isChromiumBrowserBundleIdentifier(bundleIdentifier),
        fieldDescription?.localizedCaseInsensitiveContains("prompt for Gemini") == true,
        visible == "Ask Gemini" {
         return visible

@@ -8,9 +8,9 @@ ordinary computer use. It observes two kinds of events:
 - **WRITE** — text inserted into a focused editable field, reconstructed from
   its Accessibility state before and after the edit.
 
-The default collector follows activity across Obsidian, Chrome, Codex, and
-Visual Studio Code. It preserves raw evidence first, so event construction can
-be inspected and improved without recollecting the original session.
+The default collector follows activity across Obsidian, Chrome, Arc, Codex,
+and Visual Studio Code. It preserves raw evidence first, so event construction
+can be inspected and improved without recollecting the original session.
 
 Coupled is pre-1.0 experimental software. Its output is highly sensitive and
 should be reviewed before it is used for training.
@@ -210,6 +210,7 @@ Coupled collects from these bundle identifiers by default:
 | Application | Bundle identifier |
 | --- | --- |
 | Google Chrome | `com.google.Chrome` |
+| Arc | `company.thebrowser.Browser` |
 | Visual Studio Code | `com.microsoft.VSCode` |
 | Codex | `com.openai.codex` |
 | Obsidian | `md.obsidian` |
@@ -400,7 +401,7 @@ Coupled is ad-hoc signed. Rebuilding can invalidate existing macOS privacy
 grants. Remove the old Coupled entry from the affected Privacy & Security list,
 run `./scripts/package-app.sh`, add the new `dist/Coupled.app`, and restart it.
 
-### Chrome, Obsidian, Codex, or VS Code exposes no editable text
+### Chrome, Arc, Obsidian, Codex, or VS Code exposes no editable text
 
 Coupled asks Chromium and Electron applications to construct their renderer
 Accessibility trees. Make sure Accessibility permission is enabled and do not

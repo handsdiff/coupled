@@ -33,6 +33,7 @@ PROMPT_SCAFFOLDS = {
     "ask gemini", "do anything", "start writing...", "write a message…",
     "write a message...",
 }
+CHROMIUM_BROWSER_BUNDLES = {"com.google.Chrome", "company.thebrowser.Browser"}
 
 
 def load_module(name: str, path: Path) -> Any:
@@ -227,7 +228,7 @@ def is_prompt_surface(member: dict[str, Any]) -> bool:
         return True
     if bundle == "com.microsoft.VSCode" and role == "AXTextField":
         return True
-    if bundle == "com.google.Chrome":
+    if bundle in CHROMIUM_BROWSER_BUNDLES:
         if role == "AXTextArea":
             return True
         return any(marker in description + " " + label for marker in (
@@ -1246,7 +1247,8 @@ def classify_episode(
         prompt and "return" in hints
     )
     x_post = (
-        (first.get("targetIdentity") or {}).get("bundleIdentifier") == "com.google.Chrome"
+        (first.get("targetIdentity") or {}).get("bundleIdentifier")
+        in CHROMIUM_BROWSER_BUNDLES
         and "post text" in str(
             (first.get("targetIdentity") or {}).get("fieldDescription") or ""
         ).lower()

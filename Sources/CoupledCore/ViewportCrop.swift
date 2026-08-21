@@ -22,13 +22,19 @@ public func croppedViewport(
     )
 }
 
-/// Chrome publishes its tab strip, address bar, menus, and scrollbar as
-/// separate Core Graphics windows. Keep them in raw capture, but do not treat
-/// these small surfaces as primary reading viewports.
-public func isChromeAuxiliarySurface(
+/// Chromium browsers can publish tab strips, address bars, menus, and
+/// scrollbars as separate Core Graphics windows. Keep them in raw capture, but
+/// do not treat these small surfaces as primary reading viewports.
+public func isChromiumBrowserBundleIdentifier(_ bundleIdentifier: String?) -> Bool {
+    bundleIdentifier == "com.google.Chrome"
+        || bundleIdentifier == "company.thebrowser.Browser"
+}
+
+public func isChromiumAuxiliarySurface(
     bundleIdentifier: String?,
     width: Double,
     height: Double
 ) -> Bool {
-    bundleIdentifier == "com.google.Chrome" && (height < 300 || width < 100)
+    isChromiumBrowserBundleIdentifier(bundleIdentifier)
+        && (height < 300 || width < 100)
 }

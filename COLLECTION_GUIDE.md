@@ -5,9 +5,10 @@ Coupled and hand the resulting session back for later reduction and dataset
 construction. Coupled records raw evidence locally; it does not upload a
 session.
 
-The supported capture surfaces are Google Chrome, Visual Studio Code, Codex,
-and Obsidian. Coupled is experimental, and its output can contain screenshots,
-document text, clipboard contents, window titles, and other private material.
+The supported capture surfaces are Google Chrome, Arc, Visual Studio Code,
+Codex, and Obsidian. Coupled is experimental, and its output can contain
+screenshots, document text, clipboard contents, window titles, and other
+private material.
 With the default screenshot retention, teammates should budget approximately
 **3 GiB of disk space per week** for collected data. Actual usage varies with
 the amount of screen activity.
@@ -178,7 +179,7 @@ The standard settings mean:
 - screenshots are retained for later audit; and
 - the pause-file path provides a manual privacy boundary.
 
-The default application allowlist is Chrome, VS Code, Codex, and Obsidian.
+The default application allowlist is Chrome, Arc, VS Code, Codex, and Obsidian.
 Other applications are not captured unless explicitly added with
 `--allow-bundle` and should be treated as experimental.
 
@@ -192,7 +193,7 @@ Check that the collector is live:
 
 With Coupled Logs visible on a non-overlapping display or Space:
 
-1. Open one of the four supported applications.
+1. Open one of the five supported applications.
 2. Move or scroll over meaningful visible text, then leave it settled for at
    least one second. A READ preview should appear.
 3. Type a distinctive, non-sensitive phrase into a normal editable field and

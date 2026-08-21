@@ -1364,7 +1364,7 @@ private func reduceRead(_ raw: [String: Any], sessionID: String)
     if nonEmptyString(raw["supersedingWriteAttemptID"]) != nil {
         return fail("read_candidate_superseded_by_write")
     }
-    if stringValue(raw["bundleIdentifier"]) == "com.google.Chrome",
+    if isChromiumBrowserBundleIdentifier(stringValue(raw["bundleIdentifier"])),
        let bounds = raw["windowBounds"] as? [String: Any],
        ((doubleValue(bounds["height"]) ?? 0) < 300
         || (doubleValue(bounds["width"]) ?? 0) < 100) {
