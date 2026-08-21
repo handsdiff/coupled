@@ -26,13 +26,16 @@ from phase1_inkling import (
 from phase1_training_contract import git_revision
 
 
-PLAN_VERSION = "phase1-inkling-native-loss-stability-plan-v1"
+PLAN_VERSION = "phase1-inkling-native-loss-prequential-plan-v2"
 TRAIN_BLOCKS = 4
-PROBES_PER_APPLICATION = 3
+PROBES_PER_APPLICATION = 1
 TRAIN_PER_MILLION = Decimal("1.73")
 PREFILL_PER_MILLION = Decimal("0.58")
 SAMPLE_PER_MILLION = Decimal("1.44")
 CHECKPOINT_RESERVE_USD = Decimal("1.50")
+MINIMUM_AUTOMATIC_VALIDITY_RATE = Decimal("0.98")
+MAXIMUM_GENERATION_RETRIES = 1
+MAXIMUM_TRAINING_BLOCK_RESTARTS = 1
 PRICING_AS_OF = "2026-08-20"
 
 
@@ -91,13 +94,15 @@ def main() -> int:
     if [value["exampleID"] for value in rows] != expected_ids:
         raise InklingContractError("Inkling pack order differs from corpus")
 
+    training_blocks = blocks[:TRAIN_BLOCKS]
+    training_ids = [value for block in training_blocks for value in block["exampleIDs"]]
     probe_candidates: dict[str, list[str]] = {}
-    for example_id in blocks[-1]["exampleIDs"]:
+    for example_id in training_blocks[0]["exampleIDs"]:
         probe_candidates.setdefault(application(examples[example_id]), []).append(
             example_id
         )
     if set(probe_candidates) != {"ChatGPT", "Code", "Google Chrome", "Obsidian"}:
-        raise InklingContractError("probe block lacks an expected application")
+        raise InklingContractError("training blocks lack an expected application")
     probe_ids: list[str] = []
     for app in sorted(probe_candidates):
         candidates = sorted(
@@ -108,8 +113,6 @@ def main() -> int:
             raise InklingContractError(f"insufficient {app} stability probes")
         probe_ids.extend(candidates[:PROBES_PER_APPLICATION])
 
-    training_blocks = blocks[:TRAIN_BLOCKS]
-    training_ids = [value for block in training_blocks for value in block["exampleIDs"]]
     training_positions = sum(len(by_id[value]["inputIDs"]) - 1 for value in training_ids)
     training_loss_tokens = sum(by_id[value]["targetTokenCount"] for value in training_ids)
     evaluation_blocks = blocks[1 : TRAIN_BLOCKS + 1]
@@ -126,13 +129,41 @@ def main() -> int:
     sample_ceiling = sample_calls * GENERATION_CONTRACT["maximumTokensByCondition"][
         "reasoning_off"
     ]
-    costs = {
+    base_costs = {
         "trainingUSD": money(training_positions, TRAIN_PER_MILLION),
         "generationPrefillUSD": money(sample_prefill, PREFILL_PER_MILLION),
         "sampleCeilingUSD": money(sample_ceiling, SAMPLE_PER_MILLION),
         "checkpointReserveUSD": CHECKPOINT_RESERVE_USD,
     }
-    projected = sum(costs.values(), Decimal(0))
+    training_block_positions = [
+        sum(len(by_id[value]["inputIDs"]) - 1 for value in block["exampleIDs"])
+        for block in training_blocks
+    ]
+    generation_ids = [
+        *probe_ids,
+        *[
+            example_id
+            for block in evaluation_blocks
+            for example_id in block["exampleIDs"]
+        ],
+    ]
+    maximum_generation_prompt = max(
+        by_id[value]["modelInputTokenCount"] for value in generation_ids
+    )
+    recovery_costs = {
+        "maximumGenerationRetryReserveUSD": money(
+            maximum_generation_prompt, PREFILL_PER_MILLION
+        )
+        + money(
+            GENERATION_CONTRACT["maximumTokensByCondition"]["reasoning_off"],
+            SAMPLE_PER_MILLION,
+        ),
+        "maximumTrainingBlockRestartReserveUSD": money(
+            max(training_block_positions), TRAIN_PER_MILLION
+        ),
+    }
+    projected_without_recovery = sum(base_costs.values(), Decimal(0))
+    projected = projected_without_recovery + sum(recovery_costs.values(), Decimal(0))
     if projected > arguments.hard_ceiling_usd:
         raise InklingContractError("projected stability probe exceeds hard ceiling")
 
@@ -151,7 +182,7 @@ def main() -> int:
         "planVersion": PLAN_VERSION,
         "status": "review_only_not_authorization",
         "createdAt": iso8601(),
-        "purpose": "isolate_native_renderer_loss_effect_on_free_generation_stability",
+        "purpose": "validate_native_loss_repair_and_collect_full_personalized_prequential_comparison",
         "causalChange": {
             "changed": "custom_partial_response_loss_to_native_full_response_loss",
             "heldFixed": [
@@ -181,14 +212,23 @@ def main() -> int:
             "evaluationExampleCountsAfterUpdate": [
                 len(value["exampleIDs"]) for value in evaluation_blocks
             ],
-            "probeSourceBlockID": blocks[-1]["blockID"],
+            "probeSource": "first_training_block_only_never_scored",
             "probeExampleIDs": probe_ids,
             "probesPerApplication": PROBES_PER_APPLICATION,
             "baseProbeCalls": base_probe_calls,
             "personalizedEvaluationCalls": evaluation_calls,
             "freeGenerationStages": 1 + len(evaluation_blocks),
-            "validityGate": "all_base_probes_and_each_next_chronological_block_nonempty_parsed_final_and_normal_stop",
-            "failurePolicy": "stop_before_next_training_block",
+            "validityGate": "strict_base_gate_then_block_level_structural_validity_review",
+            "minimumAutomaticValidityRate": str(MINIMUM_AUTOMATIC_VALIDITY_RATE),
+            "failurePolicy": "complete_block_then_pause_before_next_training_update_on_material_deterioration",
+            "invalidGenerationScoring": "zero_in_all_174_holistic_and_deterministic_comparisons",
+            "recoveryContract": {
+                "maximumAutomaticGenerationRetriesTotal": MAXIMUM_GENERATION_RETRIES,
+                "maximumAutomaticTrainingBlockRestartsTotal": MAXIMUM_TRAINING_BLOCK_RESTARTS,
+                "generationRecovery": "resume_committed_rows_retry_nonmutating_generation_once",
+                "trainingRecovery": "restore_parent_optimizer_checkpoint_restart_whole_block_once",
+                "costAccounting": "planned_base_plus_abandoned_attempt_maximums_within_hard_ceiling",
+            },
             "targetLikelihoodCalls": 0,
             "frozenDuplicateArm": False,
             "reasoningOnArm": False,
@@ -218,7 +258,9 @@ def main() -> int:
                 "sample": str(SAMPLE_PER_MILLION),
             },
             "projectedUSD": {
-                **{key: money_string(value) for key, value in costs.items()},
+                **{key: money_string(value) for key, value in base_costs.items()},
+                **{key: money_string(value) for key, value in recovery_costs.items()},
+                "totalBeforeRecoveryReserve": money_string(projected_without_recovery),
                 "totalIncludingReserve": money_string(projected),
             },
             "hardCeilingUSD": money_string(arguments.hard_ceiling_usd),

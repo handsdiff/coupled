@@ -100,10 +100,12 @@ def main() -> int:
         assert plan["protocol"]["targetLikelihoodCalls"] == 0
         assert plan["protocol"]["frozenDuplicateArm"] is False
         assert plan["protocol"]["reasoningOnArm"] is False
+        assert plan["protocol"]["probeSource"] == "first_training_block_only_never_scored"
+        assert plan["protocol"]["minimumAutomaticValidityRate"] == "0.98"
         assert plan["operations"]["trainingCalls"] == 20
-        assert plan["operations"]["sampleCalls"] == 186
+        assert plan["operations"]["sampleCalls"] == 178
         assert Decimal(plan["pricing"]["projectedUSD"]["totalIncludingReserve"]) < Decimal(
-            "17.00"
+            "20.00"
         )
         examples = {
             value["exampleID"]: value
@@ -113,11 +115,17 @@ def main() -> int:
             json.loads(examples[value]["query"])["destination"]["appName"]
             for value in plan["protocol"]["probeExampleIDs"]
         ]
+        scored_ids = {
+            value
+            for block in load_jsonl(corpus / "episode-blocks.jsonl")[1:]
+            for value in block["exampleIDs"]
+        }
+        assert not (set(plan["protocol"]["probeExampleIDs"]) & scored_ids)
         assert {value: apps.count(value) for value in set(apps)} == {
-            "ChatGPT": 3,
-            "Code": 3,
-            "Google Chrome": 3,
-            "Obsidian": 3,
+            "ChatGPT": 1,
+            "Code": 1,
+            "Google Chrome": 1,
+            "Obsidian": 1,
         }
         rows = load_jsonl(inkling / "reasoning_off-packed-examples.jsonl")
         assert all(
@@ -142,22 +150,60 @@ def main() -> int:
             def result(self):
                 return self.value
 
-        fail_model_marker: str | None = None
+        faults = {
+            "generationExceptionRemaining": 1,
+            "trainingExceptionRemaining": 1,
+            "trainingCalls": 0,
+            "invalidOnceMarker": "stability-02",
+            "invalidOnceRemaining": 1,
+            "invalidAllMarker": None,
+        }
+
+        class Logprobs(list):
+            def tolist(self):
+                return list(self)
 
         class SamplingClient:
-            def __init__(self, fail: bool = False):
-                self.fail = fail
+            def __init__(self, model_path: str = ""):
+                self.model_path = model_path
 
             def sample(self, *, prompt, **_):
+                if (
+                    faults["generationExceptionRemaining"]
+                    and "stability-01" in self.model_path
+                ):
+                    faults["generationExceptionRemaining"] -= 1
+                    raise RuntimeError("synthetic generation interruption")
+                invalid = bool(
+                    faults["invalidAllMarker"]
+                    and faults["invalidAllMarker"] in self.model_path
+                )
+                if (
+                    faults["invalidOnceRemaining"]
+                    and faults["invalidOnceMarker"] in self.model_path
+                ):
+                    faults["invalidOnceRemaining"] -= 1
+                    invalid = True
                 sequence = types.SimpleNamespace(
-                    tokens=[] if self.fail else row_by_prompt[tuple(prompt)],
+                    tokens=[] if invalid else row_by_prompt[tuple(prompt)],
                     stop_reason="stop",
                 )
                 return Immediate(types.SimpleNamespace(sequences=[sequence]))
 
         class TrainingClient:
-            def forward_backward(self, *_):
-                return Immediate(types.SimpleNamespace(loss_fn_outputs=[]))
+            def forward_backward(self, datums, *_):
+                faults["trainingCalls"] += 1
+                if (
+                    faults["trainingExceptionRemaining"]
+                    and faults["trainingCalls"] >= 6
+                ):
+                    faults["trainingExceptionRemaining"] -= 1
+                    raise RuntimeError("synthetic training interruption")
+                outputs = [
+                    {"logprobs": Logprobs([-1.0] * len(value.weights))}
+                    for value in datums
+                ]
+                return Immediate(types.SimpleNamespace(loss_fn_outputs=outputs))
 
             def optim_step(self, *_):
                 return Immediate(None)
@@ -181,11 +227,12 @@ def main() -> int:
 
             def create_sampling_client(self, **values):
                 model_path = str(values.get("model_path", ""))
-                return SamplingClient(
-                    fail=bool(fail_model_marker and fail_model_marker in model_path)
-                )
+                return SamplingClient(model_path=model_path)
 
             def create_lora_training_client(self, **_):
+                return TrainingClient()
+
+            def create_training_client_from_state_with_optimizer(self, *_, **__):
                 return TrainingClient()
 
         fake_tinker = types.SimpleNamespace(
@@ -199,7 +246,7 @@ def main() -> int:
         runner.validate_plan = lambda *_: plan
         runner.load_api_key = lambda _: "fixture"
         runner.build_and_validate_sdk_datums = lambda contracts: (
-            [object() for _ in contracts],
+            contracts,
             [],
             "fixture",
         )
@@ -233,7 +280,7 @@ def main() -> int:
         ]
         try:
             with redirect_stdout(io.StringIO()):
-                assert runner.run() == 0
+                assert runner.main() == 0
         finally:
             sys.argv = prior_argv
             if prior_tinker is None:
@@ -245,22 +292,47 @@ def main() -> int:
         assert manifest["counts"] == {
             "completedStages": 5,
             "completedUpdates": 4,
-            "baseProbes": 12,
+            "baseProbes": 4,
             "evaluationScores": 174,
-            "samples": 186,
+            "samples": 178,
+            "trainingBatchRecords": 20,
         }
-        assert [value["accepted"] for value in manifest["stages"]] == [
-            12,
+        observed_stage_acceptance = [value["accepted"] for value in manifest["stages"]]
+        assert observed_stage_acceptance == [
+            4,
             50,
-            50,
+            49,
             50,
             24,
-        ]
+        ], observed_stage_acceptance
+        assert manifest["stages"][2]["automaticContinuationEligible"] is True
+        assert len(manifest["abandonedAttempts"]) == 2
+        assert {value["kind"] for value in manifest["abandonedAttempts"]} == {
+            "generation_retry",
+            "training_block_restart",
+        }
+        invalid = [value for value in load_jsonl(output / "scores.jsonl") if not value["accepted"]]
+        assert len(invalid) == 1
+        assert invalid[0]["predictionMetrics"]["normalizedLevenshteinSimilarity"] == 0.0
+        assert len(load_jsonl(output / "training-batches.jsonl")) == 20
+        assert all(
+            value["meanPreUpdateNLL"] == 1.0
+            for value in load_jsonl(output / "updates.jsonl")
+        )
 
-        # A failed free-generation gate after update two must stop before the
-        # third paid training block. This is the central spend-safety property
-        # of the bounded probe.
-        fail_model_marker = "stability-02-sampler"
+        # Material deterioration pauses at the block boundary without losing
+        # the completed predictions. Explicit review can then resume from the
+        # committed optimizer checkpoint.
+        faults.update(
+            {
+                "generationExceptionRemaining": 0,
+                "trainingExceptionRemaining": 0,
+                "trainingCalls": 0,
+                "invalidOnceMarker": "",
+                "invalidOnceRemaining": 0,
+                "invalidAllMarker": "stability-02-attempt-01-sampler",
+            }
+        )
         failed_output = Path(raw) / "run-failed-gate"
         sys.modules["tinker"] = fake_tinker
         sys.argv = [
@@ -290,7 +362,7 @@ def main() -> int:
         ]
         try:
             with redirect_stdout(io.StringIO()):
-                assert runner.run() == 2
+                assert runner.run() == 3
         finally:
             sys.argv = prior_argv
             if prior_tinker is None:
@@ -298,10 +370,55 @@ def main() -> int:
             else:
                 sys.modules["tinker"] = prior_tinker
         failed = json.loads((failed_output / "stability.json").read_text())
-        assert failed["status"] == "complete_no_go"
+        assert failed["status"] == "paused_for_validity_review"
         assert failed["counts"]["completedUpdates"] == 2
         assert failed["counts"]["completedStages"] == 3
-        assert failed["stages"][-1]["status"] == "failed"
+        assert failed["counts"]["evaluationScores"] == 100
+        assert failed["stages"][-1]["status"] == "material_deterioration"
+
+        faults["invalidAllMarker"] = None
+        sys.modules["tinker"] = fake_tinker
+        sys.argv = [
+            *sys.argv[:1],
+            "--corpus",
+            str(corpus),
+            "--semantic-pack",
+            str(semantic),
+            "--inkling-pack",
+            str(inkling),
+            "--plan",
+            str(plan_path),
+            "--plan-sha256",
+            "fixture",
+            "--output",
+            str(failed_output),
+            "--env-file",
+            str(Path(raw) / "env"),
+            "--dedicated-private-project-id",
+            "10b258ab-25fe-45e0-a54b-fef023154281",
+            "--maximum-usd",
+            "20.00",
+            "--confirm-personal-data-transfer",
+            "--confirm-dedicated-private-project",
+            "--confirm-current-prices",
+            "--authorize-continue-after-validity-review",
+            "block-0003",
+            "--execute",
+        ]
+        try:
+            with redirect_stdout(io.StringIO()):
+                assert runner.run() == 0
+        finally:
+            sys.argv = prior_argv
+            if prior_tinker is None:
+                del sys.modules["tinker"]
+            else:
+                sys.modules["tinker"] = prior_tinker
+        resumed = json.loads((failed_output / "stability.json").read_text())
+        assert resumed["status"] == "complete_with_generation_deterioration"
+        assert resumed["counts"]["completedUpdates"] == 4
+        assert resumed["counts"]["evaluationScores"] == 174
+        assert resumed["validityReviewAuthorizations"][0]["blockID"] == "block-0003"
     print("phase1 Inkling stability checks passed")
     return 0
 

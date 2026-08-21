@@ -36,8 +36,8 @@ from phase1_training_contract import git_revision, git_worktree_dirty
 from phase1_prediction_metrics import score_prediction
 
 
-RUNNER_VERSION = "phase1-inkling-native-loss-stability-v1"
-PLAN_VERSION = "phase1-inkling-native-loss-stability-plan-v1"
+RUNNER_VERSION = "phase1-inkling-native-loss-prequential-v2"
+PLAN_VERSION = "phase1-inkling-native-loss-prequential-plan-v2"
 
 
 def load_production_runner() -> Any:
@@ -102,6 +102,12 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--confirm-personal-data-transfer", action="store_true")
     parser.add_argument("--confirm-dedicated-private-project", action="store_true")
     parser.add_argument("--confirm-current-prices", action="store_true")
+    parser.add_argument(
+        "--authorize-continue-after-validity-review",
+        action="append",
+        default=[],
+        metavar="BLOCK_ID",
+    )
     parser.add_argument("--execute", action="store_true")
     arguments = parser.parse_args()
     for enabled, flag in (
@@ -140,6 +146,11 @@ def validate_plan(arguments: argparse.Namespace, project: Path) -> dict[str, Any
         == [0, 50, 100, 150, 200]
         and plan["protocol"]["evaluationExampleCountsAfterUpdate"]
         == [50, 50, 50, 24]
+        and plan["protocol"]["probeSource"]
+        == "first_training_block_only_never_scored"
+        and plan["protocol"]["minimumAutomaticValidityRate"] == "0.98"
+        and plan["protocol"]["invalidGenerationScoring"]
+        == "zero_in_all_174_holistic_and_deterministic_comparisons"
     ):
         raise InklingContractError("stability plan contract differs")
     if Decimal(plan["pricing"]["hardCeilingUSD"]) != arguments.maximum_usd:
@@ -162,6 +173,130 @@ def probe_accepted(*, stop_reason: str, parsed: dict[str, Any]) -> bool:
     )
 
 
+def cost_string(tokens: int, rate: str) -> str:
+    return str(
+        (Decimal(tokens) * Decimal(rate) / Decimal(1_000_000)).quantize(
+            Decimal("0.000001")
+        )
+    )
+
+
+def abandoned_attempt_count(
+    manifest: dict[str, Any], kind: str, identity: dict[str, Any]
+) -> int:
+    return sum(
+        value.get("kind") == kind and value.get("identity") == identity
+        for value in manifest.get("abandonedAttempts", [])
+    )
+
+
+def recover_interrupted_manifest(
+    *,
+    manifest: dict[str, Any],
+    sentinels: list[dict[str, Any]],
+    scores: list[dict[str, Any]],
+    updates: list[dict[str, Any]],
+    plan: dict[str, Any],
+    maximum_usd: Decimal,
+) -> bool:
+    active = manifest.get("activeUpdate")
+    inflight = manifest.get("inflightOperation")
+    if active:
+        kind = "training_block_restart"
+        identity = {"updateOrdinal": active["updateOrdinal"]}
+        maximum_cost = Decimal(active["maximumReplayCostUSD"])
+        committed = any(
+            value["updateOrdinal"] == active["updateOrdinal"] for value in updates
+        )
+    elif inflight and inflight.get("kind") == "free_generation":
+        kind = "generation_retry"
+        identity = {
+            "purpose": inflight["purpose"],
+            "stage": inflight["stage"],
+            "exampleID": inflight["exampleID"],
+        }
+        maximum_cost = Decimal(inflight["maximumReplayCostUSD"])
+        records = sentinels if identity["purpose"] == "base_renderer_gate" else scores
+        committed = any(
+            value["purpose"] == identity["purpose"]
+            and value["stage"] == identity["stage"]
+            and value["exampleID"] == identity["exampleID"]
+            for value in records
+        )
+    elif inflight:
+        raise InklingContractError(
+            f"unsupported interrupted operation: {inflight.get('kind')}"
+        )
+    else:
+        return False
+
+    if committed:
+        manifest.setdefault("recoveryEvents", []).append(
+            {
+                "kind": "stale_marker_after_committed_operation",
+                "operationKind": kind,
+                "identity": identity,
+                "recoveredAt": iso8601(),
+            }
+        )
+    else:
+        contract = plan["protocol"]["recoveryContract"]
+        limit_key = (
+            "maximumAutomaticGenerationRetriesTotal"
+            if kind == "generation_retry"
+            else "maximumAutomaticTrainingBlockRestartsTotal"
+        )
+        attempts = manifest.setdefault("abandonedAttempts", [])
+        if sum(value["kind"] == kind for value in attempts) >= contract[limit_key]:
+            raise InklingContractError(f"automatic {kind} allowance exhausted")
+        if any(
+            value["kind"] == kind and value["identity"] == identity
+            for value in attempts
+        ):
+            raise InklingContractError(f"interrupted {kind} was already retried")
+        projected = Decimal(
+            plan["pricing"]["projectedUSD"]["totalBeforeRecoveryReserve"]
+        ) + maximum_cost + sum(
+            Decimal(value["maximumEstimatedProviderCostUSD"])
+            for value in attempts
+        )
+        if projected > maximum_usd:
+            raise InklingContractError("recovery would exceed the hard cost ceiling")
+        attempts.append(
+            {
+                "attemptID": str(uuid.uuid4()),
+                "kind": kind,
+                "identity": identity,
+                "abandonedAt": iso8601(),
+                "maximumEstimatedProviderCostUSD": str(maximum_cost),
+                "projectedRunMaximumAfterRecoveryUSD": str(projected),
+                "activeUpdate": active,
+                "inflightOperation": inflight,
+                "resolution": contract[
+                    "generationRecovery"
+                    if kind == "generation_retry"
+                    else "trainingRecovery"
+                ],
+            }
+        )
+    failure = manifest.pop("failure", None)
+    interrupted_at = manifest.pop("interruptedAt", None)
+    manifest.pop("activeUpdate", None)
+    manifest.pop("inflightOperation", None)
+    manifest.setdefault("recoveryEvents", []).append(
+        {
+            "kind": "resume_after_interruption",
+            "operationKind": kind,
+            "identity": identity,
+            "failure": failure,
+            "interruptedAt": interrupted_at,
+            "resumedAt": iso8601(),
+        }
+    )
+    manifest["status"] = "recovering"
+    return True
+
+
 def run() -> int:
     arguments = parse_arguments()
     project = Path(__file__).resolve().parent.parent
@@ -172,8 +307,6 @@ def run() -> int:
     semantic_pack = arguments.semantic_pack.expanduser().resolve()
     pack_path = arguments.inkling_pack.expanduser().resolve()
     output = arguments.output.expanduser().resolve()
-    if output.exists():
-        raise InklingContractError(f"stability output already exists: {output}")
     for path, expected in (
         (corpus_path / "corpus.json", plan["source"]["corpusSHA256"]),
         (semantic_pack / "packing.json", plan["source"]["semanticPackingSHA256"]),
@@ -203,39 +336,144 @@ def run() -> int:
         value["blockID"]: value for value in load_experiment_blocks(corpus_path)
     }
     probe_ids = plan["protocol"]["probeExampleIDs"]
-    output.mkdir(parents=True)
+    expected_score_ids = [
+        example_id
+        for block_id in plan["protocol"]["evaluationBlockIDsAfterUpdate"]
+        for example_id in blocks[block_id]["exampleIDs"]
+    ]
     manifest_path = output / "stability.json"
     sentinels_path = output / "base-sentinels.jsonl"
     scores_path = output / "scores.jsonl"
     updates_path = output / "updates.jsonl"
-    manifest: dict[str, Any] = {
-        "schemaVersion": 1,
-        "runnerVersion": RUNNER_VERSION,
-        "status": "initialized",
-        "startedAt": iso8601(),
-        "planSHA256": arguments.plan_sha256,
-        "authorization": {
-            "maximumUSD": str(arguments.maximum_usd),
-            "personalDataTransferConfirmed": True,
-            "dedicatedPrivateProjectConfirmed": True,
-            "currentPricesConfirmed": True,
-        },
-        "provider": {
-            "model": INKLING_MODEL,
-            "projectID": arguments.dedicated_private_project_id,
-            "trainingContract": TRAINING_CONTRACT,
-            "generationContract": GENERATION_CONTRACT,
-        },
-        "counts": {
-            "completedStages": 0,
-            "completedUpdates": 0,
-            "baseProbes": 0,
-            "evaluationScores": 0,
-            "samples": 0,
-        },
-        "stages": [],
-        "updates": [],
-    }
+    batches_path = output / "training-batches.jsonl"
+
+    if not output.exists():
+        output.mkdir(parents=True)
+        manifest: dict[str, Any] = {
+            "schemaVersion": 2,
+            "runnerVersion": RUNNER_VERSION,
+            "status": "initialized",
+            "startedAt": iso8601(),
+            "planSHA256": arguments.plan_sha256,
+            "implementation": {
+                "codeRevision": git_revision(project),
+                "fileDigestsSHA256": plan["implementation"]["fileDigestsSHA256"],
+            },
+            "source": plan["source"],
+            "authorization": {
+                "maximumUSD": str(arguments.maximum_usd),
+                "personalDataTransferConfirmed": True,
+                "dedicatedPrivateProjectConfirmed": True,
+                "currentPricesConfirmed": True,
+            },
+            "provider": {
+                "model": INKLING_MODEL,
+                "projectID": arguments.dedicated_private_project_id,
+                "trainingContract": TRAINING_CONTRACT,
+                "generationContract": GENERATION_CONTRACT,
+                "recoveryContract": plan["protocol"]["recoveryContract"],
+            },
+            "counts": {},
+            "stages": [],
+            "updates": [],
+            "abandonedAttempts": [],
+            "validityReviewAuthorizations": [],
+        }
+        atomic_json(manifest_path, manifest)
+        sentinels: list[dict[str, Any]] = []
+        scores: list[dict[str, Any]] = []
+        updates: list[dict[str, Any]] = []
+        training_batches: list[dict[str, Any]] = []
+    else:
+        if not manifest_path.exists():
+            raise InklingContractError("existing output lacks a stability manifest")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if not (
+            manifest.get("planSHA256") == arguments.plan_sha256
+            and manifest.get("implementation", {}).get("codeRevision")
+            == git_revision(project)
+            and manifest.get("implementation", {}).get("fileDigestsSHA256")
+            == plan["implementation"]["fileDigestsSHA256"]
+        ):
+            raise InklingContractError("resume implementation or lineage changed")
+        sentinels = load_jsonl(sentinels_path) if sentinels_path.exists() else []
+        scores = load_jsonl(scores_path) if scores_path.exists() else []
+        updates = load_jsonl(updates_path) if updates_path.exists() else []
+        training_batches = load_jsonl(batches_path) if batches_path.exists() else []
+        if manifest.get("status", "").startswith("complete"):
+            return 0
+        if recover_interrupted_manifest(
+            manifest=manifest,
+            sentinels=sentinels,
+            scores=scores,
+            updates=updates,
+            plan=plan,
+            maximum_usd=arguments.maximum_usd,
+        ):
+            atomic_json(manifest_path, manifest)
+
+    if [value["exampleID"] for value in sentinels] != probe_ids[: len(sentinels)]:
+        raise InklingContractError("base probes are not an ordered protocol prefix")
+    if [value["exampleID"] for value in scores] != expected_score_ids[: len(scores)]:
+        raise InklingContractError("evaluation scores are not an ordered protocol prefix")
+    if [value["updateOrdinal"] for value in updates] != list(
+        range(1, len(updates) + 1)
+    ):
+        raise InklingContractError("updates are not an ordered protocol prefix")
+
+    def refresh_manifest() -> None:
+        stages: list[dict[str, Any]] = []
+        if len(sentinels) == len(probe_ids):
+            accepted = sum(value["accepted"] for value in sentinels)
+            stages.append(
+                {
+                    "stage": 0,
+                    "trainedExamples": 0,
+                    "purpose": "base_renderer_gate",
+                    "samples": len(sentinels),
+                    "accepted": accepted,
+                    "validityRate": accepted / len(sentinels),
+                    "status": "passed" if accepted == len(sentinels) else "failed",
+                }
+            )
+        position = 0
+        threshold = float(plan["protocol"]["minimumAutomaticValidityRate"])
+        for stage, block_id in enumerate(
+            plan["protocol"]["evaluationBlockIDsAfterUpdate"], 1
+        ):
+            count = len(blocks[block_id]["exampleIDs"])
+            stage_rows = scores[position : position + count]
+            if len(stage_rows) != count:
+                break
+            accepted = sum(value["accepted"] for value in stage_rows)
+            validity = accepted / count
+            stages.append(
+                {
+                    "stage": stage,
+                    "trainedExamples": stage * 50,
+                    "purpose": "personalized_prequential_evaluation",
+                    "blockID": block_id,
+                    "samples": count,
+                    "accepted": accepted,
+                    "invalid": count - accepted,
+                    "validityRate": validity,
+                    "automaticContinuationEligible": validity >= threshold,
+                    "status": "intact" if validity >= threshold else "material_deterioration",
+                }
+            )
+            position += count
+        manifest["stages"] = stages
+        manifest["updates"] = updates
+        manifest["counts"] = {
+            "completedStages": len(stages),
+            "completedUpdates": len(updates),
+            "baseProbes": len(sentinels),
+            "evaluationScores": len(scores),
+            "samples": len(sentinels) + len(scores),
+            "trainingBatchRecords": len(training_batches),
+        }
+
+    refresh_manifest()
     atomic_json(manifest_path, manifest)
 
     os.environ["TINKER_API_KEY"] = load_api_key(arguments.env_file)
@@ -246,7 +484,7 @@ def run() -> int:
     service = tinker.ServiceClient(
         project_id=arguments.dedicated_private_project_id,
         user_metadata={
-            "purpose": "phase1-inkling-native-loss-stability",
+            "purpose": "phase1-inkling-native-loss-repair-and-prequential-comparison",
             "plan_sha256": arguments.plan_sha256,
         },
     )
@@ -260,8 +498,11 @@ def run() -> int:
     ):
         raise InklingContractError("Inkling model/context unavailable")
     base_sampler = service.create_sampling_client(base_model=INKLING_MODEL)
+    manifest["status"] = "running"
+    manifest["provider"]["sessionID"] = service.holder.get_session_id()
+    atomic_json(manifest_path, manifest)
 
-    def sample_stage(
+    def sample_examples(
         *,
         stage: int,
         trained: int,
@@ -271,17 +512,40 @@ def run() -> int:
         block_id: str | None,
         checkpoint_id: str | None,
         destination: Path,
-    ) -> bool:
-        valid = 0
-        for example_id in example_ids:
+        records: list[dict[str, Any]],
+    ) -> None:
+        completed = len(records) if purpose == "base_renderer_gate" else sum(
+            len(blocks[value]["exampleIDs"])
+            for value in plan["protocol"]["evaluationBlockIDsAfterUpdate"][: stage - 1]
+        )
+        existing_stage = (
+            records[completed : completed + len(example_ids)]
+            if purpose != "base_renderer_gate"
+            else records
+        )
+        existing_ids = [value["exampleID"] for value in existing_stage]
+        if existing_ids != example_ids[: len(existing_ids)]:
+            raise InklingContractError("generation stage is not an ordered prefix")
+        for example_id in example_ids[len(existing_ids) :]:
             row = rows[example_id]
             prompt = row["inputIDs"][: row["modelInputTokenCount"]]
+            identity = {"purpose": purpose, "stage": stage, "exampleID": example_id}
+            maximum_cost = Decimal(
+                cost_string(len(prompt), plan["pricing"]["perMillionUSD"]["prefill"])
+            ) + Decimal(
+                cost_string(
+                    GENERATION_CONTRACT["maximumTokensByCondition"]["reasoning_off"],
+                    plan["pricing"]["perMillionUSD"]["sample"],
+                )
+            )
+            attempt = 1 + abandoned_attempt_count(
+                manifest, "generation_retry", identity
+            )
             manifest["inflightOperation"] = {
-                "kind": "free_generation_probe",
-                "purpose": purpose,
-                "stage": stage,
-                "exampleID": example_id,
-                "replayAllowedAutomatically": False,
+                "kind": "free_generation",
+                **identity,
+                "attemptOrdinal": attempt,
+                "maximumReplayCostUSD": str(maximum_cost),
             }
             atomic_json(manifest_path, manifest)
             started = time.monotonic()
@@ -298,140 +562,126 @@ def run() -> int:
                 ),
             ).result()
             if len(response.sequences) != 1:
-                raise InklingContractError("probe returned an unexpected sample count")
+                raise InklingContractError("generation returned an unexpected sample count")
             sequence = response.sequences[0]
             tokens = [int(value) for value in sequence.tokens]
             stop_reason = str(getattr(sequence.stop_reason, "value", sequence.stop_reason))
             parsed = parse_completion(
-                semantic_input=semantic[example_id],
-                effort=0.0,
-                token_ids=tokens,
+                semantic_input=semantic[example_id], effort=0.0, token_ids=tokens
             )
             accepted = probe_accepted(stop_reason=stop_reason, parsed=parsed)
-            valid += int(accepted)
             expected = target_text(examples[example_id]["target"])
             prediction = parsed.get("prediction", "")
-            cost = (
-                Decimal(len(prompt))
-                * Decimal(plan["pricing"]["perMillionUSD"]["prefill"])
-                + Decimal(len(tokens))
-                * Decimal(plan["pricing"]["perMillionUSD"]["sample"])
-            ) / Decimal(1_000_000)
-            append_jsonl(
-                destination,
-                {
-                    "schemaVersion": 1,
-                    "runnerVersion": RUNNER_VERSION,
-                    "purpose": purpose,
-                    "stage": stage,
-                    "trainedExamples": trained,
-                    "blockID": block_id,
-                    "arm": (
-                        "frozen_inkling_small_reasoning_off"
-                        if trained == 0
-                        else "personalized_inkling_small_reasoning_off"
-                    ),
-                    "checkpointID": checkpoint_id,
-                    "exampleID": example_id,
-                    "targetEventID": examples[example_id]["targetEventID"],
-                    "application": applications[example_id],
-                    "accepted": accepted,
-                    "stopReason": stop_reason,
-                    "observedTokens": len(tokens),
-                    "predictionTokenIDs": tokens,
-                    "prediction": prediction,
-                    "target": expected,
-                    "pasteActionCount": row["pasteActionCount"],
-                    "semanticModelInputSHA256": row["semanticModelInputSHA256"],
-                    "modelInputTokenCount": row["modelInputTokenCount"],
-                    "parseStatus": parsed.get("status"),
-                    "responseParse": parsed,
-                    "rawDecoded": parsed.get("rawDecoded"),
-                    "generationDisposition": (
-                        "accepted"
-                        if accepted
-                        else (
-                            GENERATION_CONTRACT[
-                                "tokenCapWithoutValidFinalDisposition"
-                            ]
-                            if stop_reason == "length"
-                            else GENERATION_CONTRACT["missingFinalDisposition"]
-                        )
-                    ),
-                    "generationEligibleForEvaluation": accepted,
-                    "predictionMetrics": score_prediction(
-                        expected,
-                        prediction if accepted else "",
-                        target_paste_actions=row["pasteActionCount"],
-                    ),
-                    "validOnlyPredictionMetrics": (
-                        score_prediction(
-                            expected,
-                            prediction,
-                            target_paste_actions=row["pasteActionCount"],
-                        )
-                        if accepted
-                        else None
-                    ),
-                    "generationTemperature": GENERATION_CONTRACT["temperature"],
-                    "generationSeed": GENERATION_CONTRACT["seed"],
-                    "generationTokenCeiling": GENERATION_CONTRACT[
-                        "maximumTokensByCondition"
-                    ]["reasoning_off"],
-                    "generationLatencySeconds": time.monotonic() - started,
-                    "estimatedProviderCostUSDAtFrozenRates": str(
-                        cost.quantize(Decimal("0.000001"))
-                    ),
-                    "completedAt": iso8601(),
-                },
+            actual_cost = Decimal(
+                cost_string(len(prompt), plan["pricing"]["perMillionUSD"]["prefill"])
+            ) + Decimal(
+                cost_string(len(tokens), plan["pricing"]["perMillionUSD"]["sample"])
             )
+            record = {
+                "schemaVersion": 2,
+                "runnerVersion": RUNNER_VERSION,
+                "purpose": purpose,
+                "stage": stage,
+                "trainedExamples": trained,
+                "blockID": block_id,
+                "arm": (
+                    "frozen_inkling_small_reasoning_off"
+                    if trained == 0
+                    else "personalized_inkling_small_reasoning_off"
+                ),
+                "condition": "reasoning_off",
+                "effort": 0.0,
+                "checkpointID": checkpoint_id,
+                "attemptOrdinal": attempt,
+                "exampleID": example_id,
+                "targetEventID": examples[example_id]["targetEventID"],
+                "application": applications[example_id],
+                "accepted": accepted,
+                "stopReason": stop_reason,
+                "predictionTokenIDs": tokens,
+                "prediction": prediction,
+                "target": expected,
+                "pasteActionCount": row["pasteActionCount"],
+                "semanticModelInputSHA256": row["semanticModelInputSHA256"],
+                "modelInputTokenCount": row["modelInputTokenCount"],
+                "fullSequenceTokenCount": len(row["inputIDs"]),
+                "responseParse": parsed,
+                "generationDisposition": (
+                    "accepted"
+                    if accepted
+                    else (
+                        GENERATION_CONTRACT["tokenCapWithoutValidFinalDisposition"]
+                        if stop_reason == "length"
+                        else GENERATION_CONTRACT["missingFinalDisposition"]
+                    )
+                ),
+                "generationEligibleForEvaluation": accepted,
+                "comparisonScorePolicy": "invalid_generation_scores_zero",
+                "predictionMetrics": score_prediction(
+                    expected,
+                    prediction if accepted else "",
+                    target_paste_actions=row["pasteActionCount"],
+                ),
+                "validOnlyPredictionMetrics": (
+                    score_prediction(
+                        expected,
+                        prediction,
+                        target_paste_actions=row["pasteActionCount"],
+                    )
+                    if accepted
+                    else None
+                ),
+                "generationTemperature": GENERATION_CONTRACT["temperature"],
+                "generationSeed": GENERATION_CONTRACT["seed"],
+                "generationTokenCeiling": GENERATION_CONTRACT[
+                    "maximumTokensByCondition"
+                ]["reasoning_off"],
+                "generationLatencySeconds": time.monotonic() - started,
+                "estimatedProviderCostUSDAtFrozenRates": str(actual_cost),
+                "completedAt": iso8601(),
+            }
+            append_jsonl(destination, record)
+            records.append(record)
             manifest.pop("inflightOperation", None)
-            manifest["counts"]["samples"] += 1
-            manifest["counts"][
-                "baseProbes" if purpose == "base_renderer_gate" else "evaluationScores"
-            ] += 1
+            refresh_manifest()
             atomic_json(manifest_path, manifest)
-        stage_result = {
-            "stage": stage,
-            "trainedExamples": trained,
-            "purpose": purpose,
-            "blockID": block_id,
-            "samples": len(example_ids),
-            "accepted": valid,
-            "status": "passed" if valid == len(example_ids) else "failed",
-        }
-        manifest["stages"].append(stage_result)
-        manifest["counts"]["completedStages"] += 1
-        atomic_json(manifest_path, manifest)
-        return valid == len(example_ids)
 
-    manifest["status"] = "running"
-    manifest["provider"]["sessionID"] = service.holder.get_session_id()
-    atomic_json(manifest_path, manifest)
-    if not sample_stage(
+    sample_examples(
         stage=0,
         trained=0,
         sampler=base_sampler,
         example_ids=probe_ids,
         purpose="base_renderer_gate",
-        block_id=plan["protocol"]["probeSourceBlockID"],
+        block_id=None,
         checkpoint_id=None,
         destination=sentinels_path,
-    ):
-        raise InklingContractError("base Inkling failed the free-generation gate")
-
-    # Do not create a training client until the frozen model proves that this
-    # renderer/parser path can produce valid free generations. This keeps a
-    # renderer failure from opening a paid training run at all.
-    client = service.create_lora_training_client(
-        base_model=INKLING_MODEL,
-        rank=TRAINING_CONTRACT["rank"],
-        seed=TRAINING_CONTRACT["seed"],
-        train_mlp=TRAINING_CONTRACT["trainMLP"],
-        train_attn=TRAINING_CONTRACT["trainAttention"],
-        train_unembed=TRAINING_CONTRACT["trainUnembedding"],
-        user_metadata={"purpose": "phase1-inkling-native-loss-stability"},
+        records=sentinels,
     )
+    refresh_manifest()
+    if not all(value["accepted"] for value in sentinels):
+        manifest["status"] = "complete_no_go"
+        manifest["verdict"] = "base_renderer_gate_failed_before_training"
+        manifest["completedAt"] = iso8601()
+        atomic_json(manifest_path, manifest)
+        return 2
+
+    latest_update = updates[-1] if updates else None
+    if latest_update:
+        client = service.create_training_client_from_state_with_optimizer(
+            latest_update["optimizerStatePath"],
+            base_model=INKLING_MODEL,
+            user_metadata={"purpose": "phase1-inkling-native-loss-resume"},
+        )
+    else:
+        client = service.create_lora_training_client(
+            base_model=INKLING_MODEL,
+            rank=TRAINING_CONTRACT["rank"],
+            seed=TRAINING_CONTRACT["seed"],
+            train_mlp=TRAINING_CONTRACT["trainMLP"],
+            train_attn=TRAINING_CONTRACT["trainAttention"],
+            train_unembed=TRAINING_CONTRACT["trainUnembedding"],
+            user_metadata={"purpose": "phase1-inkling-native-loss-stability"},
+        )
     optimizer_contract = TRAINING_CONTRACT["optimizer"]
     optimizer = tinker.AdamParams(
         learning_rate=optimizer_contract["learningRate"],
@@ -442,123 +692,283 @@ def run() -> int:
         grad_clip_norm=optimizer_contract["gradientClipNorm"],
     )
 
-    trained = 0
-    for update_ordinal, block_id in enumerate(
-        plan["protocol"]["trainingBlockIDs"], 1
-    ):
-        block = blocks[block_id]
-        order = PRODUCTION.deterministic_order(block["exampleIDs"], update_ordinal)
-        batches = PRODUCTION.optimizer_batches(order)
-        update_started = time.monotonic()
-        submitted = 0
-        loss_tokens = 0
-        for batch_position, batch_ids in enumerate(batches, 1):
-            raw_contracts = [PRODUCTION.datum_contract(rows[value]) for value in batch_ids]
-            normalized, batch_loss_tokens, token_weight = (
-                PRODUCTION.micro_normalized_batch_contracts(raw_contracts)
+    authorized_blocks = set(arguments.authorize_continue_after_validity_review)
+    for update_ordinal, block_id in enumerate(plan["protocol"]["trainingBlockIDs"], 1):
+        if update_ordinal > 1:
+            prior_stage = manifest["stages"][update_ordinal - 1]
+            if not prior_stage["automaticContinuationEligible"]:
+                prior_block = prior_stage["blockID"]
+                previously_authorized = any(
+                    value["blockID"] == prior_block
+                    for value in manifest["validityReviewAuthorizations"]
+                )
+                if prior_block in authorized_blocks and not previously_authorized:
+                    manifest["validityReviewAuthorizations"].append(
+                        {
+                            "blockID": prior_block,
+                            "validityRate": prior_stage["validityRate"],
+                            "authorizedAt": iso8601(),
+                        }
+                    )
+                    previously_authorized = True
+                    atomic_json(manifest_path, manifest)
+                if not previously_authorized:
+                    manifest["status"] = "paused_for_validity_review"
+                    manifest["pause"] = prior_stage
+                    atomic_json(manifest_path, manifest)
+                    return 3
+
+        if update_ordinal <= len(updates):
+            update = updates[update_ordinal - 1]
+        else:
+            block = blocks[block_id]
+            order = PRODUCTION.deterministic_order(block["exampleIDs"], update_ordinal)
+            batches = PRODUCTION.optimizer_batches(order)
+            update_started = time.monotonic()
+            submitted = sum(
+                PRODUCTION.datum_contract(rows[value]).length for value in order
             )
-            datums, _, _ = build_and_validate_sdk_datums(normalized)
-            manifest["inflightOperation"] = {
-                "kind": "training_batch",
+            identity = {"updateOrdinal": update_ordinal}
+            attempt = 1 + abandoned_attempt_count(
+                manifest, "training_block_restart", identity
+            )
+            parent = updates[-1] if updates else None
+            manifest["activeUpdate"] = {
                 "updateOrdinal": update_ordinal,
-                "batchPosition": batch_position,
-                "exampleIDs": batch_ids,
-                "replayAllowedAutomatically": False,
+                "afterBlockID": block_id,
+                "parentOptimizerStatePath": (
+                    None if parent is None else parent["optimizerStatePath"]
+                ),
+                "attemptOrdinal": attempt,
+                "totalSteps": len(batches),
+                "completedStepsNotCheckpointed": 0,
+                "maximumReplayCostUSD": cost_string(
+                    submitted, plan["pricing"]["perMillionUSD"]["training"]
+                ),
             }
             atomic_json(manifest_path, manifest)
-            client.forward_backward(datums, "cross_entropy").result()
-            client.optim_step(optimizer).result()
-            submitted += sum(value.length for value in raw_contracts)
-            loss_tokens += batch_loss_tokens
+            update_nll = 0.0
+            update_loss_tokens = 0
+            for batch_position, batch_ids in enumerate(batches, 1):
+                raw_contracts = [
+                    PRODUCTION.datum_contract(rows[value]) for value in batch_ids
+                ]
+                normalized, batch_loss_tokens, token_weight = (
+                    PRODUCTION.micro_normalized_batch_contracts(raw_contracts)
+                )
+                datums, _, _ = build_and_validate_sdk_datums(normalized)
+                manifest["inflightOperation"] = {
+                    "kind": "training_batch",
+                    "updateOrdinal": update_ordinal,
+                    "batchPosition": batch_position,
+                    "exampleIDs": batch_ids,
+                    "replayPolicy": "restart_whole_block_from_parent_checkpoint",
+                }
+                atomic_json(manifest_path, manifest)
+                result = client.forward_backward(datums, "cross_entropy").result()
+                if len(result.loss_fn_outputs) != len(raw_contracts):
+                    raise InklingContractError("training result batch size changed")
+                per_example = []
+                batch_nll = 0.0
+                for raw_contract, item in zip(
+                    raw_contracts, result.loss_fn_outputs, strict=True
+                ):
+                    logprobs = item["logprobs"].tolist()
+                    if len(logprobs) != raw_contract.length:
+                        raise InklingContractError("training logprob length changed")
+                    nll = -sum(
+                        float(logprob)
+                        for logprob, weight in zip(
+                            logprobs, raw_contract.weights, strict=True
+                        )
+                        if weight
+                    )
+                    batch_nll += nll
+                    per_example.append(
+                        {
+                            "exampleID": raw_contract.example_id,
+                            "weightedNLLSum": nll,
+                            "nativeLossTokenCount": raw_contract.weighted_positions,
+                            "meanNLL": nll / raw_contract.weighted_positions,
+                        }
+                    )
+                client.optim_step(optimizer).result()
+                batch_record = {
+                    "updateOrdinal": update_ordinal,
+                    "trainingAttemptOrdinal": attempt,
+                    "batchPosition": batch_position,
+                    "exampleIDs": batch_ids,
+                    "submittedPositions": sum(value.length for value in raw_contracts),
+                    "nativeLossTokenCount": batch_loss_tokens,
+                    "perNativeLossTokenWeight": token_weight,
+                    "weightedNLLSum": batch_nll,
+                    "meanPreUpdateNLL": batch_nll / batch_loss_tokens,
+                    "perExample": per_example,
+                    "completedAt": iso8601(),
+                }
+                append_jsonl(batches_path, batch_record)
+                training_batches.append(batch_record)
+                update_nll += batch_nll
+                update_loss_tokens += batch_loss_tokens
+                manifest.pop("inflightOperation", None)
+                manifest["activeUpdate"]["completedStepsNotCheckpointed"] = batch_position
+                refresh_manifest()
+                atomic_json(manifest_path, manifest)
+
+            prefix = (
+                f"phase1-inkling-native-loss-stability-{update_ordinal:02d}-"
+                f"attempt-{attempt:02d}"
+            )
+            manifest["inflightOperation"] = {
+                "kind": "save_checkpoints",
+                "updateOrdinal": update_ordinal,
+                "replayPolicy": "restart_whole_block_from_parent_checkpoint",
+            }
+            atomic_json(manifest_path, manifest)
+            sampler_path = client.save_weights_for_sampler(
+                f"{prefix}-sampler",
+                ttl_seconds=TRAINING_CONTRACT["checkpointTTLSeconds"],
+            ).result().path
+            state_path = client.save_state(
+                f"{prefix}-optimizer-state",
+                ttl_seconds=TRAINING_CONTRACT["checkpointTTLSeconds"],
+            ).result().path
+            update = {
+                "schemaVersion": 2,
+                "runnerVersion": RUNNER_VERSION,
+                "updateOrdinal": update_ordinal,
+                "trainingAttemptOrdinal": attempt,
+                "afterBlockID": block_id,
+                "parentOptimizerStatePath": (
+                    None if parent is None else parent["optimizerStatePath"]
+                ),
+                "samplerCheckpointPath": sampler_path,
+                "optimizerStatePath": state_path,
+                "trainedExamplesThisUpdate": len(order),
+                "cumulativeTrainedExamples": update_ordinal * 50,
+                "optimizerSteps": len(batches),
+                "submittedPositions": submitted,
+                "nativeLossTokenPresentations": update_loss_tokens,
+                "weightedNLLSum": update_nll,
+                "meanPreUpdateNLL": update_nll / update_loss_tokens,
+                "estimatedTrainingCostUSDAtFrozenRate": cost_string(
+                    submitted, plan["pricing"]["perMillionUSD"]["training"]
+                ),
+                "latencySeconds": time.monotonic() - update_started,
+                "completedAt": iso8601(),
+            }
+            append_jsonl(updates_path, update)
+            updates.append(update)
             manifest.pop("inflightOperation", None)
+            manifest.pop("activeUpdate", None)
+            refresh_manifest()
             atomic_json(manifest_path, manifest)
 
-        prefix = f"phase1-inkling-native-loss-stability-{update_ordinal:02d}"
-        manifest["inflightOperation"] = {
-            "kind": "save_checkpoints",
-            "updateOrdinal": update_ordinal,
-            "replayAllowedAutomatically": False,
-        }
-        atomic_json(manifest_path, manifest)
-        sampler_path = client.save_weights_for_sampler(
-            f"{prefix}-sampler", ttl_seconds=TRAINING_CONTRACT["checkpointTTLSeconds"]
-        ).result().path
-        state_path = client.save_state(
-            f"{prefix}-optimizer-state",
-            ttl_seconds=TRAINING_CONTRACT["checkpointTTLSeconds"],
-        ).result().path
-        trained += len(order)
-        update = {
-            "updateOrdinal": update_ordinal,
-            "afterBlockID": block_id,
-            "trainedExamplesThisUpdate": len(order),
-            "cumulativeTrainedExamples": trained,
-            "optimizerSteps": len(batches),
-            "submittedPositions": submitted,
-            "nativeLossTokenPresentations": loss_tokens,
-            "samplerCheckpointPath": sampler_path,
-            "optimizerStatePath": state_path,
-            "latencySeconds": time.monotonic() - update_started,
-            "completedAt": iso8601(),
-        }
-        append_jsonl(updates_path, update)
-        manifest["updates"].append(update)
-        manifest["counts"]["completedUpdates"] += 1
-        manifest.pop("inflightOperation", None)
-        atomic_json(manifest_path, manifest)
-        sampler = service.create_sampling_client(model_path=sampler_path)
         evaluation_block_id = plan["protocol"]["evaluationBlockIDsAfterUpdate"][
             update_ordinal - 1
         ]
-        evaluation_ids = blocks[evaluation_block_id]["exampleIDs"]
-        if not sample_stage(
+        sampler = service.create_sampling_client(
+            model_path=update["samplerCheckpointPath"]
+        )
+        sample_examples(
             stage=update_ordinal,
-            trained=trained,
+            trained=update_ordinal * 50,
             sampler=sampler,
-            example_ids=evaluation_ids,
+            example_ids=blocks[evaluation_block_id]["exampleIDs"],
             purpose="personalized_prequential_evaluation",
             block_id=evaluation_block_id,
-            checkpoint_id=sampler_path,
+            checkpoint_id=update["samplerCheckpointPath"],
             destination=scores_path,
-        ):
-            manifest["status"] = "complete_no_go"
-            manifest["verdict"] = "native_loss_did_not_preserve_free_generation"
-            manifest["completedAt"] = iso8601()
-            atomic_json(manifest_path, manifest)
-            print(json.dumps(manifest, indent=2))
-            return 2
+            records=scores,
+        )
+        refresh_manifest()
+        atomic_json(manifest_path, manifest)
 
-    manifest["status"] = "complete_go"
-    manifest["verdict"] = "native_loss_preserved_free_generation_through_prior_collapse_point"
+    if len(scores) != len(expected_score_ids) or len(updates) != 4:
+        raise InklingContractError("Inkling protocol ended incomplete")
+    material = [
+        value
+        for value in manifest["stages"]
+        if value.get("status") == "material_deterioration"
+    ]
+    abandoned_maximum = sum(
+        (
+            Decimal(value["maximumEstimatedProviderCostUSD"])
+            for value in manifest.get("abandonedAttempts", [])
+        ),
+        Decimal(0),
+    )
+    manifest["status"] = (
+        "complete_with_generation_deterioration" if material else "complete_go"
+    )
+    manifest["verdict"] = (
+        "native_loss_run_complete_with_recorded_structural_failures"
+        if material
+        else "native_loss_preserved_structurally_valid_free_generation"
+    )
     manifest["completedAt"] = iso8601()
+    manifest["estimatedCost"] = {
+        "completedTrainingAtFrozenRate": str(
+            sum(
+                Decimal(value["estimatedTrainingCostUSDAtFrozenRate"])
+                for value in updates
+            )
+        ),
+        "completedGenerationAtFrozenRate": str(
+            sum(
+                Decimal(value["estimatedProviderCostUSDAtFrozenRates"])
+                for value in [*sentinels, *scores]
+            )
+        ),
+        "abandonedAttemptMaximumUSD": str(abandoned_maximum),
+    }
+    manifest["finalCheckpoints"] = {
+        "samplerCheckpointPath": updates[-1]["samplerCheckpointPath"],
+        "optimizerStatePath": updates[-1]["optimizerStatePath"],
+    }
     manifest["artifactDigestsSHA256"] = {
         "base-sentinels.jsonl": sha256(sentinels_path),
         "scores.jsonl": sha256(scores_path),
         "updates.jsonl": sha256(updates_path),
+        "training-batches.jsonl": sha256(batches_path),
     }
     atomic_json(manifest_path, manifest)
     print(json.dumps(manifest, indent=2))
     return 0
 
 
+def record_interruption(error: Exception) -> bool:
+    arguments = parse_arguments()
+    path = arguments.output.expanduser().resolve() / "stability.json"
+    if not path.exists():
+        return False
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["status"] = "interrupted"
+    manifest["interruptedAt"] = iso8601()
+    manifest["failure"] = {
+        "type": type(error).__name__,
+        "message": str(error),
+        "traceback": traceback.format_exc(),
+    }
+    atomic_json(path, manifest)
+    return bool(manifest.get("activeUpdate") or manifest.get("inflightOperation"))
+
+
 def main() -> int:
-    try:
-        return run()
-    except BaseException as error:
+    automatic_restarts = 0
+    while True:
         try:
-            arguments = parse_arguments()
-            manifest_path = arguments.output.expanduser().resolve() / "stability.json"
-            if manifest_path.exists():
-                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-                manifest["status"] = "failed_closed"
-                manifest["failedAt"] = iso8601()
-                manifest["failure"] = {
-                    "type": type(error).__name__,
-                    "message": str(error),
-                    "traceback": traceback.format_exc(),
-                }
-                atomic_json(manifest_path, manifest)
-        finally:
+            return run()
+        except Exception as error:
+            recoverable = record_interruption(error)
+            if recoverable and automatic_restarts < 2:
+                automatic_restarts += 1
+                print(
+                    "inkling-stability recovery restarting from committed artifacts "
+                    f"attempt={automatic_restarts}/2",
+                    flush=True,
+                )
+                continue
             raise
 
 

@@ -2308,14 +2308,21 @@ schedule to Qwen's batch-size-one contract. Those variables must not change in
 the same causal test.
 
 The bounded v5 run starts from base Inkling-Small rather than a pre-existing
-adapter. It first applies a twelve-example cross-application renderer gate,
+adapter. It first applies a four-example cross-application renderer gate drawn
+only from the first training block, which is never itself scored,
 then performs four append-only updates over examples 1–50, 51–100, 101–150,
 and 151–200. After each update it free-samples the complete next chronological
 block: 50, 50, 50, and finally 24 examples. These 174 personalized predictions
 retain targets, output token IDs, latency, cost attribution, parsing evidence,
 and deterministic completion metrics for comparison with the Qwen and GPT
-arms. Every completed evaluation block gates the following paid update; any
-invalid native completion stops the experiment before further training.
+arms. Invalid native completions remain model-performance failures and receive
+zero in the full comparison. A block with at least 98% structurally valid
+outputs continues automatically; material deterioration pauses before the next
+training update for explicit review. The runner can resume committed generation
+rows, retry one interrupted non-mutating generation, and restart one uncertain
+training block from its parent optimizer checkpoint while retaining abandoned
+attempt evidence and cost exposure. Per-example and batch training NLL are
+recorded as secondary diagnostics without adding target-likelihood calls.
 
 No provider calls have been made under v5. The prior v4 artifacts remain
 immutable at:
