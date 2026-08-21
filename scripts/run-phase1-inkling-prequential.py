@@ -10,6 +10,7 @@ import importlib.metadata
 import json
 import math
 import os
+import struct
 import time
 import traceback
 import uuid
@@ -174,6 +175,66 @@ def datum_contract(row: dict[str, Any]) -> TinkerDatumContract:
     )
 
 
+def optimizer_batches(example_ids: list[str]) -> list[list[str]]:
+    size = TRAINING_CONTRACT["optimizerBatchExamples"]
+    if type(size) is not int or size <= 0:
+        raise InklingContractError("optimizer batch size must be a positive integer")
+    batches = [example_ids[start : start + size] for start in range(0, len(example_ids), size)]
+    if not TRAINING_CONTRACT["partialFinalBatchAllowed"] and any(
+        len(value) != size for value in batches
+    ):
+        raise InklingContractError("partial optimizer batch is forbidden")
+    return batches
+
+
+def micro_normalized_batch_contracts(
+    contracts: list[TinkerDatumContract],
+) -> tuple[list[TinkerDatumContract], int, float]:
+    if not contracts:
+        raise InklingContractError("optimizer batch may not be empty")
+    target_tokens = sum(value.weighted_positions for value in contracts)
+    if target_tokens <= 0:
+        raise InklingContractError("optimizer batch has no loss-bearing tokens")
+    # Tinker receives float32 weights. Quantize locally so the SDK round-trip
+    # check compares the exact values that will reach the provider.
+    token_weight = struct.unpack("!f", struct.pack("!f", 1.0 / target_tokens))[0]
+    normalized = [
+        TinkerDatumContract(
+            example_id=value.example_id,
+            model_input_token_ids=value.model_input_token_ids,
+            target_tokens=value.target_tokens,
+            weights=[token_weight if weight else 0.0 for weight in value.weights],
+            weighted_positions=value.weighted_positions,
+        )
+        for value in contracts
+    ]
+    observed = sum(sum(item.weights) for item in normalized)
+    if not math.isclose(observed, 1.0, rel_tol=1e-6, abs_tol=1e-6):
+        raise InklingContractError("micro-normalized batch weights do not sum to one")
+    return normalized, target_tokens, token_weight
+
+
+def generation_ceiling(condition: str) -> int:
+    try:
+        value = GENERATION_CONTRACT["maximumTokensByCondition"][condition]
+    except KeyError as error:
+        raise InklingContractError(f"missing generation ceiling for {condition}") from error
+    if type(value) is not int or value <= 0:
+        raise InklingContractError("generation ceiling must be a positive integer")
+    return value
+
+
+def generation_disposition(
+    *, stop_reason: str, parsed: dict[str, Any]
+) -> tuple[str, bool]:
+    valid_final = parsed.get("status") == "parsed" and bool(parsed.get("prediction"))
+    if valid_final:
+        return "accepted", True
+    if stop_reason == "length":
+        return GENERATION_CONTRACT["tokenCapWithoutValidFinalDisposition"], False
+    return GENERATION_CONTRACT["missingFinalDisposition"], False
+
+
 def weighted_nll(row: dict[str, Any], logprobs: list[float | None]) -> tuple[float, int]:
     if len(logprobs) != len(row["labels"]):
         raise InklingContractError("Tinker logprobs differ from the full sequence")
@@ -317,12 +378,13 @@ def score_example(
     generation_started = time.monotonic()
     usage.sample_calls += 1
     usage.prefill_tokens += len(prompt_ids)
-    usage.sampled_tokens_reserved += GENERATION_CONTRACT["maximumTokens"]
+    maximum_tokens = generation_ceiling(condition)
+    usage.sampled_tokens_reserved += maximum_tokens
     response = sampling_client.sample(
         prompt=tinker.ModelInput.from_ints(tokens=prompt_ids),
         num_samples=1,
         sampling_params=tinker.SamplingParams(
-            max_tokens=GENERATION_CONTRACT["maximumTokens"],
+            max_tokens=maximum_tokens,
             temperature=GENERATION_CONTRACT["temperature"],
             seed=GENERATION_CONTRACT["seed"],
             stop=row["stopTokenIDs"],
@@ -341,6 +403,10 @@ def score_example(
     )
     expected = target_text(example["target"])
     prediction = parsed["prediction"]
+    stop_reason = str(getattr(sequence.stop_reason, "value", sequence.stop_reason))
+    disposition, generation_eligible = generation_disposition(
+        stop_reason=stop_reason, parsed=parsed
+    )
     prefill = len(row["inputIDs"]) + len(prompt_ids)
     query_cost = Decimal(cost_string(prefill, prices["prefill"])) + Decimal(
         cost_string(len(observed), prices["sample"])
@@ -372,10 +438,16 @@ def score_example(
         "responseParse": parsed,
         "generationTemperature": GENERATION_CONTRACT["temperature"],
         "generationSeed": GENERATION_CONTRACT["seed"],
-        "generationTokenCeiling": GENERATION_CONTRACT["maximumTokens"],
-        "stopReason": str(getattr(sequence.stop_reason, "value", sequence.stop_reason)),
-        "predictionMetrics": score_prediction(
-            expected, prediction, target_paste_actions=row["pasteActionCount"]
+        "generationTokenCeiling": maximum_tokens,
+        "stopReason": stop_reason,
+        "generationDisposition": disposition,
+        "generationEligibleForEvaluation": generation_eligible,
+        "predictionMetrics": (
+            score_prediction(
+                expected, prediction, target_paste_actions=row["pasteActionCount"]
+            )
+            if generation_eligible
+            else None
         ),
         "targetLikelihoodLatencySeconds": nll_latency,
         "generationLatencySeconds": generation_latency,
@@ -394,7 +466,7 @@ def recompute_usage(scores: list[dict[str, Any]], updates: list[dict[str, Any]])
         usage.sample_calls += 1
         usage.prefill_tokens += value["fullSequenceTokenCount"]
         usage.prefill_tokens += value["modelInputTokenCount"]
-        usage.sampled_tokens_reserved += GENERATION_CONTRACT["maximumTokens"]
+        usage.sampled_tokens_reserved += value["generationTokenCeiling"]
         usage.sampled_tokens_observed += len(value["predictionTokenIDs"])
     for value in updates:
         usage.training_calls += value["trainingCalls"]
@@ -426,16 +498,10 @@ def run() -> int:
     plan, plan_digest = validate_plan(arguments, corpus_path, pack_path)
 
     contracts_by_condition: dict[str, dict[str, TinkerDatumContract]] = {}
-    datums_by_condition: dict[str, dict[str, Any]] = {}
     for condition, rows in rows_by_condition.items():
         contracts = [datum_contract(value) for value in rows]
-        datums, _, _ = build_and_validate_sdk_datums(contracts)
         contracts_by_condition[condition] = {
             value.example_id: value for value in contracts
-        }
-        datums_by_condition[condition] = {
-            contract.example_id: datum
-            for contract, datum in zip(contracts, datums, strict=True)
         }
 
     try:
@@ -634,44 +700,64 @@ def run() -> int:
             client = training_clients[condition]
             ids = list(block["exampleIDs"])
             order = deterministic_order(ids, block_ordinal)
+            batches = optimizer_batches(order)
             contracts = contracts_by_condition[condition]
-            datums = datums_by_condition[condition]
             training_nll = 0.0
             training_weighted = 0
             update_started = time.monotonic()
             manifest["activeUpdate"] = {
                 "condition": condition,
                 "ordinal": block_ordinal,
-                "totalSteps": len(order),
+                "totalSteps": len(batches),
+                "totalExamples": len(order),
                 "completedStepsNotCheckpointed": 0,
                 "replayAllowed": False,
             }
             atomic_json(manifest_path, manifest)
-            for position, example_id in enumerate(order, 1):
-                contract = contracts[example_id]
+            for position, batch_ids in enumerate(batches, 1):
+                raw_contracts = [contracts[value] for value in batch_ids]
+                normalized_contracts, batch_target_tokens, token_weight = (
+                    micro_normalized_batch_contracts(raw_contracts)
+                )
+                batch_datums, _, _ = build_and_validate_sdk_datums(
+                    normalized_contracts
+                )
                 manifest["inflightOperation"] = {
-                    "kind": "forward_backward_and_optimizer_step",
+                    "kind": "micro_batch_forward_backward_and_optimizer_step",
                     "condition": condition,
                     "updateOrdinal": block_ordinal,
                     "position": position,
-                    "exampleID": example_id,
-                    "submittedPositions": contract.length,
+                    "exampleIDs": batch_ids,
+                    "examples": len(batch_ids),
+                    "lossBearingTargetTokens": batch_target_tokens,
+                    "perTargetTokenWeight": token_weight,
+                    "submittedPositions": sum(value.length for value in raw_contracts),
                     "replayAllowed": False,
                 }
                 atomic_json(manifest_path, manifest)
-                result = client.forward_backward([datums[example_id]], "cross_entropy").result()
-                logprobs = result.loss_fn_outputs[0]["logprobs"].tolist()
-                if len(logprobs) != contract.length:
-                    raise InklingContractError("training logprob length changed")
-                training_nll -= sum(
-                    float(logprob) * weight
-                    for logprob, weight in zip(logprobs, contract.weights, strict=True)
-                )
-                training_weighted += contract.weighted_positions
+                result = client.forward_backward(batch_datums, "cross_entropy").result()
+                if len(result.loss_fn_outputs) != len(raw_contracts):
+                    raise InklingContractError("training result batch size changed")
+                for raw_contract, output in zip(
+                    raw_contracts, result.loss_fn_outputs, strict=True
+                ):
+                    logprobs = output["logprobs"].tolist()
+                    if len(logprobs) != raw_contract.length:
+                        raise InklingContractError("training logprob length changed")
+                    training_nll -= sum(
+                        float(logprob)
+                        for logprob, weight in zip(
+                            logprobs, raw_contract.weights, strict=True
+                        )
+                        if weight
+                    )
+                    training_weighted += raw_contract.weighted_positions
                 client.optim_step(optimizer).result()
                 usage.training_calls += 1
                 usage.optimizer_steps += 1
-                usage.training_positions += contract.length
+                usage.training_positions += sum(
+                    value.length for value in raw_contracts
+                )
                 manifest.pop("inflightOperation", None)
                 manifest["activeUpdate"]["completedStepsNotCheckpointed"] = position
                 manifest["usage"] = usage.as_dict()
@@ -721,8 +807,11 @@ def run() -> int:
                 "trainedExampleCount": len(ids),
                 "trainedExampleIDsSHA256": hashlib.sha256(canonical_bytes(ids)).hexdigest(),
                 "exampleOrderSHA256": hashlib.sha256(canonical_bytes(order)).hexdigest(),
-                "trainingCalls": len(order),
-                "optimizerSteps": len(order),
+                "optimizerBatchExamples": TRAINING_CONTRACT["optimizerBatchExamples"],
+                "optimizerBatchSizes": [len(value) for value in batches],
+                "lossReduction": TRAINING_CONTRACT["lossReduction"],
+                "trainingCalls": len(batches),
+                "optimizerSteps": len(batches),
                 "submittedPositions": submitted,
                 "lossBearingTokenPresentations": training_weighted,
                 "meanPreUpdateNLL": training_nll / training_weighted,
@@ -743,7 +832,7 @@ def run() -> int:
             atomic_json(manifest_path, manifest)
             print(
                 f"inkling-update {block_ordinal}/{len(blocks)-1} "
-                f"condition={condition} steps={len(order)}",
+                f"condition={condition} steps={len(batches)} examples={len(order)}",
                 flush=True,
             )
 

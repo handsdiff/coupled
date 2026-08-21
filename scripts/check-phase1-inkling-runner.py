@@ -44,9 +44,9 @@ class Immediate:
 
 
 class Sequence:
-    def __init__(self, tokens):
+    def __init__(self, tokens, stop_reason="stop"):
         self.tokens = tokens
-        self.stop_reason = "stop"
+        self.stop_reason = stop_reason
 
 
 class Response:
@@ -55,14 +55,17 @@ class Response:
 
 
 class SamplingClient:
-    def __init__(self, completion_tokens):
+    def __init__(self, completion_tokens, stop_reason="stop"):
         self.completion_tokens = completion_tokens
+        self.stop_reason = stop_reason
 
     def compute_logprobs(self, model_input):
         return Immediate([-0.25] * len(model_input))
 
     def sample(self, **_):
-        return Immediate(Response(self.completion_tokens))
+        response = Response(self.completion_tokens)
+        response.sequences[0].stop_reason = self.stop_reason
+        return Immediate(response)
 
 
 class ModelInput:
@@ -112,6 +115,22 @@ def main() -> int:
     assert score_sequence[-1][1] == ARM_NAMES["reasoning_on"]["personalized"]
 
     first_id = blocks[1]["exampleIDs"][0]
+    raw_contracts = [
+        runner.datum_contract(value)
+        for value in load_jsonl(pack_path / "reasoning_off-packed-examples.jsonl")[:8]
+    ]
+    normalized, target_tokens, token_weight = (
+        runner.micro_normalized_batch_contracts(raw_contracts)
+    )
+    assert len(runner.optimizer_batches([value.example_id for value in raw_contracts])) == 1
+    assert target_tokens == sum(value.weighted_positions for value in raw_contracts)
+    assert 0 < token_weight < 1
+    assert abs(sum(sum(value.weights) for value in normalized) - 1.0) < 1e-6
+    assert all(
+        {weight for weight in value.weights if weight} == {token_weight}
+        for value in normalized
+    )
+
     for condition, effort in REASONING_CONDITIONS.items():
         rows = {
             value["exampleID"]: value
@@ -140,7 +159,11 @@ def main() -> int:
         assert score["meanNLL"] == 0.25
         assert score["generationTemperature"] == GENERATION_CONTRACT["temperature"]
         assert score["generationSeed"] == GENERATION_CONTRACT["seed"]
-        assert score["generationTokenCeiling"] == GENERATION_CONTRACT["maximumTokens"]
+        assert score["generationTokenCeiling"] == GENERATION_CONTRACT[
+            "maximumTokensByCondition"
+        ][condition]
+        assert score["generationDisposition"] == "accepted"
+        assert score["generationEligibleForEvaluation"] is True
         assert score["targetLikelihoodLatencySeconds"] >= 0
         assert score["generationLatencySeconds"] >= 0
         assert score["latencySeconds"] >= score["targetLikelihoodLatencySeconds"]
@@ -148,12 +171,32 @@ def main() -> int:
         assert usage.training_calls == 0
 
     assert SamplingParams.observed
+    assert [value["max_tokens"] for value in SamplingParams.observed] == [
+        GENERATION_CONTRACT["maximumTokensByCondition"][condition]
+        for condition in REASONING_CONDITIONS
+    ]
     assert all(
         value["temperature"] == GENERATION_CONTRACT["temperature"]
         and value["seed"] == GENERATION_CONTRACT["seed"]
-        and value["max_tokens"] == GENERATION_CONTRACT["maximumTokens"]
         for value in SamplingParams.observed
     )
+
+    incomplete = runner.score_example(
+        sampling_client=SamplingClient([], stop_reason="length"),
+        tinker=Tinker,
+        condition="reasoning_on",
+        arm=ARM_NAMES["reasoning_on"]["frozen"],
+        block_id=blocks[1]["blockID"],
+        example=examples[first_id],
+        row=rows[first_id],
+        semantic_input="fixture semantic input",
+        checkpoint_id=None,
+        usage=runner.Usage(),
+        prices={"prefill": "0.58", "sample": "1.44"},
+    )
+    assert incomplete["generationDisposition"] == "truncated_without_valid_final"
+    assert incomplete["generationEligibleForEvaluation"] is False
+    assert incomplete["predictionMetrics"] is None
 
     with tempfile.TemporaryDirectory(prefix="phase1-inkling-audit-check-") as raw:
         temporary = Path(raw)
@@ -187,6 +230,10 @@ def main() -> int:
                     "parentOptimizerStatePath": parent[condition],
                     "optimizerStatePath": state,
                     "samplerCheckpointPath": sampler,
+                    "optimizerBatchSizes": [8, 8, 8, 8, 8, 8, 2],
+                    "trainingCalls": 7,
+                    "optimizerSteps": 7,
+                    "lossReduction": runner.TRAINING_CONTRACT["lossReduction"],
                 }
                 updates.append(update)
                 checkpoint_by_block_condition[(block["blockID"], condition)] = sampler
@@ -231,6 +278,16 @@ def main() -> int:
                     else checkpoint_by_block_condition[(prior_block[block_id], condition)]
                 ),
                 "reasoning": "" if condition == "reasoning_off" else "fixture",
+                "responseParse": {
+                    "status": "parsed",
+                    "prediction": target,
+                },
+                "generationTokenCeiling": GENERATION_CONTRACT[
+                    "maximumTokensByCondition"
+                ][condition],
+                "stopReason": "stop",
+                "generationDisposition": "accepted",
+                "generationEligibleForEvaluation": True,
                 "latencySeconds": 1.0,
                 "generationLatencySeconds": 0.75,
                 "targetLikelihoodLatencySeconds": 0.25,

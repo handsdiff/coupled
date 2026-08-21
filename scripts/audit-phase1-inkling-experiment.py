@@ -14,6 +14,7 @@ from typing import Any
 from phase1_experiment import canonical_bytes, target_text
 from phase1_inkling import (
     ARM_NAMES,
+    GENERATION_CONTRACT,
     INKLING_AUDIT_VERSION,
     INKLING_MODEL,
     INKLING_RUNNER_VERSION,
@@ -60,13 +61,30 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
     latencies = [float(value["latencySeconds"]) for value in rows]
     generation = [float(value["generationLatencySeconds"]) for value in rows]
     nll = [float(value["targetLikelihoodLatencySeconds"]) for value in rows]
+    accepted = [
+        value for value in rows if value["generationEligibleForEvaluation"]
+    ]
     return {
         "examples": len(rows),
+        "generationEligibleExamples": len(accepted),
+        "generationExcludedExamples": len(rows) - len(accepted),
+        "generationDispositions": {
+            disposition: sum(
+                value["generationDisposition"] == disposition for value in rows
+            )
+            for disposition in sorted(
+                {value["generationDisposition"] for value in rows}
+            )
+        },
         "macroExampleAverageNLL": statistics.mean(value["meanNLL"] for value in rows),
         "microTargetTokenNLL": sum(value["weightedNLLSum"] for value in rows) / weighted,
         "weightedTokens": weighted,
-        "generatedCompletion": summarize_prediction_metrics(
-            [value["predictionMetrics"] for value in rows]
+        "generatedCompletion": (
+            summarize_prediction_metrics(
+                [value["predictionMetrics"] for value in accepted]
+            )
+            if accepted
+            else None
         ),
         "reasoning": {
             "nonemptyResponses": sum(bool(value["reasoning"]) for value in rows),
@@ -160,8 +178,26 @@ def main() -> int:
         if update["effort"] != REASONING_CONDITIONS[condition]:
             raise InklingContractError("update effort differs")
         prior = latest_checkpoint.get(condition)
+        block = next(
+            value for value in blocks if value["blockID"] == update["afterBlockID"]
+        )
+        batch_size = plan["protocol"]["trainingContract"][
+            "optimizerBatchExamples"
+        ]
+        expected_batch_sizes = [
+            min(batch_size, len(block["exampleIDs"]) - start)
+            for start in range(0, len(block["exampleIDs"]), batch_size)
+        ]
         if update["parentOptimizerStatePath"] != prior:
             raise InklingContractError("optimizer checkpoint chain differs")
+        if not (
+            update.get("optimizerBatchSizes") == expected_batch_sizes
+            and update.get("trainingCalls") == len(expected_batch_sizes)
+            and update.get("optimizerSteps") == len(expected_batch_sizes)
+            and update.get("lossReduction")
+            == plan["protocol"]["trainingContract"]["lossReduction"]
+        ):
+            raise InklingContractError("optimizer batching or loss reduction differs")
         latest_checkpoint[condition] = update["optimizerStatePath"]
         update_by_block_condition[(update["afterBlockID"], condition)] = update
     if set(latest_checkpoint) != set(REASONING_CONDITIONS):
@@ -175,10 +211,27 @@ def main() -> int:
         condition = score["condition"]
         row = rows_by_condition[condition][score["exampleID"]]
         expected_target = target_text(example_by_id[score["exampleID"]]["target"])
-        expected_metrics = score_prediction(
-            expected_target,
-            score["prediction"],
-            target_paste_actions=row["pasteActionCount"],
+        valid_final = (
+            score.get("responseParse", {}).get("status") == "parsed"
+            and bool(score["prediction"])
+        )
+        expected_disposition = (
+            "accepted"
+            if valid_final
+            else (
+                GENERATION_CONTRACT["tokenCapWithoutValidFinalDisposition"]
+                if score["stopReason"] == "length"
+                else GENERATION_CONTRACT["missingFinalDisposition"]
+            )
+        )
+        expected_metrics = (
+            score_prediction(
+                expected_target,
+                score["prediction"],
+                target_paste_actions=row["pasteActionCount"],
+            )
+            if valid_final
+            else None
         )
         kind = "personalized" if score["arm"].startswith("personalized_") else "frozen"
         expected_arm = ARM_NAMES[condition][kind]
@@ -192,6 +245,10 @@ def main() -> int:
             and score["semanticModelInputSHA256"] == row["semanticModelInputSHA256"]
             and score["weightedTokenCount"] == row["targetTokenCount"]
             and score["predictionMetrics"] == expected_metrics
+            and score["generationDisposition"] == expected_disposition
+            and score["generationEligibleForEvaluation"] == valid_final
+            and score["generationTokenCeiling"]
+            == GENERATION_CONTRACT["maximumTokensByCondition"][condition]
             and (
                 score["checkpointID"] is None
                 if kind == "frozen"
@@ -248,6 +305,8 @@ def main() -> int:
             fieldnames=[
                 "arm",
                 "examples",
+                "generation_eligible_examples",
+                "generation_excluded_examples",
                 "micro_target_token_nll",
                 "macro_character_similarity",
                 "exact_match_rate",
@@ -264,10 +323,26 @@ def main() -> int:
             writer.writerow({
                 "arm": arm,
                 "examples": summary["examples"],
+                "generation_eligible_examples": summary[
+                    "generationEligibleExamples"
+                ],
+                "generation_excluded_examples": summary[
+                    "generationExcludedExamples"
+                ],
                 "micro_target_token_nll": summary["microTargetTokenNLL"],
-                "macro_character_similarity": generated["macroNormalizedLevenshteinSimilarity"],
-                "exact_match_rate": generated["exactMatchRate"],
-                "correct_prefix_mean_characters": generated["correctPrefix"]["meanCharactersPerExample"],
+                "macro_character_similarity": (
+                    None
+                    if generated is None
+                    else generated["macroNormalizedLevenshteinSimilarity"]
+                ),
+                "exact_match_rate": (
+                    None if generated is None else generated["exactMatchRate"]
+                ),
+                "correct_prefix_mean_characters": (
+                    None
+                    if generated is None
+                    else generated["correctPrefix"]["meanCharactersPerExample"]
+                ),
                 "median_latency_seconds": summary["latency"]["medianSeconds"],
                 "mean_latency_seconds": summary["latency"]["meanSeconds"],
                 "estimated_query_cost_usd": summary["estimatedProviderCostUSDAtFrozenRates"],

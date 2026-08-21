@@ -85,6 +85,7 @@ python3 -m py_compile \
   "$project_dir/scripts/prepare-phase1-inkling-experiment.py" \
   "$project_dir/scripts/preflight-phase1-inkling.py" \
   "$project_dir/scripts/run-phase1-inkling-prequential.py" \
+  "$project_dir/scripts/run-phase1-inkling-smoke.py" \
   "$project_dir/scripts/audit-phase1-inkling-experiment.py" \
   "$project_dir/scripts/check-phase1-inkling.py" \
   "$project_dir/scripts/check-phase1-inkling-runner.py" \

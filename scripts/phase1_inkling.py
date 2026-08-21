@@ -13,11 +13,11 @@ from phase1_experiment import canonical_bytes
 
 
 INKLING_MODEL = "thinkingmachines/Inkling-Small"
-INKLING_CONTRACT_VERSION = "phase1-inkling-contract-v1"
+INKLING_CONTRACT_VERSION = "phase1-inkling-contract-v2"
 INKLING_PACK_VERSION = "phase1-inkling-pack-v1"
-INKLING_PLAN_VERSION = "phase1-inkling-plan-v1"
-INKLING_RUNNER_VERSION = "phase1-inkling-prequential-v1"
-INKLING_AUDIT_VERSION = "phase1-inkling-audit-v1"
+INKLING_PLAN_VERSION = "phase1-inkling-plan-v2"
+INKLING_RUNNER_VERSION = "phase1-inkling-prequential-v2"
+INKLING_AUDIT_VERSION = "phase1-inkling-audit-v2"
 REASONING_CONDITIONS = {
     "reasoning_off": 0.0,
     "reasoning_on": 0.9,
@@ -35,7 +35,13 @@ ARM_NAMES = {
 GENERATION_CONTRACT = {
     "temperature": 0.6,
     "seed": 17,
-    "maximumTokens": 512,
+    "maximumTokensByCondition": {
+        "reasoning_off": 512,
+        "reasoning_on": 16384,
+    },
+    "validFinalAnswerRequired": True,
+    "tokenCapWithoutValidFinalDisposition": "truncated_without_valid_final",
+    "missingFinalDisposition": "missing_valid_final",
 }
 TRAINING_CONTRACT = {
     "algorithm": "lora",
@@ -44,7 +50,13 @@ TRAINING_CONTRACT = {
     "trainAttention": True,
     "trainMLP": True,
     "trainUnembedding": True,
-    "batchExamplesPerForwardBackward": 1,
+    "optimizerBatchExamples": 8,
+    "partialFinalBatchAllowed": True,
+    "lossReduction": {
+        "name": "micro_target_token_average_per_optimizer_batch",
+        "relativeEpisodeWeighting": "proportional_to_loss_bearing_target_tokens",
+        "targetTokenWeight": "1 / loss_bearing_target_tokens_in_optimizer_batch",
+    },
     "epochsPerNewBlockUpdate": 1,
     "optimizer": {
         "type": "adam",

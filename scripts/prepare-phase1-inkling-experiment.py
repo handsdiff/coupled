@@ -102,7 +102,9 @@ def main() -> int:
             value["modelInputTokenCount"] for value in evaluation
         )
         sampled = (
-            2 * len(evaluation) * GENERATION_CONTRACT["maximumTokens"]
+            2
+            * len(evaluation)
+            * GENERATION_CONTRACT["maximumTokensByCondition"][condition]
         )
         condition_updates = []
         condition_training = 0
@@ -121,6 +123,15 @@ def main() -> int:
                 "epochs": 1,
                 "submittedPositions": submitted,
                 "lossBearingTokenPresentations": loss,
+                "optimizerBatchExamples": TRAINING_CONTRACT[
+                    "optimizerBatchExamples"
+                ],
+                "optimizerSteps": (
+                    len(block_ids)
+                    + TRAINING_CONTRACT["optimizerBatchExamples"]
+                    - 1
+                )
+                // TRAINING_CONTRACT["optimizerBatchExamples"],
             })
         operations[condition] = {
             "effort": REASONING_CONDITIONS[condition],
@@ -131,7 +142,15 @@ def main() -> int:
             "nllPrefillTokens": nll_prefill,
             "generationPrefillTokens": generation_prefill,
             "sampledTokenCeiling": sampled,
-            "trainingCalls": sum(len(value) for value in update_ids_by_block),
+            "trainingCalls": sum(
+                (
+                    len(value)
+                    + TRAINING_CONTRACT["optimizerBatchExamples"]
+                    - 1
+                )
+                // TRAINING_CONTRACT["optimizerBatchExamples"]
+                for value in update_ids_by_block
+            ),
             "trainingSubmittedPositions": condition_training,
             "lossBearingTokenPresentations": condition_loss,
             "optimizerStateCheckpointSaves": len(blocks) - 1,
