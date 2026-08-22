@@ -98,7 +98,13 @@ python3 -m py_compile \
   "$project_dir/scripts/run-phase1-context-window-ablation.py" \
   "$project_dir/scripts/run-phase1-context-window-sequence.py" \
   "$project_dir/scripts/audit-phase1-context-window-ablation.py" \
-  "$project_dir/scripts/check-phase1-context-window-ablation.py"
+  "$project_dir/scripts/check-phase1-context-window-ablation.py" \
+  "$project_dir/scripts/phase1_qwen35_native.py" \
+  "$project_dir/scripts/prepare-phase1-qwen35-experiment.py" \
+  "$project_dir/scripts/audit-phase1-qwen35-experiment.py" \
+  "$project_dir/scripts/run-phase1-qwen35-preflight.py" \
+  "$project_dir/scripts/run-phase1-qwen35-experiment.py" \
+  "$project_dir/scripts/check-phase1-qwen35-contract.py"
 
 PYTHONPYCACHEPREFIX="$project_dir/.build/python-cache" \
 python3 "$project_dir/scripts/check-phase1-training-contract.py"
@@ -132,4 +138,7 @@ if [[ -x "$project_dir/.build/inkling-arm64-venv/bin/python" ]]; then
   PYTHONPYCACHEPREFIX="$project_dir/.build/python-cache" \
   "$project_dir/.build/inkling-arm64-venv/bin/python" \
     "$project_dir/scripts/check-phase1-inkling-stability.py"
+  PYTHONPYCACHEPREFIX="$project_dir/.build/python-cache" \
+  "$project_dir/.build/inkling-arm64-venv/bin/python" \
+    "$project_dir/scripts/check-phase1-qwen35-contract.py"
 fi
