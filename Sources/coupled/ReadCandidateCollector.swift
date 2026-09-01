@@ -24,6 +24,7 @@ final class ReadCandidateCollector {
     private var lastWindowLookupTimestamp: UInt64 = 0
     private var latestMutatingInputBySurface: [ReadMutationSurfaceKey: ReadMutationBoundary] = [:]
     private var reportedCaptureError = false
+    private let accessibilitySurfaceProbe = ReadAccessibilitySurfaceProbe()
 
     init(
         configuration: Configuration,
@@ -63,6 +64,7 @@ final class ReadCandidateCollector {
             writeDiagnostic("viewport crop removes \(Int((configuration.viewportSideCropFraction * 100).rounded()))% from each side, \(Int((configuration.viewportTopCropFraction * 100).rounded()))% from the top, and \(Int((configuration.viewportBottomCropFraction * 100).rounded()))% from the bottom")
             writeDiagnostic("normalized line overlap is removed between adjacent OCR viewports in the same app/window/display")
             writeDiagnostic("Chrome auxiliary surfaces are retained raw and suppressed from derived reads")
+            writeDiagnostic("raw READ evidence includes a bounded metadata-only Accessibility ancestor chain at the interaction point")
             if configuration.retainScreenshots {
                 writeDiagnostic("full-window PNG evidence: \(configuration.screenshotsDirectory)")
             }
@@ -300,6 +302,10 @@ final class ReadCandidateCollector {
         let rawObservationID = UUID().uuidString
         let surfaceResolvedAt = surface.resolvedAt
         let settledAt = nowTimestamp()
+        let accessibilitySurface = accessibilitySurfaceProbe.capture(
+            at: CGPoint(x: pending.lastX, y: pending.lastY),
+            expectedProcessIdentifier: surface.processIdentifier
+        )
         SCScreenshotManager.captureImage(in: windowBounds) { [weak self] image, error in
             guard let self else { return }
             let capturedAt = nowTimestamp()
@@ -359,7 +365,8 @@ final class ReadCandidateCollector {
                                 surfaceChangedDuringCapture: surfaceChangedDuringCapture,
                                 captureBounds: captureBounds,
                                 recognized: recognized,
-                                retainedScreenshot: retainedScreenshot
+                                retainedScreenshot: retainedScreenshot,
+                                accessibilitySurface: accessibilitySurface
                             )
                         }
                     } catch {
@@ -383,7 +390,8 @@ final class ReadCandidateCollector {
         surfaceChangedDuringCapture: Bool,
         captureBounds: CGRect,
         recognized: RecognizedScreenText,
-        retainedScreenshot: RetainedScreenshot?
+        retainedScreenshot: RetainedScreenshot?,
+        accessibilitySurface: RawReadAccessibilitySurfaceProbe
     ) {
         guard !configuration.isPaused() else { return }
         let supersedingWrite = supersedingWriteInput(
@@ -441,7 +449,8 @@ final class ReadCandidateCollector {
                         appName: surface.appName,
                         bundleIdentifier: surface.bundleIdentifier,
                         processIdentifier: surface.processIdentifier,
-                        triggerSurface: pending.surfaceRecord
+                        triggerSurface: pending.surfaceRecord,
+                        accessibilitySurface: accessibilitySurface
                     )
                 )
                 sourceRecordIDs = [rawObservationID]
@@ -1035,7 +1044,7 @@ private struct ScreenReadRecord: Encodable {
 }
 
 private struct RawScreenReadRecord: Encodable {
-    let schemaVersion = 6
+    let schemaVersion = 7
     let recordType = "screen_ocr_observation"
     let recordID: String
     let observedAt: String
@@ -1074,6 +1083,7 @@ private struct RawScreenReadRecord: Encodable {
     let bundleIdentifier: String?
     let processIdentifier: Int32
     let triggerSurface: ReadSurfaceRecord
+    let accessibilitySurface: RawReadAccessibilitySurfaceProbe
 }
 
 private struct RecognizedScreenText {

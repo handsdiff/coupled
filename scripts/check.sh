@@ -112,6 +112,7 @@ python3 -m py_compile \
   "$project_dir/scripts/check-phase1-read-surface.py" \
   "$project_dir/scripts/build-phase1-read-surface-evidence.py" \
   "$project_dir/scripts/audit-phase1-read-surface-evidence.py" \
+  "$project_dir/scripts/audit-read-accessibility-surfaces.py" \
   "$project_dir/scripts/prepare-phase1-conditioning-diagnostic.py" \
   "$project_dir/scripts/audit-phase1-conditioning-diagnostic.py" \
   "$project_dir/scripts/run-phase1-conditioning-diagnostic.py"
