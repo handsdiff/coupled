@@ -1,0 +1,181 @@
+{
+  "artifactDigestsSHA256": {
+    "adjudications": "24591be03ff69194b575ca2937beaeadfa2d2137893647e3d8414c09419e911f",
+    "gptReview": "b0726e32aebc3ea28dc79261ae3d09342d6caacedcc03e6eea02453156f301e4",
+    "newGPTScores": "fd620f9fab6ba5bee752d88ffc545b7f1db27d6aa4b93c5cc4c29d195526e2f1",
+    "oldGPTScores": "6dda7a8943e1be4403c169d32f928aa897ccc17b30d1c6924003f9281f85684f",
+    "qwen35Scores": "f43c0507e75fa372d28c0559a38df726ff812eac08e527fa1673dc84f89f22bb",
+    "qwen36Scores": "ae46c68f91ab46a91aa00bd5a764b9eb2f3dfee5031287f65b92868d7d71a727",
+    "qwenReview": "0e3c0beb93de5fed6e135fd007a84bc0c9e204a9be2db360d6d8287ce8309a94",
+    "timing": "5956df2812deb00f98163201597f447f7951a73bef3ea5ba83ae1e052b812991"
+  },
+  "artifactType": "phase1_human_timing_scorecard",
+  "corpusID": "episode_corpus_471c4755b6ab5251d0466eeb3dd4bed9140db5ae67958922ecae28c3a21f57ee",
+  "denominators": {
+    "allSubstantiveExamples": 397,
+    "prospectiveExamples": 400,
+    "realTimeUtilityEligibleExamples": 378,
+    "timingReconstructedExamples": 400
+  },
+  "interpretation": "existing generations use target-onset destination and cursor conditioning; timing is a retrospective latency projection and destination routing remains deferred",
+  "models": {
+    "frozen_qwen35": {
+      "label": "Frozen Qwen3.5-35B-A3B-Base",
+      "realTimePassOrdinals": [],
+      "semanticPassOrdinals": [],
+      "summary": {
+        "costNote": "generation only",
+        "costUSD": 7.16621043,
+        "exactMatches": 0,
+        "examples": 400,
+        "family": "Qwen3.5",
+        "key": "frozen_qwen35",
+        "label": "Frozen Qwen3.5-35B-A3B-Base",
+        "meanCharacterSimilarity": 0.07911252022456412,
+        "meanLatencySeconds": 4.037392257478786,
+        "medianLatencySeconds": 2.806190229486674,
+        "personalized": false,
+        "realTimeEligibleExamples": 378,
+        "realtimePasses": 0,
+        "realtimeRate": 0.0,
+        "semanticExamples": 397,
+        "semanticPasses": 0,
+        "semanticRate": 0.0
+      }
+    },
+    "frozen_qwen36": {
+      "label": "Frozen Qwen3.6-35B-A3B",
+      "realTimePassOrdinals": [
+        326
+      ],
+      "semanticPassOrdinals": [
+        326
+      ],
+      "summary": {
+        "costNote": "generation only",
+        "costUSD": 7.095221805,
+        "exactMatches": 0,
+        "examples": 400,
+        "family": "Qwen3.6",
+        "key": "frozen_qwen36",
+        "label": "Frozen Qwen3.6-35B-A3B",
+        "meanCharacterSimilarity": 0.10973795536803456,
+        "meanLatencySeconds": 3.058282362750033,
+        "medianLatencySeconds": 2.5312079791910946,
+        "personalized": false,
+        "realTimeEligibleExamples": 378,
+        "realtimePasses": 1,
+        "realtimeRate": 0.0026455026455026454,
+        "semanticExamples": 397,
+        "semanticPasses": 1,
+        "semanticRate": 0.0025188916876574307
+      }
+    },
+    "gpt56": {
+      "label": "GPT-5.6 Sol xhigh · 32K",
+      "realTimePassOrdinals": [
+        187,
+        192,
+        202,
+        275,
+        350
+      ],
+      "semanticPassOrdinals": [
+        156,
+        186,
+        187,
+        192,
+        202,
+        275,
+        350
+      ],
+      "summary": {
+        "costNote": "API-equivalent; subscription route had no marginal invoice",
+        "costUSD": 75.84488,
+        "exactMatches": 5,
+        "examples": 400,
+        "family": "GPT-5.6",
+        "key": "gpt56",
+        "label": "GPT-5.6 Sol xhigh · 32K",
+        "meanCharacterSimilarity": 0.21256620400805962,
+        "meanLatencySeconds": 27.719896174613385,
+        "medianLatencySeconds": 16.58499095821753,
+        "personalized": false,
+        "realTimeEligibleExamples": 378,
+        "realtimePasses": 5,
+        "realtimeRate": 0.013227513227513227,
+        "semanticExamples": 397,
+        "semanticPasses": 7,
+        "semanticRate": 0.017632241813602016
+      }
+    },
+    "personalized_qwen35": {
+      "label": "Personalized Qwen3.5-35B-A3B-Base",
+      "realTimePassOrdinals": [
+        326,
+        439
+      ],
+      "semanticPassOrdinals": [
+        326,
+        439
+      ],
+      "summary": {
+        "costNote": "includes continual training",
+        "costUSD": 22.35494452,
+        "exactMatches": 0,
+        "examples": 400,
+        "family": "Qwen3.5",
+        "key": "personalized_qwen35",
+        "label": "Personalized Qwen3.5-35B-A3B-Base",
+        "meanCharacterSimilarity": 0.2207910174929801,
+        "meanLatencySeconds": 3.0316956548101732,
+        "medianLatencySeconds": 2.3411773750558496,
+        "personalized": true,
+        "realTimeEligibleExamples": 378,
+        "realtimePasses": 2,
+        "realtimeRate": 0.005291005291005291,
+        "semanticExamples": 397,
+        "semanticPasses": 2,
+        "semanticRate": 0.005037783375314861
+      }
+    },
+    "personalized_qwen36": {
+      "label": "Personalized Qwen3.6-35B-A3B",
+      "realTimePassOrdinals": [],
+      "semanticPassOrdinals": [],
+      "summary": {
+        "costNote": "includes continual training",
+        "costUSD": 22.35076864,
+        "exactMatches": 0,
+        "examples": 400,
+        "family": "Qwen3.6",
+        "key": "personalized_qwen36",
+        "label": "Personalized Qwen3.6-35B-A3B",
+        "meanCharacterSimilarity": 0.23428454221548345,
+        "meanLatencySeconds": 2.993935299895238,
+        "medianLatencySeconds": 2.610317416721955,
+        "personalized": true,
+        "realTimeEligibleExamples": 378,
+        "realtimePasses": 0,
+        "realtimeRate": 0.0,
+        "semanticExamples": 397,
+        "semanticPasses": 0,
+        "semanticRate": 0.0
+      }
+    }
+  },
+  "schemaVersion": 2,
+  "timingConversionVersion": "phase1-human-timing-v2",
+  "timingFormula": {
+    "caveat": "These saved predictions used the destination and cursor observed at target onset. The timing result is retrospective; destination routing remains deferred to Phase 2.",
+    "formula": "human time = final contributing mutation - latest material READ/closed-WRITE boundary",
+    "mentalEvaluationSeconds": 1.35,
+    "minimumNetSavingsSeconds": 1.0,
+    "modelStartFormula": "if required context is still processing at sample time, model generation begins when it becomes available",
+    "readingWordsPerMinute": 238.0,
+    "realTimeFormula": "a real-time pass is a semantic pass whose generation plus review/accept time beats completed human writing by more than 1 second",
+    "sampleFormula": "sample once, 3 seconds after that material boundary; focus, routing, and target expression do not reset it",
+    "secondsPerShortcutKeystroke": 0.2,
+    "shortcutKeystrokes": 4
+  }
+}
