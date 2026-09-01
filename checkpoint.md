@@ -174,6 +174,13 @@ they derive from session ID, ordered raw lineage, and output ordinal.
 `reduction.json` binds the session, raw stream, read-surface evidence, finalized
 events, and unresolved records by SHA-256.
 
+The full-session v11 replay on `phase1-ordinary-work-2026-08-31-1` audited all
+1,337 raw screen observations: 1,334 produced surface evidence and three were
+explicitly unresolved. Semantic v11 retained 1,138 READs versus v10's 1,041,
+while all 248 WRITE semantics remained identical. Two v11 reductions were
+byte-identical. Causal v14 then produced 211 examples, 37 target exclusions,
+zero context exclusions, and zero rejected events; the causal audit passed.
+
 Against `ordinary-work-audit-3`, semantic v3 recovered both Gemini submissions
 from synchronous pre-Return observations, rejected the impossible 3,263-character
 Obsidian expansion from a delete-only burst, produced 303 READs and 186 WRITEs,
