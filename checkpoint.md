@@ -2416,3 +2416,67 @@ coupled-data/phase1-gpt56-context-packs-v2-32k-128k-20260821
 coupled-data/phase1-gpt56-context-window-plan-v2-32k-128k-20260821.json
 SHA-256 bd8e13d6d9ace9c1234d696178696b5af88026c56035b165bb5598af40222570
 ```
+
+## Human/model timing and usefulness scoring
+
+The current offline evaluation keeps prediction quality and timing as separate
+questions. Semantic "holy shit" scoring asks whether the completion content
+would have been a genuinely valuable prediction of the substantive target. It
+uses every substantive example and is not filtered by latency or reconstructed
+time. Real-time "holy shit" is the subset of semantic passes for which the
+saved generation, estimated reading/evaluation/acceptance interaction, and a
+one-second minimum benefit fit before the human's final contributing mutation.
+
+Human timing is reconstructed only from material canonical READ/WRITE history
+and raw evidence:
+
+- a READ boundary is its raw `lastActivityAt`; its model-visible availability
+  remains the OCR observation time;
+- a prior WRITE boundary is its final contributing mutation, extended through
+  a confirmed submission when the closed episode ended by submission;
+- focus, pointer movement, application routing, duplicate or suppressed OCR,
+  and the target's own mutation sequence do not reset the boundary;
+- a genuinely new canonical READ or completed prior WRITE does reset it;
+- `humanStartAt` is that material boundary and `humanFinishedAt` is the target's
+  final contributing mutation;
+- `modelSampleAt = humanStartAt + 3 seconds` and
+  `modelStartAt = max(modelSampleAt, requiredContextAvailableAt)`.
+
+The implementation is intentionally one path rather than a family of
+intermediate strategies: `scripts/phase1_human_timing.py` contains the reducer
+and real-time formula, `scripts/build-phase1-human-timing.py` materializes the
+artifact, and `scripts/check-phase1-human-timing.py` covers material READ/WRITE
+boundaries, OCR readiness, non-material activity, submission closure, samples
+that fall during expression, unknown timing, and the real-time utility rule.
+The main no-network check invokes these regressions.
+
+For the 400 prospective examples in the current 450-example corpus, all 400
+have reconstructable timing: 329 projected samples occur before writing, 68
+during writing, and three after writing finishes. Of 397 substantive examples,
+378 have enough reconstructed time for an ideal zero-generation-latency
+suggestion to save more than one second after estimated interaction. Long gaps
+remain visible wall-clock estimates because they can include away time or
+other unobserved inactivity; they are not silently capped or treated as
+stronger semantic evidence.
+
+Authoritative derived artifacts:
+
+```text
+episode-review/phase1-full-450-human-timing.json
+episode-review/phase1-full-450-human-timing-scorecard.json
+```
+
+The scorecard currently reports semantic / real-time passes as follows:
+
+- frozen Qwen3.5-35B-A3B-Base: `0 / 0`;
+- personalized Qwen3.5-35B-A3B-Base: `2 / 2`;
+- frozen Qwen3.6-35B-A3B: `1 / 1`;
+- personalized Qwen3.6-35B-A3B: `0 / 0`;
+- GPT-5.6 Sol xhigh at 32K: `7 / 5`.
+
+These saved generations used destination/cursor state observed at target onset.
+The timing result is therefore a retrospective latency projection, not evidence
+that a live system knew the destination at `modelSampleAt`. The probabilistic
+application/field router, compatible sample-time conditioning, live display,
+and suggestion-conditioned feedback loop remain Phase 2 work. They are not
+implemented or smuggled into the Phase 1 content-quality score.
