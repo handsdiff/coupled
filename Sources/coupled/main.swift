@@ -40,8 +40,8 @@ REDUCE / COMPILE OPTIONS
   --input PATH                 Session (reduce) or finalized reduction (compile)
   --source PATH                Raw session used by a finalized reduction (compile)
   --output PATH                Fresh directory for compiled dataset files
-  --reducer-version NAME       Semantic reducer name (default: phase1-semantic-v12)
-  --read-surface-evidence PATH Hash-bound READ surface evidence (required by semantic v11/v12)
+  --reducer-version NAME       Semantic reducer name (default: phase1-semantic-v13)
+  --read-surface-evidence PATH Hash-bound READ surface evidence (required by semantic v11-v13)
   --conversion-version NAME    Frozen conversion name (default: phase1-causal-v14)
   --include-timestamps-in-context
                                Include availableAt in serialized context events

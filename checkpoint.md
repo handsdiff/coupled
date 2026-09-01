@@ -162,9 +162,9 @@ rectangular screenshot.
 ## Implemented semantic reduction and causal compilation
 
 Current compiler: `phase1-causal-v14`
-Current reducer: `phase1-semantic-v12`
+Current reducer: `phase1-semantic-v13`
 
-Semantic v12 consumes `session.json`, `raw.jsonl`, and immutable read-surface
+Semantic v13 consumes `session.json`, `raw.jsonl`, and immutable read-surface
 evidence derived from retained full-window screenshots. Schema-7 sessions
 require the manually reviewed, application-neutral `ax-pane-read-v2` rule:
 semantic AX containers are preferred, then repeated pane geometry, then the
@@ -178,6 +178,13 @@ effect. Event IDs remain stable across reducer versions because they derive
 from session ID, ordered raw lineage, and output ordinal. `reduction.json` binds
 the session, raw stream, read-surface evidence, finalized events, and unresolved
 records by SHA-256.
+
+Semantic v13 also makes adjacent-READ overlap pane-aware. Its overlap identity
+combines process, window, and display with a deterministic signature of the
+selected AX pane's normalized geometry and semantic metadata. Consecutive
+observations in the same pane still remove exact scrolling overlap; moving
+between panes in one window resets overlap. This is an offline interpretation
+change only. Schema-7 raw capture already retains all required evidence.
 
 The promotion gate used all 19 schema-7 observations in
 `phase1-ax-pane-validation-1` across VS Code, ChatGPT, Obsidian, and Chrome.
@@ -932,13 +939,13 @@ comparable target-token NLL through the subscription interface.
 
 ### Before the next authoritative collection
 
-Treat `phase1-semantic-v12`, `phase1-causal-v14`, the one-second READ delay,
+Treat `phase1-semantic-v13`, `phase1-causal-v14`, the one-second READ delay,
 three-second WRITE delay, zero fixed preview crops, retained full-window
 screenshots, and schema-7 AX ancestry as the candidate baseline.
 
 1. Run normal work without changing collector rules mid-session.
 2. Build and audit immutable `ax-pane-read-v2` evidence from schema-7 retained full-window screenshots; use `pointer-local-read-v1` only for older sessions.
-3. Reduce the raw session with `phase1-semantic-v12` plus that evidence; inspect finalized events, fallback dispositions, and every non-event disposition.
+3. Reduce the raw session with `phase1-semantic-v13` plus that evidence; inspect finalized events, fallback dispositions, and every non-event disposition.
 4. Compile the finalized reduction with `phase1-causal-v14`, supplying the raw session directory for hash and lineage verification.
 5. Manually sample the temporal trace against the actual work and record Phase 1's fidelity categories: missing events, temporal-ordering errors, incorrect content inclusion, authorship errors, write-boundary disagreement, destination ambiguity, and future leakage.
 6. Quantify reducer unresolved reasons plus target/context exclusions. Fix only recurrent material errors demonstrated by that trace; otherwise freeze the collector/reducer/compiler versions.

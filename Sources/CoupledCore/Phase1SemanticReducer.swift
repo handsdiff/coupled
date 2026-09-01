@@ -231,7 +231,9 @@ public struct Phase1SemanticReducer {
         let overlapResult = applySemanticReadOverlap(
             candidates: authorshipReadResult.events,
             writeBoundaries: writeOverlapBoundaries,
-            sessionID: sessionID
+            sessionID: sessionID,
+            paneAwareSurfaceIdentity: configuration.reducerVersion
+                == "phase1-semantic-v13"
         )
         dispositions.append(contentsOf: overlapResult.dispositions)
         var events = overlapResult.events.sorted { $0.rawLine < $1.rawLine }.map(\.event)
@@ -296,6 +298,10 @@ public struct Phase1SemanticReducer {
             "fastStartRule": "adjacent target-changing attempts whose typed-input count exactly explains the later prefilled prefix remain history-only with explicit target ineligibility",
             "promptClosureRule": "a settled WRITE gains a submission boundary only from a linked raw post-action observation whose terminal hash and pre-action state match, whose action is unmodified Return or has a semantic submission term anywhere on the bounded clicked AX ancestor chain, and whose same-surface field clears, restores its placeholder, or disappears",
             "readOverlapOrdering": "READ capturedAt with finalized WRITE beganAt boundaries; raw append order ignored",
+            "readOverlapSurfaceIdentity": configuration.reducerVersion
+                == "phase1-semantic-v13"
+                ? "process + window + display + stable selected AX pane; a pane change resets adjacent overlap"
+                : "process + window + display",
             "previewAuthority": false,
         ]
         if let readSurfaceEvidence {
@@ -364,14 +370,14 @@ private func loadReadSurfaceEvidence(
     switch configuration.reducerVersion {
     case "phase1-semantic-v11":
         expectedRuleVersion = "pointer-local-read-v1"
-    case "phase1-semantic-v12":
+    case "phase1-semantic-v12", "phase1-semantic-v13":
         expectedRuleVersion = rawScreenOCRSchema >= 7
             ? "ax-pane-read-v2"
             : "pointer-local-read-v1"
     default:
         guard configuration.readSurfaceEvidenceDirectory == nil else {
             throw Phase1SemanticReducerError.invalidManifest(
-                "--read-surface-evidence requires phase1-semantic-v11 or phase1-semantic-v12"
+                "--read-surface-evidence requires phase1-semantic-v11, phase1-semantic-v12, or phase1-semantic-v13"
             )
         }
         return nil
@@ -1531,7 +1537,8 @@ private enum ReducerTimestampParser {
 private func applySemanticReadOverlap(
     candidates: [ReducerCandidate],
     writeBoundaries: [ReducerWriteBoundary],
-    sessionID: String
+    sessionID: String,
+    paneAwareSurfaceIdentity: Bool
 ) -> ReducerOverlapResult {
     enum TimelineItem {
         case candidate(Int)
@@ -1574,7 +1581,10 @@ private func applySemanticReadOverlap(
             accepted.append(candidate)
             continue
         }
-        let context = "\(intValue(candidate.raw["processIdentifier"]) ?? -1)|\(intValue(candidate.raw["windowID"]) ?? -1)|\(intValue(candidate.raw["displayID"]) ?? -1)"
+        var context = "\(intValue(candidate.raw["processIdentifier"]) ?? -1)|\(intValue(candidate.raw["windowID"]) ?? -1)|\(intValue(candidate.raw["displayID"]) ?? -1)"
+        if paneAwareSurfaceIdentity {
+            context += "|pane:\(readOverlapPaneIdentity(candidate.raw))"
+        }
         let original = stringValue(candidate.raw["content"]) ?? ""
         guard let emitted = deduplicator.contentToEmit(
             contextIdentifier: context,
@@ -1613,6 +1623,59 @@ private func applySemanticReadOverlap(
         accepted.append(candidate)
     }
     return ReducerOverlapResult(events: accepted, dispositions: dispositions)
+}
+
+/// Returns a deterministic logical identity for the AX pane selected by the
+/// immutable READ-surface artifact. Geometry is normalized to the captured
+/// window, so moving the window does not change the identity. We deliberately
+/// do not use AX elementHash: Electron can recreate an equivalent AX object,
+/// while its semantic role, label, and pane geometry remain stable.
+private func readOverlapPaneIdentity(_ raw: [String: Any]) -> String {
+    guard let readSurface = raw["readSurface"] as? [String: Any],
+          stringValue(readSurface["ruleVersion"]) == "ax-pane-read-v2" else {
+        return "legacy-window-surface"
+    }
+    guard let selection = readSurface["surfaceSelection"] as? [String: Any]
+    else {
+        // Missing v2 selection means the pane is not proven. A unique identity
+        // conservatively retains the READ instead of deduplicating across an
+        // unknown pane boundary.
+        return "unresolved-\(stringValue(raw["recordID"]) ?? "unknown")"
+    }
+
+    let selectedDepth = intValue(selection["selectedDepth"])
+    var selectedNode: [String: Any]?
+    if let selectedDepth,
+       let surface = raw["accessibilitySurface"] as? [String: Any],
+       let ancestors = surface["ancestors"] as? [[String: Any]] {
+        selectedNode = ancestors.first {
+            intValue($0["depth"]) == selectedDepth
+        }
+    }
+    let region = selection["regionOfInterest"] as? [String: Any]
+        ?? readSurface["regionOfInterest"] as? [String: Any]
+    func normalizedNumber(_ value: Any?) -> String {
+        guard let number = doubleValue(value) else { return "-" }
+        return String(
+            format: "%.6f", locale: Locale(identifier: "en_US_POSIX"), number
+        )
+    }
+    let method = stringValue(selection["method"]) ?? "unknown-method"
+    let depth = selectedDepth.map(String.init) ?? "-"
+    let role = stringValue(selection["selectedRole"])
+        ?? stringValue(selectedNode?["role"]) ?? "-"
+    let subrole = stringValue(selection["selectedSubrole"])
+        ?? stringValue(selectedNode?["subrole"]) ?? "-"
+    let identifier = stringValue(selectedNode?["identifier"]) ?? "-"
+    let title = stringValue(selectedNode?["title"]) ?? "-"
+    let elementDescription = stringValue(selectedNode?["elementDescription"])
+        ?? "-"
+    let components = [
+        method, depth, role, subrole, identifier, title, elementDescription,
+        normalizedNumber(region?["x"]), normalizedNumber(region?["y"]),
+        normalizedNumber(region?["width"]), normalizedNumber(region?["height"]),
+    ].joined(separator: "|")
+    return reducerSHA256String(components)
 }
 private struct ReducerSelection {
     let observation: [String: Any]

@@ -263,14 +263,15 @@ python3 scripts/audit-phase1-read-surface-evidence.py \
   ./coupled-data/my-first-session
 ```
 
-Each output directory must be new. The current `phase1-semantic-v12` reducer
+Each output directory must be new. The current `phase1-semantic-v13` reducer
 consumes `session.json`, `raw.jsonl`, and the immutable read-surface artifact.
 That artifact re-runs local Apple Vision OCR on each retained full-window
 screenshot using the application-neutral `ax-pane-read-v2` selector for raw
 screen schema 7+. Older sessions remain reproducible with
 `pointer-local-read-v1`. Every source image, panel decision, OCR result, and
-unresolved fallback is hash-bound before reduction. Semantic v12 rejects v1
-evidence for schema-7 sessions and deliberately ignores `events.preview.jsonl`.
+unresolved fallback is hash-bound before reduction. Semantic v13 rejects v1
+evidence for schema-7 sessions, uses the selected AX pane as part of adjacent
+READ overlap identity, and deliberately ignores `events.preview.jsonl`.
 
 Raw schema-7 READ observations retain a bounded, metadata-only
 Accessibility ancestor chain at the interaction point. This evidence contains

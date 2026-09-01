@@ -1090,6 +1090,9 @@ let motivatingSurfaceEvidenceV2 = fixtureRoot.appendingPathComponent(
 let motivatingReductionV12 = fixtureRoot.appendingPathComponent(
     "motivating-reduction-v12"
 )
+let motivatingReductionV13 = fixtureRoot.appendingPathComponent(
+    "motivating-reduction-v13"
+)
 let motivatingMismatchedV12 = fixtureRoot.appendingPathComponent(
     "motivating-mismatched-v12"
 )
@@ -1725,6 +1728,22 @@ compactObsidianScaffoldWrite["conditioningState"] = compactObsidianConditioning
 // t=2 but settled at t=4. Raw-order overlap would incorrectly emit only gamma.
 writeFixtureJSONL([
     rawScreenFixture(
+        id: "same-pane-overlap-one", capturedAt: "2026-01-01T00:00:00.100Z",
+        content: "same alpha\nsame beta"
+    ),
+    rawScreenFixture(
+        id: "same-pane-overlap-two", capturedAt: "2026-01-01T00:00:00.200Z",
+        content: "same beta\nsame gamma"
+    ),
+    rawScreenFixture(
+        id: "different-pane-one", capturedAt: "2026-01-01T00:00:00.300Z",
+        content: "shared pane text"
+    ),
+    rawScreenFixture(
+        id: "different-pane-two", capturedAt: "2026-01-01T00:00:00.400Z",
+        content: "shared pane text"
+    ),
+    rawScreenFixture(
         id: "read-before-write", capturedAt: "2026-01-01T00:00:01.000Z",
         content: "alpha\nbeta"
     ),
@@ -1765,6 +1784,10 @@ let motivatingRawRows = readFixtureJSONL(
     motivatingInput.appendingPathComponent("raw.jsonl")
 )
 let surfaceContentByRecordID = [
+    "same-pane-overlap-one": "same alpha\nsame beta",
+    "same-pane-overlap-two": "same beta\nsame gamma",
+    "different-pane-one": "shared pane text",
+    "different-pane-two": "shared pane text",
     "read-before-write": "surface alpha\nsurface beta",
     "read-after-write-began": "surface beta\nsurface gamma",
     "read-containing-active-write": "page text\nthere was a paper about encr",
@@ -1871,6 +1894,17 @@ try! FileManager.default.createDirectory(
 )
 let motivatingV2SurfaceRows: [[String: Any]] = motivatingSurfaceRows.map { row in
     var value = row
+    let recordID = value["sourceRecordID"] as? String
+    let paneRegion: [String: Any]
+    switch recordID {
+    case "same-pane-overlap-one", "same-pane-overlap-two", "different-pane-one":
+        paneRegion = ["x": 0.05, "y": 0.1, "width": 0.55, "height": 0.8]
+    case "different-pane-two":
+        paneRegion = ["x": 0.62, "y": 0.1, "width": 0.33, "height": 0.8]
+    default:
+        paneRegion = value["regionOfInterest"] as! [String: Any]
+    }
+    value["regionOfInterest"] = paneRegion
     value["ruleVersion"] = "ax-pane-read-v2"
     value["surfaceSelection"] = [
         "ruleVersion": "ax-pane-read-v2",
@@ -1881,7 +1915,7 @@ let motivatingV2SurfaceRows: [[String: Any]] = motivatingSurfaceRows.map { row i
         "selectedRole": "AXGroup",
         "selectedSubrole": "AXLandmarkMain",
         "isV1Fallback": false,
-        "regionOfInterest": value["regionOfInterest"]!,
+        "regionOfInterest": paneRegion,
     ]
     return value
 }
@@ -1937,6 +1971,13 @@ _ = try! Phase1SemanticReducer(configuration: .init(
     sourceDirectory: motivatingInput,
     outputDirectory: motivatingReductionV12
 )
+_ = try! Phase1SemanticReducer(configuration: .init(
+    reducerVersion: "phase1-semantic-v13",
+    readSurfaceEvidenceDirectory: motivatingSurfaceEvidenceV2
+)).reduce(
+    sourceDirectory: motivatingInput,
+    outputDirectory: motivatingReductionV13
+)
 let motivatingEvents = readFixtureJSONL(
     motivatingReduction.appendingPathComponent("events.jsonl")
 )
@@ -1945,6 +1986,9 @@ let motivatingV11Events = readFixtureJSONL(
 )
 let motivatingV12Events = readFixtureJSONL(
     motivatingReductionV12.appendingPathComponent("events.jsonl")
+)
+let motivatingV13Events = readFixtureJSONL(
+    motivatingReductionV13.appendingPathComponent("events.jsonl")
 )
 expect(
     motivatingV11Events.first {
@@ -1968,6 +2012,37 @@ expect(
                     && ($0["captureScope"] as? String) == "active_ax_pane"
             },
     "semantic v12 consumes hash-bound AX pane evidence before overlap"
+)
+expect(
+    motivatingV13Events.first {
+        ($0["sourceRecordIDs"] as? [String]) == ["same-pane-overlap-two"]
+    }?["content"] as? String == "same gamma",
+    "semantic v13 still removes exact adjacent overlap inside one AX pane"
+)
+expect(
+    motivatingV12Events.filter {
+        let ids = $0["sourceRecordIDs"] as? [String]
+        return ids == ["different-pane-one"] || ids == ["different-pane-two"]
+    }.count == 1,
+    "semantic v12 demonstrates the former same-window cross-pane suppression"
+)
+expect(
+    motivatingV13Events.filter {
+        let ids = $0["sourceRecordIDs"] as? [String]
+        return ids == ["different-pane-one"] || ids == ["different-pane-two"]
+    }.count == 2,
+    "semantic v13 resets adjacent overlap when the selected AX pane changes"
+)
+expect(
+    motivatingV13Events.filter { $0["kind"] as? String == "write" }
+        .map {
+            "\(($0["sourceRecordIDs"] as? [String] ?? []).joined(separator: ","))|\($0["content"] as? String ?? "")"
+        }
+        == motivatingV12Events.filter { $0["kind"] as? String == "write" }
+            .map {
+                "\(($0["sourceRecordIDs"] as? [String] ?? []).joined(separator: ","))|\($0["content"] as? String ?? "")"
+            },
+    "pane-aware READ overlap leaves every WRITE event unchanged"
 )
 expect(
     motivatingV11Events.filter { $0["kind"] as? String == "write" }
