@@ -9,7 +9,14 @@ import json
 from pathlib import Path
 from typing import Any
 
-from phase1_read_surface import SURFACE_RULE_VERSION, surface_region
+from phase1_read_surface import (
+    SURFACE_RULE_VERSION as V1_SURFACE_RULE_VERSION,
+    surface_region as v1_surface_region,
+)
+from phase1_read_surface_v2 import (
+    SURFACE_RULE_VERSION as V2_SURFACE_RULE_VERSION,
+    surface_region as v2_surface_region,
+)
 
 
 class AuditError(RuntimeError):
@@ -63,11 +70,28 @@ def main() -> int:
     for path in [manifest_path, jobs_path, evidence_path, unresolved_path]:
         require(path.is_file(), f"required artifact is missing: {path}")
     manifest = load_json(manifest_path)
-    require(manifest.get("ruleVersion") == SURFACE_RULE_VERSION, "rule version differs")
+    rule_version = manifest.get("ruleVersion")
+    require(
+        rule_version in {V1_SURFACE_RULE_VERSION, V2_SURFACE_RULE_VERSION},
+        "unsupported rule version",
+    )
     source = Path(manifest["source"]["directory"]).resolve()
     session_path = source / "session.json"
     raw_path = source / "raw.jsonl"
     require(session_path.is_file() and raw_path.is_file(), "source session is unavailable")
+    session = load_json(session_path)
+    raw_screen_schema = session.get("schemas", {}).get("rawScreenOCR")
+    if not isinstance(raw_screen_schema, int):
+        raw_screen_schema = 0
+    require(
+        rule_version != V2_SURFACE_RULE_VERSION or raw_screen_schema >= 7,
+        f"{V2_SURFACE_RULE_VERSION} requires rawScreenOCR schema 7+",
+    )
+    surface_selector = (
+        v2_surface_region
+        if rule_version == V2_SURFACE_RULE_VERSION
+        else v1_surface_region
+    )
     require(sha256(session_path) == manifest["source"]["digestsSHA256"]["session.json"], "session hash differs")
     require(sha256(raw_path) == manifest["source"]["digestsSHA256"]["raw.jsonl"], "raw hash differs")
     for name, path in {
@@ -92,16 +116,20 @@ def main() -> int:
 
     jobs_by_id = {row["jobID"]: row for row in jobs}
     for job in jobs:
+        require(
+            job.get("surfaceSelection", {}).get("ruleVersion") == rule_version,
+            f"job rule version differs: {job['jobID']}",
+        )
         record = raw_by_id.get(job["sourceRecordID"])
         require(record is not None, f"job source is missing: {job['sourceRecordID']}")
-        region, selection = surface_region(record)
+        region, selection = surface_selector(record)
         require(region == job["regionOfInterest"], f"job region differs: {job['jobID']}")
         require(selection == job["surfaceSelection"], f"job selection differs: {job['jobID']}")
         expected_job_id = "surface_" + digest_text(canonical({
             "recordID": record["recordID"],
             "screenshotSHA256": record.get("screenshotSHA256"),
             "region": region,
-            "ruleVersion": SURFACE_RULE_VERSION,
+            "ruleVersion": rule_version,
         }))
         require(expected_job_id == job["jobID"], f"job identity differs: {job['jobID']}")
         screenshot = (source / job["screenshotRelativePath"]).resolve()
@@ -109,6 +137,8 @@ def main() -> int:
         require(sha256(screenshot) == job["screenshotSHA256"], f"screenshot hash differs: {job['jobID']}")
 
     for row in evidence:
+        require(row.get("ruleVersion") == rule_version, f"evidence rule differs: {row['jobID']}")
+        require(row.get("sessionID") == manifest.get("sessionID"), f"evidence session differs: {row['jobID']}")
         job = jobs_by_id.get(row["jobID"])
         require(job is not None, f"evidence job is missing: {row['jobID']}")
         require(row["sourceRecordID"] == job["sourceRecordID"], f"evidence source differs: {row['jobID']}")
@@ -117,6 +147,10 @@ def main() -> int:
         require(digest_text(row["content"]) == row["contentSHA256"], f"content hash differs: {row['jobID']}")
         require(len(row["lines"]) == row["recognizedLineCount"], f"line count differs: {row['jobID']}")
         require("\n".join(line["text"] for line in row["lines"]) == row["content"], f"line content differs: {row['jobID']}")
+
+    for row in unresolved:
+        require(row.get("ruleVersion") == rule_version, "unresolved rule differs")
+        require(row.get("sessionID") == manifest.get("sessionID"), "unresolved session differs")
 
     disposition_ids = {row["sourceRecordID"] for row in evidence} | {
         row["sourceRecordID"] for row in unresolved

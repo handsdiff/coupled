@@ -12,7 +12,14 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from phase1_read_surface import SURFACE_RULE_VERSION, surface_region
+from phase1_read_surface import (
+    SURFACE_RULE_VERSION as V1_SURFACE_RULE_VERSION,
+    surface_region as v1_surface_region,
+)
+from phase1_read_surface_v2 import (
+    SURFACE_RULE_VERSION as V2_SURFACE_RULE_VERSION,
+    surface_region as v2_surface_region,
+)
 
 
 EVIDENCE_SCHEMA_VERSION = 1
@@ -137,6 +144,12 @@ def parse_arguments() -> argparse.Namespace:
         default=[],
         help="prior ocr-results.jsonl or read-surfaces.jsonl",
     )
+    parser.add_argument(
+        "--rule-version",
+        choices=["auto", V1_SURFACE_RULE_VERSION, V2_SURFACE_RULE_VERSION],
+        default="auto",
+        help="surface rule; auto selects AX v2 for raw screen schema 7+",
+    )
     return parser.parse_args()
 
 
@@ -158,6 +171,25 @@ def main() -> int:
     session_id = session.get("sessionID")
     if not isinstance(session_id, str) or not session_id:
         raise EvidenceError("session.json lacks sessionID")
+    raw_screen_schema = session.get("schemas", {}).get("rawScreenOCR")
+    if not isinstance(raw_screen_schema, int):
+        raw_screen_schema = 0
+    rule_version = arguments.rule_version
+    if rule_version == "auto":
+        rule_version = (
+            V2_SURFACE_RULE_VERSION
+            if raw_screen_schema >= 7
+            else V1_SURFACE_RULE_VERSION
+        )
+    if rule_version == V2_SURFACE_RULE_VERSION and raw_screen_schema < 7:
+        raise EvidenceError(
+            f"{V2_SURFACE_RULE_VERSION} requires rawScreenOCR schema 7+"
+        )
+    surface_selector = (
+        v2_surface_region
+        if rule_version == V2_SURFACE_RULE_VERSION
+        else v1_surface_region
+    )
     raw_rows = load_jsonl(raw_path)
     screen_rows = [row for row in raw_rows if row.get("recordType") == "screen_ocr_observation"]
     screen_by_id = {
@@ -177,7 +209,7 @@ def main() -> int:
         if not isinstance(relative, str) or not relative:
             unresolved.append({
                 "schemaVersion": EVIDENCE_SCHEMA_VERSION,
-                "ruleVersion": SURFACE_RULE_VERSION,
+                "ruleVersion": rule_version,
                 "sessionID": session_id,
                 "sourceRecordID": record_id,
                 "sourceRawLine": raw_line,
@@ -195,12 +227,12 @@ def main() -> int:
         recorded_screenshot_hash = record.get("screenshotSHA256")
         if actual_screenshot_hash != recorded_screenshot_hash:
             raise EvidenceError(f"screenshot hash differs for {record_id}")
-        region, selection = surface_region(record)
+        region, selection = surface_selector(record)
         job_id = "surface_" + digest_text(canonical({
             "recordID": record_id,
             "screenshotSHA256": recorded_screenshot_hash,
             "region": region,
-            "ruleVersion": SURFACE_RULE_VERSION,
+            "ruleVersion": rule_version,
         }))
         jobs.append({
             "jobID": job_id,
@@ -234,7 +266,7 @@ def main() -> int:
         if result.get("error"):
             unresolved.append({
                 "schemaVersion": EVIDENCE_SCHEMA_VERSION,
-                "ruleVersion": SURFACE_RULE_VERSION,
+                "ruleVersion": rule_version,
                 "sessionID": session_id,
                 "sourceRecordID": job["sourceRecordID"],
                 "sourceRawLine": job["sourceRawLine"],
@@ -248,7 +280,7 @@ def main() -> int:
         if not isinstance(content, str) or not content.strip() or not isinstance(lines, list):
             unresolved.append({
                 "schemaVersion": EVIDENCE_SCHEMA_VERSION,
-                "ruleVersion": SURFACE_RULE_VERSION,
+                "ruleVersion": rule_version,
                 "sessionID": session_id,
                 "sourceRecordID": job["sourceRecordID"],
                 "sourceRawLine": job["sourceRawLine"],
@@ -258,7 +290,7 @@ def main() -> int:
             continue
         evidence.append({
             "schemaVersion": EVIDENCE_SCHEMA_VERSION,
-            "ruleVersion": SURFACE_RULE_VERSION,
+            "ruleVersion": rule_version,
             "evidenceID": job["jobID"],
             "jobID": job["jobID"],
             "sessionID": session_id,
@@ -283,7 +315,11 @@ def main() -> int:
     write_jsonl(unresolved_path, sorted(unresolved, key=lambda row: row["sourceRawLine"]))
     manifest = {
         "schemaVersion": EVIDENCE_SCHEMA_VERSION,
-        "ruleVersion": SURFACE_RULE_VERSION,
+        "ruleVersion": rule_version,
+        "ruleSelection": {
+            "requested": arguments.rule_version,
+            "rawScreenOCRSchema": raw_screen_schema,
+        },
         "sessionID": session_id,
         "source": {
             "directory": str(source),

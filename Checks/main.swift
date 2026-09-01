@@ -1082,10 +1082,22 @@ let motivatingSurfaceEvidence = fixtureRoot.appendingPathComponent(
 let motivatingReductionV11 = fixtureRoot.appendingPathComponent(
     "motivating-reduction-v11"
 )
+let motivatingSurfaceEvidenceV2 = fixtureRoot.appendingPathComponent(
+    "motivating-read-surface-evidence-v2"
+)
+let motivatingReductionV12 = fixtureRoot.appendingPathComponent(
+    "motivating-reduction-v12"
+)
+let motivatingMismatchedV12 = fixtureRoot.appendingPathComponent(
+    "motivating-mismatched-v12"
+)
 try! FileManager.default.createDirectory(at: motivatingInput, withIntermediateDirectories: true)
 try! jsonData([
     "sessionID": "motivating-session",
-    "schemas": ["timingSemanticsVersion": 2, "rawActiveTapWrite": 15],
+    "schemas": [
+        "timingSemanticsVersion": 2, "rawActiveTapWrite": 15,
+        "rawScreenOCR": 7,
+    ],
 ], pretty: true).write(to: motivatingInput.appendingPathComponent("session.json"))
 
 func rawScreenFixture(
@@ -1094,7 +1106,7 @@ func rawScreenFixture(
 ) -> [String: Any] {
     let activityAt = triggerAt ?? capturedAt
     return [
-        "schemaVersion": 6, "recordType": "screen_ocr_observation",
+        "schemaVersion": 7, "recordType": "screen_ocr_observation",
         "recordID": id, "sessionID": "motivating-session",
         "observedAt": capturedAt, "settledAt": capturedAt, "capturedAt": capturedAt,
         "surfaceResolvedAt": capturedAt, "firstActivityAt": activityAt,
@@ -1836,11 +1848,101 @@ _ = try! Phase1SemanticReducer(configuration: .init(
     sourceDirectory: motivatingInput,
     outputDirectory: motivatingReductionV11
 )
+var mismatchedV12WasRejected = false
+do {
+    _ = try Phase1SemanticReducer(configuration: .init(
+        reducerVersion: "phase1-semantic-v12",
+        readSurfaceEvidenceDirectory: motivatingSurfaceEvidence
+    )).reduce(
+        sourceDirectory: motivatingInput,
+        outputDirectory: motivatingMismatchedV12
+    )
+} catch {
+    mismatchedV12WasRejected = true
+}
+expect(
+    mismatchedV12WasRejected,
+    "semantic v12 rejects pointer-local evidence for a schema-7 session"
+)
+try! FileManager.default.createDirectory(
+    at: motivatingSurfaceEvidenceV2, withIntermediateDirectories: true
+)
+let motivatingV2SurfaceRows: [[String: Any]] = motivatingSurfaceRows.map { row in
+    var value = row
+    value["ruleVersion"] = "ax-pane-read-v2"
+    value["surfaceSelection"] = [
+        "ruleVersion": "ax-pane-read-v2",
+        "method": "ax_semantic_container",
+        "confidence": "high",
+        "reason": "semantic_main_landmark",
+        "selectedDepth": 1,
+        "selectedRole": "AXGroup",
+        "selectedSubrole": "AXLandmarkMain",
+        "isV1Fallback": false,
+        "regionOfInterest": value["regionOfInterest"]!,
+    ]
+    return value
+}
+let motivatingV2JobsURL = motivatingSurfaceEvidenceV2.appendingPathComponent(
+    "jobs.jsonl"
+)
+let motivatingV2SurfacesURL = motivatingSurfaceEvidenceV2.appendingPathComponent(
+    "read-surfaces.jsonl"
+)
+let motivatingV2UnresolvedURL = motivatingSurfaceEvidenceV2.appendingPathComponent(
+    "unresolved.jsonl"
+)
+writeFixtureJSONL([], to: motivatingV2JobsURL)
+writeFixtureJSONL(motivatingV2SurfaceRows, to: motivatingV2SurfacesURL)
+writeFixtureJSONL([], to: motivatingV2UnresolvedURL)
+try! jsonData([
+    "schemaVersion": 1,
+    "ruleVersion": "ax-pane-read-v2",
+    "sessionID": "motivating-session",
+    "source": [
+        "digestsSHA256": [
+            "session.json": fixtureSHA256(
+                motivatingInput.appendingPathComponent("session.json")
+            ),
+            "raw.jsonl": fixtureSHA256(
+                motivatingInput.appendingPathComponent("raw.jsonl")
+            ),
+        ],
+    ],
+    "counts": [
+        "rawRecords": motivatingRawRows.count,
+        "screenObservations": motivatingV2SurfaceRows.count,
+        "jobs": 0,
+        "evidence": motivatingV2SurfaceRows.count,
+        "unresolved": 0,
+    ],
+    "artifacts": [
+        "digestsSHA256": [
+            "jobs.jsonl": fixtureSHA256(motivatingV2JobsURL),
+            "read-surfaces.jsonl": fixtureSHA256(motivatingV2SurfacesURL),
+            "unresolved.jsonl": fixtureSHA256(motivatingV2UnresolvedURL),
+        ],
+    ],
+], pretty: true).write(
+    to: motivatingSurfaceEvidenceV2.appendingPathComponent(
+        "read-surface-evidence.json"
+    )
+)
+_ = try! Phase1SemanticReducer(configuration: .init(
+    reducerVersion: "phase1-semantic-v12",
+    readSurfaceEvidenceDirectory: motivatingSurfaceEvidenceV2
+)).reduce(
+    sourceDirectory: motivatingInput,
+    outputDirectory: motivatingReductionV12
+)
 let motivatingEvents = readFixtureJSONL(
     motivatingReduction.appendingPathComponent("events.jsonl")
 )
 let motivatingV11Events = readFixtureJSONL(
     motivatingReductionV11.appendingPathComponent("events.jsonl")
+)
+let motivatingV12Events = readFixtureJSONL(
+    motivatingReductionV12.appendingPathComponent("events.jsonl")
 )
 expect(
     motivatingV11Events.first {
@@ -1852,6 +1954,18 @@ expect(
                     == "surface_ocr_replacement"
             },
     "semantic v11 consumes hash-bound READ surface evidence before overlap"
+)
+expect(
+    motivatingV12Events.first {
+        ($0["sourceRecordIDs"] as? [String]) == ["read-after-write-began"]
+    }?["content"] as? String == "surface beta\nsurface gamma"
+        && motivatingV12Events.filter { $0["kind"] as? String == "read" }
+            .allSatisfy {
+                (($0["readSurface"] as? [String: Any])?["ruleVersion"] as? String)
+                    == "ax-pane-read-v2"
+                    && ($0["captureScope"] as? String) == "active_ax_pane"
+            },
+    "semantic v12 consumes hash-bound AX pane evidence before overlap"
 )
 expect(
     motivatingV11Events.filter { $0["kind"] as? String == "write" }

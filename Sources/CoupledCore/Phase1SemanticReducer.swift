@@ -71,12 +71,15 @@ public struct Phase1SemanticReducer {
               let sessionID = manifest["sessionID"] as? String, !sessionID.isEmpty else {
             throw Phase1SemanticReducerError.invalidManifest("missing sessionID")
         }
+        let rawScreenOCRSchema = (manifest["schemas"] as? [String: Any])
+            .flatMap { intValue($0["rawScreenOCR"]) } ?? 0
         let raw = try reducerReadJSONL(rawURL)
         let readSurfaceEvidence = try loadReadSurfaceEvidence(
             configuration: configuration,
             sessionURL: sessionURL,
             rawURL: rawURL,
             sessionID: sessionID,
+            rawScreenOCRSchema: rawScreenOCRSchema,
             raw: raw
         )
         let fastStartChains = reducerFastStartChains(raw)
@@ -124,7 +127,8 @@ public struct Phase1SemanticReducer {
                     ],
                     unresolvedReason: readSurfaceEvidence?.unresolvedReasonBySourceRecordID[
                         stringValue(object["recordID"]) ?? ""
-                    ]
+                    ],
+                    ruleVersion: readSurfaceEvidence?.ruleVersion
                 )
                 switch reduceRead(effectiveObject, sessionID: sessionID) {
                 case .failure(let failure):
@@ -294,8 +298,8 @@ public struct Phase1SemanticReducer {
             "readOverlapOrdering": "READ capturedAt with finalized WRITE beganAt boundaries; raw append order ignored",
             "previewAuthority": false,
         ]
-        if readSurfaceEvidence != nil {
-            reduction["readSurfaceRule"] = "hash-verified pointer-local-read-v1 evidence before causal overlap; unresolved evidence falls back to collector OCR"
+        if let readSurfaceEvidence {
+            reduction["readSurfaceRule"] = "hash-verified \(readSurfaceEvidence.ruleVersion) evidence before causal overlap; unresolved evidence falls back to collector OCR"
         }
         try reducerWriteJSON(reduction, to: output.appendingPathComponent("reduction.json"))
         return Phase1SemanticReducerResult(
@@ -353,13 +357,21 @@ private func loadReadSurfaceEvidence(
     sessionURL: URL,
     rawURL: URL,
     sessionID: String,
+    rawScreenOCRSchema: Int,
     raw: [ReducerLine]
 ) throws -> ReducerReadSurfaceEvidence? {
-    let expectedReducerVersion = "phase1-semantic-v11"
-    if configuration.reducerVersion != expectedReducerVersion {
+    let expectedRuleVersion: String
+    switch configuration.reducerVersion {
+    case "phase1-semantic-v11":
+        expectedRuleVersion = "pointer-local-read-v1"
+    case "phase1-semantic-v12":
+        expectedRuleVersion = rawScreenOCRSchema >= 7
+            ? "ax-pane-read-v2"
+            : "pointer-local-read-v1"
+    default:
         guard configuration.readSurfaceEvidenceDirectory == nil else {
             throw Phase1SemanticReducerError.invalidManifest(
-                "--read-surface-evidence requires \(expectedReducerVersion)"
+                "--read-surface-evidence requires phase1-semantic-v11 or phase1-semantic-v12"
             )
         }
         return nil
@@ -367,7 +379,7 @@ private func loadReadSurfaceEvidence(
     guard let directory = configuration.readSurfaceEvidenceDirectory?
         .standardizedFileURL else {
         throw Phase1SemanticReducerError.invalidManifest(
-            "\(expectedReducerVersion) requires --read-surface-evidence"
+            "\(configuration.reducerVersion) requires --read-surface-evidence"
         )
     }
     let manifestURL = directory.appendingPathComponent("read-surface-evidence.json")
@@ -389,7 +401,7 @@ private func loadReadSurfaceEvidence(
     guard let manifest = try JSONSerialization.jsonObject(with: manifestData)
         as? [String: Any],
         intValue(manifest["schemaVersion"]) == 1,
-        stringValue(manifest["ruleVersion"]) == "pointer-local-read-v1",
+        stringValue(manifest["ruleVersion"]) == expectedRuleVersion,
         stringValue(manifest["sessionID"]) == sessionID,
         let source = manifest["source"] as? [String: Any],
         let sourceDigests = source["digestsSHA256"] as? [String: Any],
@@ -417,7 +429,7 @@ private func loadReadSurfaceEvidence(
     for row in try reducerReadJSONL(evidenceURL) {
         let object = row.object
         guard intValue(object["schemaVersion"]) == 1,
-              stringValue(object["ruleVersion"]) == "pointer-local-read-v1",
+              stringValue(object["ruleVersion"]) == expectedRuleVersion,
               stringValue(object["sessionID"]) == sessionID,
               let sourceID = nonEmptyString(object["sourceRecordID"]),
               let sourceRecord = rawScreenByID[sourceID],
@@ -444,7 +456,7 @@ private func loadReadSurfaceEvidence(
     var unresolvedBySourceID = [String: String]()
     for row in try reducerReadJSONL(unresolvedURL) {
         guard intValue(row.object["schemaVersion"]) == 1,
-              stringValue(row.object["ruleVersion"]) == "pointer-local-read-v1",
+              stringValue(row.object["ruleVersion"]) == expectedRuleVersion,
               stringValue(row.object["sessionID"]) == sessionID,
               let sourceID = nonEmptyString(row.object["sourceRecordID"]),
               let sourceRecord = rawScreenByID[sourceID],
@@ -471,7 +483,7 @@ private func loadReadSurfaceEvidence(
     }
     return ReducerReadSurfaceEvidence(
         schemaVersion: 1,
-        ruleVersion: "pointer-local-read-v1",
+        ruleVersion: expectedRuleVersion,
         manifestSHA256: evidenceManifestHash,
         readSurfacesSHA256: readSurfacesHash,
         unresolvedSHA256: unresolvedHash,
@@ -496,14 +508,15 @@ private func validNormalizedRegion(_ region: [String: Any]?) -> Bool {
 private func effectiveReadObject(
     _ raw: [String: Any],
     evidence: [String: Any]?,
-    unresolvedReason: String?
+    unresolvedReason: String?,
+    ruleVersion: String?
 ) -> [String: Any] {
     var effective = raw
     guard let evidence else {
-        if let unresolvedReason {
+        if let unresolvedReason, let ruleVersion {
             effective["readSurface"] = [
                 "schemaVersion": 1,
-                "ruleVersion": "pointer-local-read-v1",
+                "ruleVersion": ruleVersion,
                 "status": "fallback_original_ocr",
                 "reason": unresolvedReason,
             ]
@@ -521,10 +534,14 @@ private func effectiveReadObject(
     if let bounds = readSurfaceCaptureBounds(raw: raw, evidence: evidence) {
         effective["captureBounds"] = bounds
     }
-    effective["captureScope"] = "active_surface_proxy"
+    let evidenceRuleVersion = stringValue(evidence["ruleVersion"])
+        ?? ruleVersion ?? "unknown"
+    effective["captureScope"] = evidenceRuleVersion == "ax-pane-read-v2"
+        ? "active_ax_pane"
+        : "active_surface_proxy"
     effective["readSurface"] = [
         "schemaVersion": 1,
-        "ruleVersion": "pointer-local-read-v1",
+        "ruleVersion": evidenceRuleVersion,
         "status": "surface_ocr_replacement",
         "evidenceID": evidence["evidenceID"]!,
         "surfaceSelection": evidence["surfaceSelection"]!,

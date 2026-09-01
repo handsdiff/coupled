@@ -116,12 +116,13 @@ delay and capture timestamp; they must not be backdated or relabeled as
 one-second observations. They can remain explicitly identified lower-recall
 history, while delay-homogeneous comparisons should use separate cohorts.
 
-The bottom viewport crop is now 10%, matching the existing 10% top and side
-crops. The transition began at the next clean session boundary,
-`phase1-ordinary-work-2026-08-19-3-read-delay-1-bottom-crop-10`. Existing OCR
-content retains its actual crop metadata. Historical sessions that retained
-full-window screenshots can later be re-OCRed into a new versioned raw-derived
-artifact with the 10% crop; existing OCR records must not be mutated in place.
+The historical fixed-crop baseline removed 10% from the top, bottom, and each
+side beginning with
+`phase1-ordinary-work-2026-08-19-3-read-delay-1-bottom-crop-10`. That setting is
+superseded for new schema-7 collection at the clean boundary
+`phase1-ordinary-work-2026-09-01-3`: provisional OCR now retains the full window
+with zero fixed crop. Finalized READs select an AX-defined pane from the retained
+full-window screenshot. Historical crop metadata and OCR remain immutable.
 
 A derived READ requires:
 
@@ -142,8 +143,8 @@ Implemented safeguards:
 - Full-window screenshots are retained for later reprocessing.
 - Adjacent viewport OCR overlap is removed without deleting later rereads.
 - Schema-7 raw READs retain a bounded metadata-only Accessibility ancestor
-  chain at the interaction point. This is prospective pane evidence only; it
-  does not yet affect OCR, READ eligibility, or model context.
+  chain at the interaction point. `ax-pane-read-v2` selects the finalized OCR
+  panel from that chain; the raw AX probe itself contains no text values.
 
 ### Standalone live event view
 
@@ -161,18 +162,29 @@ rectangular screenshot.
 ## Implemented semantic reduction and causal compilation
 
 Current compiler: `phase1-causal-v14`
-Current reducer: `phase1-semantic-v11`
+Current reducer: `phase1-semantic-v12`
 
-Semantic v11 consumes `session.json`, `raw.jsonl`, and an immutable
-`pointer-local-read-v1` evidence artifact derived from retained full-window
-screenshots. It verifies every source and artifact digest, substitutes the
-surface OCR before the existing causal overlap rules run, and explicitly falls
-back to collector OCR when a screenshot or surface OCR is unresolved. It does
-not change WRITE construction. Deleting or corrupting `events.preview.jsonl`
-still has no effect. Event IDs remain stable across reducer versions because
-they derive from session ID, ordered raw lineage, and output ordinal.
-`reduction.json` binds the session, raw stream, read-surface evidence, finalized
-events, and unresolved records by SHA-256.
+Semantic v12 consumes `session.json`, `raw.jsonl`, and immutable read-surface
+evidence derived from retained full-window screenshots. Schema-7 sessions
+require the manually reviewed, application-neutral `ax-pane-read-v2` rule:
+semantic AX containers are preferred, then repeated pane geometry, then the
+nearest AX ancestor enclosing the legacy interaction region. Older sessions
+remain reproducible with `pointer-local-read-v1`. The reducer rejects v1
+evidence for schema-7 inputs, verifies every source and artifact digest,
+substitutes panel OCR before causal overlap, and falls back to collector OCR
+only for an explicitly unresolved evidence disposition. It does not change
+WRITE construction. Deleting or corrupting `events.preview.jsonl` still has no
+effect. Event IDs remain stable across reducer versions because they derive
+from session ID, ordered raw lineage, and output ordinal. `reduction.json` binds
+the session, raw stream, read-surface evidence, finalized events, and unresolved
+records by SHA-256.
+
+The promotion gate used all 19 schema-7 observations in
+`phase1-ax-pane-validation-1` across VS Code, ChatGPT, Obsidian, and Chrome.
+Manual overlay review found v2 clearly better in every case. The final
+rule selected six semantic containers, six repeated vertical panes, six
+repeated bounded surfaces, and one nearest outer AX container. The production
+evidence replay then produced 19 hash-bound OCR records with zero unresolved.
 
 The full-session v11 replay on `phase1-ordinary-work-2026-08-31-1` audited all
 1,337 raw screen observations: 1,334 produced surface evidence and three were
@@ -920,16 +932,16 @@ comparable target-token NLL through the subscription interface.
 
 ### Before the next authoritative collection
 
-Treat `phase1-semantic-v11`, `phase1-causal-v14`, the one-second READ delay,
-three-second WRITE delay, and ten-percent top/side/bottom crop configuration as
-the candidate baseline.
+Treat `phase1-semantic-v12`, `phase1-causal-v14`, the one-second READ delay,
+three-second WRITE delay, zero fixed preview crops, retained full-window
+screenshots, and schema-7 AX ancestry as the candidate baseline.
 
 1. Run normal work without changing collector rules mid-session.
-2. Build and audit immutable `pointer-local-read-v1` evidence from the retained full-window screenshots.
-3. Reduce the raw session with `phase1-semantic-v11` plus that evidence; inspect finalized events, fallback dispositions, and every non-event disposition.
+2. Build and audit immutable `ax-pane-read-v2` evidence from schema-7 retained full-window screenshots; use `pointer-local-read-v1` only for older sessions.
+3. Reduce the raw session with `phase1-semantic-v12` plus that evidence; inspect finalized events, fallback dispositions, and every non-event disposition.
 4. Compile the finalized reduction with `phase1-causal-v14`, supplying the raw session directory for hash and lineage verification.
 5. Manually sample the temporal trace against the actual work and record Phase 1's fidelity categories: missing events, temporal-ordering errors, incorrect content inclusion, authorship errors, write-boundary disagreement, destination ambiguity, and future leakage.
-6. Quantify reducer unresolved reasons plus target/context exclusions. Audit the raw Accessibility surface evidence separately; do not promote it without a demonstrated crop improvement. Fix only recurrent material errors demonstrated by that trace; otherwise freeze the collector/reducer/compiler versions.
+6. Quantify reducer unresolved reasons plus target/context exclusions. Fix only recurrent material errors demonstrated by that trace; otherwise freeze the collector/reducer/compiler versions.
 
 ### Before the foundational behavioral experiment
 
@@ -957,7 +969,7 @@ than behavioral evidence.
 
 - Structured Chrome URLs and field identity.
 - Obsidian note paths.
-- Surface-specific viewport crops.
+- Further AX-pane generalization only when new raw evidence demonstrates a recurrent miss.
 - Better sentence-boundary handling for OCR.
 - YouTube transcript and subtitle exposure.
 - Reduced raw suppression churn during window animation.

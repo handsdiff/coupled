@@ -21,9 +21,9 @@ OPTIONS
   --pause-file PATH            Pause all capture while PATH exists
   --write-delay SECONDS        Idle time before settling a write (default: 3)
   --read-delay SECONDS         Idle time before emitting a read candidate (default: 1)
-  --viewport-side-crop NUMBER  Fraction removed from each side for OCR (default: 0.1)
-  --viewport-top-crop NUMBER   Fraction removed from the top for OCR (default: 0.1)
-  --viewport-bottom-crop NUM   Fraction removed from the bottom for OCR (default: 0.1)
+  --viewport-side-crop NUMBER  Fraction removed from each side for preview OCR (default: 0)
+  --viewport-top-crop NUMBER   Fraction removed from the top for preview OCR (default: 0)
+  --viewport-bottom-crop NUM   Fraction removed from the bottom for preview OCR (default: 0)
   --allow-bundle ID            Add a bundle to the default Obsidian/Chrome/Arc/Codex/VS Code allowlist
   --exclude-bundle ID          Remove a bundle from capture; may be repeated
   --exclude-app-name NAME      Ignore an application name; may be repeated
@@ -40,8 +40,8 @@ REDUCE / COMPILE OPTIONS
   --input PATH                 Session (reduce) or finalized reduction (compile)
   --source PATH                Raw session used by a finalized reduction (compile)
   --output PATH                Fresh directory for compiled dataset files
-  --reducer-version NAME       Semantic reducer name (default: phase1-semantic-v11)
-  --read-surface-evidence PATH Hash-bound READ surface evidence (required by phase1-semantic-v11)
+  --reducer-version NAME       Semantic reducer name (default: phase1-semantic-v12)
+  --read-surface-evidence PATH Hash-bound READ surface evidence (required by semantic v11/v12)
   --conversion-version NAME    Frozen conversion name (default: phase1-causal-v14)
   --include-timestamps-in-context
                                Include availableAt in serialized context events
@@ -73,9 +73,10 @@ COMPILED FILES
   rejections.jsonl             Ineligible or unverifiable source events
 
 The trigger collector never records typed characters or raw key codes. The
-writes records settled typed-character bursts. Events recognizes a central crop
-of visible screen text and focused editable fields in allowlisted applications.
-Secure fields are excluded. Treat all output as sensitive.
+writes records settled typed-character bursts. Events retains full-window READ
+screenshots plus cursor-local Accessibility ancestry and focused editable fields
+in allowlisted applications. Secure fields are excluded. Treat all output as
+sensitive.
 """
 
 do {

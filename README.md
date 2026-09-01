@@ -178,13 +178,16 @@ can appear in the captured image.
 
 Pointer movement, clicks, scrolling, and application activation start a READ
 candidate. After the configured quiet period, Coupled revalidates the current
-application, window, display, title, and bounds together. A stable candidate is
-captured and recognized locally with macOS Vision.
+application, window, display, title, and bounds together. A stable candidate
+retains a full-window screenshot, the interaction point, and the bounded
+Accessibility ancestor chain under that point. Preview OCR covers the full
+window by default.
 
-By default, OCR uses the middle 80% of the selected window's width and the
-vertical band from 10% through 65%. The original screenshot and the complete
-recognized crop are retained before adjacent-view overlap is removed. This is
-an attention proxy, not evidence of gaze or comprehension.
+Finalized schema-7 READs use the reviewed `ax-pane-read-v2` rule to select an
+application-defined panel from that ancestor chain, then run local macOS Vision
+OCR on the selected rectangle. Semantic containers are preferred, followed by
+repeated pane bounds and the nearest enclosing AX container. This is an
+interaction-surface proxy, not evidence of gaze or comprehension.
 
 ### WRITE capture
 
@@ -260,18 +263,20 @@ python3 scripts/audit-phase1-read-surface-evidence.py \
   ./coupled-data/my-first-session
 ```
 
-Each output directory must be new. The current `phase1-semantic-v11` reducer
+Each output directory must be new. The current `phase1-semantic-v12` reducer
 consumes `session.json`, `raw.jsonl`, and the immutable read-surface artifact.
 That artifact re-runs local Apple Vision OCR on each retained full-window
-screenshot using a pointer-centered surface proxy, or an application-neutral
-fallback when no in-window interaction point is available. Every source image,
-crop decision, OCR result, and unresolved fallback is hash-bound before
-reduction. The reducer deliberately ignores `events.preview.jsonl`.
+screenshot using the application-neutral `ax-pane-read-v2` selector for raw
+screen schema 7+. Older sessions remain reproducible with
+`pointer-local-read-v1`. Every source image, panel decision, OCR result, and
+unresolved fallback is hash-bound before reduction. Semantic v12 rejects v1
+evidence for schema-7 sessions and deliberately ignores `events.preview.jsonl`.
 
-New raw schema-7 READ observations also retain a bounded, metadata-only
+Raw schema-7 READ observations retain a bounded, metadata-only
 Accessibility ancestor chain at the interaction point. This evidence contains
 roles, labels, identifiers, frames, and query errors, but no AX text values. It
-is not yet used to choose the model-facing crop. Audit it after a new run with:
+is the authority for selecting the model-facing OCR panel. Audit it after a new
+run with:
 
 ```sh
 python3 scripts/audit-read-accessibility-surfaces.py \
@@ -393,10 +398,11 @@ and application-generated text that should not receive loss.
 --write-delay 3
     Quiet period before an active WRITE settles.
 
---viewport-side-crop 0.1
---viewport-top-crop 0.1
---viewport-bottom-crop 0.1
-    Configure the OCR recognition region.
+--viewport-side-crop 0
+--viewport-top-crop 0
+--viewport-bottom-crop 0
+    Configure provisional live OCR only. Finalized schema-7 READs use the AX
+    panel selected from the retained full-window screenshot.
 
 --cursor-context-characters 512
     Retain semantic text on each side of the initial selection.
