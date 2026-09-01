@@ -697,7 +697,7 @@ def audit(directory: Path) -> dict[str, Any]:
             architecture = manifest.get("rawEpisodeArchitecture", {})
             write_destination = manifest.get("writeDestination")
             comparisons = load_jsonl(
-                directory / "destination-identity-shadow.jsonl"
+                directory / "destination-identity-comparison.jsonl"
             )
             candidates = load_jsonl(directory / "raw-episode-candidates.jsonl")
             changed = [

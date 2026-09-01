@@ -205,9 +205,11 @@ def main() -> int:
             "semanticModelInputSHA256": plan["semanticModelInputSHA256"],
         })
 
-    shadow_path = corpus / "destination-identity-shadow.jsonl"
-    shadow = load_jsonl(shadow_path)
-    changed = [row for row in shadow if row.get("wouldChangeIdentityGate")]
+    comparisons_path = corpus / "destination-identity-comparison.jsonl"
+    comparisons = load_jsonl(comparisons_path)
+    changed = [
+        row for row in comparisons if row.get("wouldChangeIdentityGate")
+    ]
     terminal_rows: list[dict[str, Any]] = []
     terminal_events = [
         event for event in source_event_rows
@@ -254,7 +256,7 @@ def main() -> int:
         "counts": {
             "reviewExamples": len(review_rows),
             "allEligibleEpisodes": len(examples),
-            "shadowBoundaries": len(shadow),
+            "identityComparisons": len(comparisons),
             "changedIdentityBoundaries": len(changed),
             "terminalWriteAudit": len(terminal_rows),
         },

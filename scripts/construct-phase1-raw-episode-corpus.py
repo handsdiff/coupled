@@ -25,7 +25,7 @@ from typing import Any
 
 EPISODE_VERSION = "phase1-raw-episode-v8"
 CONVERSION_VERSION = "phase1-raw-episode-causal-v8"
-DESTINATION_MEMBERSHIP_SHADOW_VERSION = (
+DESTINATION_MEMBERSHIP_COMPARISON_VERSION = (
     "phase1-write-destination-membership-activation-v1"
 )
 MIN_PERSISTENT_CHARACTERS = 40
@@ -1615,7 +1615,7 @@ def assemble(
         event = event_by_id[primitive["memberWriteEventIDs"][0]]
         by_session.setdefault(event["sessionID"], []).append(primitive)
     episodes: list[OpenEpisode] = []
-    destination_identity_shadow: list[dict[str, Any]] = []
+    destination_identity_comparisons: list[dict[str, Any]] = []
     for session_id, rows in by_session.items():
         rows.sort(key=lambda row: (row["beganAt"], row["memberWriteEventIDs"][0]))
         current = OpenEpisode([rows[0]], "session_start")
@@ -1643,9 +1643,9 @@ def assemble(
             right_normalized_key = normalized_destination_key(right)
             same_destination = same_episode_destination(left, right)
             normalized_same_destination = same_destination
-            destination_identity_shadow.append({
+            destination_identity_comparisons.append({
                 "schemaVersion": 1,
-                "shadowVersion": DESTINATION_MEMBERSHIP_SHADOW_VERSION,
+                "comparisonVersion": DESTINATION_MEMBERSHIP_COMPARISON_VERSION,
                 "sessionID": session_id,
                 "between": [left["writeEventID"], right["writeEventID"]],
                 "authoritativeMembershipPolicy": "normalized_destination_v1",
@@ -1768,8 +1768,8 @@ def assemble(
     # complete state-machine audit next to the model-facing corpus as well.
     write_jsonl(output / "raw-episode-candidates.jsonl", candidates)
     write_jsonl(
-        output / "destination-identity-shadow.jsonl",
-        destination_identity_shadow,
+        output / "destination-identity-comparison.jsonl",
+        destination_identity_comparisons,
     )
     artifact = load_json(output / "corpus.json")
     artifact["artifactType"] = "phase1_raw_authoritative_episode_corpus"
@@ -1805,19 +1805,19 @@ def assemble(
         ],
         "destinationMembershipAuthority": "normalized_destination_v1",
         "destinationMembershipComparisonVersion": (
-            DESTINATION_MEMBERSHIP_SHADOW_VERSION
+            DESTINATION_MEMBERSHIP_COMPARISON_VERSION
         ),
         "normalizedDestinationMembershipActivated": True,
         "changedDestinationBoundaryCount": sum(
             bool(row["wouldChangeIdentityGate"])
-            for row in destination_identity_shadow
+            for row in destination_identity_comparisons
         ),
     }
     artifact["artifactDigestsSHA256"]["raw-episode-candidates.jsonl"] = sha256(
         output / "raw-episode-candidates.jsonl"
     )
-    artifact["artifactDigestsSHA256"]["destination-identity-shadow.jsonl"] = sha256(
-        output / "destination-identity-shadow.jsonl"
+    artifact["artifactDigestsSHA256"]["destination-identity-comparison.jsonl"] = sha256(
+        output / "destination-identity-comparison.jsonl"
     )
     (output / "corpus.json").write_text(
         json.dumps(artifact, ensure_ascii=False, sort_keys=True) + "\n",
