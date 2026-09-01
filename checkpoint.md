@@ -141,6 +141,9 @@ Implemented safeguards:
 - Chrome auxiliary windows are retained raw but excluded from derived READs.
 - Full-window screenshots are retained for later reprocessing.
 - Adjacent viewport OCR overlap is removed without deleting later rereads.
+- Schema-7 raw READs retain a bounded metadata-only Accessibility ancestor
+  chain at the interaction point. This is prospective pane evidence only; it
+  does not yet affect OCR, READ eligibility, or model context.
 
 ### Standalone live event view
 
@@ -158,13 +161,18 @@ rectangular screenshot.
 ## Implemented semantic reduction and causal compilation
 
 Current compiler: `phase1-causal-v14`
-Current reducer: `phase1-semantic-v10`
+Current reducer: `phase1-semantic-v11`
 
-The reducer consumes only `session.json` and `raw.jsonl`; deleting or corrupting
-`events.preview.jsonl` produces byte-identical finalized events. Event IDs are
-stable across reducer versions because they derive from session ID, ordered raw
-lineage, and output ordinal. `reduction.json` binds the session, raw stream,
-finalized events, and unresolved records by SHA-256.
+Semantic v11 consumes `session.json`, `raw.jsonl`, and an immutable
+`pointer-local-read-v1` evidence artifact derived from retained full-window
+screenshots. It verifies every source and artifact digest, substitutes the
+surface OCR before the existing causal overlap rules run, and explicitly falls
+back to collector OCR when a screenshot or surface OCR is unresolved. It does
+not change WRITE construction. Deleting or corrupting `events.preview.jsonl`
+still has no effect. Event IDs remain stable across reducer versions because
+they derive from session ID, ordered raw lineage, and output ordinal.
+`reduction.json` binds the session, raw stream, read-surface evidence, finalized
+events, and unresolved records by SHA-256.
 
 Against `ordinary-work-audit-3`, semantic v3 recovered both Gemini submissions
 from synchronous pre-Return observations, rejected the impossible 3,263-character
@@ -905,15 +913,16 @@ comparable target-token NLL through the subscription interface.
 
 ### Before the next authoritative collection
 
-Treat `phase1-semantic-v10`, `phase1-causal-v14`, the one-second READ delay,
+Treat `phase1-semantic-v11`, `phase1-causal-v14`, the one-second READ delay,
 three-second WRITE delay, and ten-percent top/side/bottom crop configuration as
 the candidate baseline.
 
 1. Run normal work without changing collector rules mid-session.
-2. Reduce the raw session with `phase1-semantic-v10`; inspect finalized events and every non-event disposition.
-3. Compile the finalized reduction with `phase1-causal-v14`, supplying the raw session directory for hash and lineage verification.
-4. Manually sample the temporal trace against the actual work and record Phase 1's fidelity categories: missing events, temporal-ordering errors, incorrect content inclusion, authorship errors, write-boundary disagreement, destination ambiguity, and future leakage.
-5. Quantify reducer unresolved reasons plus target/context exclusions. Fix only recurrent material errors demonstrated by that trace; otherwise freeze the collector/reducer/compiler versions.
+2. Build and audit immutable `pointer-local-read-v1` evidence from the retained full-window screenshots.
+3. Reduce the raw session with `phase1-semantic-v11` plus that evidence; inspect finalized events, fallback dispositions, and every non-event disposition.
+4. Compile the finalized reduction with `phase1-causal-v14`, supplying the raw session directory for hash and lineage verification.
+5. Manually sample the temporal trace against the actual work and record Phase 1's fidelity categories: missing events, temporal-ordering errors, incorrect content inclusion, authorship errors, write-boundary disagreement, destination ambiguity, and future leakage.
+6. Quantify reducer unresolved reasons plus target/context exclusions. Audit the raw Accessibility surface evidence separately; do not promote it without a demonstrated crop improvement. Fix only recurrent material errors demonstrated by that trace; otherwise freeze the collector/reducer/compiler versions.
 
 ### Before the foundational behavioral experiment
 

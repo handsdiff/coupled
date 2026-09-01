@@ -34,7 +34,7 @@ normalize_paths() {
   while (( index <= ${#arguments[@]} )); do
     argument="${arguments[index]}"
     normalized+=("$argument")
-    if [[ "$argument" == "--output" || "$argument" == "--input" || "$argument" == "--source" || "$argument" == "--pause-file" ]]; then
+    if [[ "$argument" == "--output" || "$argument" == "--input" || "$argument" == "--source" || "$argument" == "--pause-file" || "$argument" == "--read-surface-evidence" ]]; then
       (( index += 1 ))
       if (( index > ${#arguments[@]} )); then
         print -u2 "Missing value for $argument"

@@ -237,8 +237,16 @@ session.
 ```sh
 ./scripts/coupled stop
 
+python3 scripts/build-phase1-read-surface-evidence.py \
+  --input ./coupled-data/my-first-session \
+  --output ./coupled-data/my-first-session-read-surfaces
+
+python3 scripts/audit-phase1-read-surface-evidence.py \
+  ./coupled-data/my-first-session-read-surfaces
+
 ./scripts/coupled reduce \
   --input ./coupled-data/my-first-session \
+  --read-surface-evidence ./coupled-data/my-first-session-read-surfaces \
   --output ./coupled-data/my-first-session-reduced
 
 ./scripts/coupled compile \
@@ -252,8 +260,23 @@ session.
   ./coupled-data/my-first-session
 ```
 
-Each output directory must be new. The reducer consumes only `session.json` and
-`raw.jsonl`; it deliberately ignores `events.preview.jsonl`.
+Each output directory must be new. The current `phase1-semantic-v11` reducer
+consumes `session.json`, `raw.jsonl`, and the immutable read-surface artifact.
+That artifact re-runs local Apple Vision OCR on each retained full-window
+screenshot using a pointer-centered surface proxy, or an application-neutral
+fallback when no in-window interaction point is available. Every source image,
+crop decision, OCR result, and unresolved fallback is hash-bound before
+reduction. The reducer deliberately ignores `events.preview.jsonl`.
+
+New raw schema-7 READ observations also retain a bounded, metadata-only
+Accessibility ancestor chain at the interaction point. This evidence contains
+roles, labels, identifiers, frames, and query errors, but no AX text values. It
+is not yet used to choose the model-facing crop. Audit it after a new run with:
+
+```sh
+python3 scripts/audit-read-accessibility-surfaces.py \
+  ./coupled-data/my-first-session
+```
 
 The reduced directory contains:
 
