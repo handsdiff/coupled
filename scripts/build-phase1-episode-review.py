@@ -872,6 +872,9 @@ def member_projection(
         "currentLossTarget": target_text(example) if example else None,
         "currentTarget": example.get("target") if example else None,
         "conditioningState": semantic_event.get("conditioningState"),
+        "modelFacingDestination": event.get("modelFacingDestination"),
+        "logicalDestinationKey": event.get("logicalDestinationKey"),
+        "destinationDerivation": event.get("destinationDerivation"),
         "operation": audit.get("operation"),
         "characterOffset": audit.get("characterOffset"),
         "removedContent": audit.get("removedContent", ""),
@@ -1562,6 +1565,15 @@ def build_candidate(
             ),
         },
         "initialConditioningState": first_conditioning,
+        "initialModelFacingDestination": first_member.get(
+            "modelFacingDestination"
+        ),
+        "initialLogicalDestinationKey": first_member.get(
+            "logicalDestinationKey"
+        ),
+        "initialDestinationDerivation": first_member.get(
+            "destinationDerivation"
+        ),
         "initialObservationSource": initial_source,
         "onsetEvidence": onset_evidence,
         "initialObservation": observation_projection(initial_observation),
@@ -2164,9 +2176,11 @@ def main() -> int:
     parser.add_argument("--corpus", required=True, type=Path)
     parser.add_argument(
         "--packed",
-        required=True,
         type=Path,
-        help="frozen packed dataset whose exact model-facing plans are reviewed",
+        help=(
+            "frozen packed dataset whose exact model-facing plans are reviewed; "
+            "optional only with --all-write-singletons"
+        ),
     )
     parser.add_argument("--output", required=True, type=Path)
     selection_group = parser.add_mutually_exclusive_group(required=True)
@@ -2196,26 +2210,32 @@ def main() -> int:
     )
     arguments = parser.parse_args()
     corpus_path = arguments.corpus.expanduser().resolve()
-    packed_path = arguments.packed.expanduser().resolve()
+    packed_path = (
+        arguments.packed.expanduser().resolve()
+        if arguments.packed is not None else None
+    )
     output = arguments.output.expanduser().resolve()
     if output.exists():
         raise ReviewError(f"output already exists: {output}")
     project = Path(__file__).resolve().parent.parent
     manifest_path = corpus_path / "corpus.json"
     manifest = load_json(manifest_path)
-    packing_path = packed_path / "packing.json"
-    packing_manifest = load_json(packing_path)
-    packing_source = packing_manifest.get("source", {})
-    if packing_source.get("sessionID") != manifest.get("corpusID"):
-        raise ReviewError("packed dataset corpusID does not match source corpus")
-    source_digests = packing_source.get("digestsSHA256", {})
-    for name in ("examples.jsonl", "context-blocks.jsonl"):
-        if source_digests.get(name) != sha256(corpus_path / name):
-            raise ReviewError(f"packed dataset source digest disagrees: {name}")
-    for name in ("context-plans.jsonl", "packed-examples.jsonl"):
-        expected = packing_manifest.get("artifactDigestsSHA256", {}).get(name)
-        if not expected or sha256(packed_path / name) != expected:
-            raise ReviewError(f"packed artifact changed: {name}")
+    if packed_path is None and not arguments.all_write_singletons:
+        raise ReviewError("--packed is required outside --all-write-singletons mode")
+    packing_path = packed_path / "packing.json" if packed_path else None
+    packing_manifest = load_json(packing_path) if packing_path else None
+    if packing_manifest is not None:
+        packing_source = packing_manifest.get("source", {})
+        if packing_source.get("sessionID") != manifest.get("corpusID"):
+            raise ReviewError("packed dataset corpusID does not match source corpus")
+        source_digests = packing_source.get("digestsSHA256", {})
+        for name in ("examples.jsonl", "context-blocks.jsonl"):
+            if source_digests.get(name) != sha256(corpus_path / name):
+                raise ReviewError(f"packed dataset source digest disagrees: {name}")
+        for name in ("context-plans.jsonl", "packed-examples.jsonl"):
+            expected = packing_manifest.get("artifactDigestsSHA256", {}).get(name)
+            if not expected or sha256(packed_path / name) != expected:
+                raise ReviewError(f"packed artifact changed: {name}")
     selection_manifest = None
     selection_path = None
     if arguments.selection_file is not None:
@@ -2286,12 +2306,12 @@ def main() -> int:
         load_jsonl(packed_path / "context-plans.jsonl"),
         "exampleID",
         "context plans",
-    )
+    ) if packed_path else {}
     packed_examples = indexed(
         load_jsonl(packed_path / "packed-examples.jsonl"),
         "exampleID",
         "packed examples",
-    )
+    ) if packed_path else {}
     if [example.get("chronologicalOrdinal") for example in examples] != list(
         range(len(examples))
     ):
@@ -2316,7 +2336,7 @@ def main() -> int:
             selected_examples.items(),
             key=lambda item: item[1]["chronologicalOrdinal"],
         )
-    ]
+    ] if packed_path else []
     model_inputs_by_example = {
         value["exampleID"]: value for value in model_facing_inputs
     }
@@ -2414,7 +2434,7 @@ def main() -> int:
                 "corpusSHA256": sha256(manifest_path),
                 "examplesSHA256": sha256(corpus_path / "examples.jsonl"),
                 "eventsSHA256": sha256(corpus_path / "events.jsonl"),
-                "packed": {
+                "packed": ({
                     "path": str(packed_path.relative_to(project)),
                     "packingSHA256": sha256(packing_path),
                     "packerVersion": packing_manifest.get("packerVersion"),
@@ -2424,7 +2444,7 @@ def main() -> int:
                     "packedExamplesSHA256": sha256(
                         packed_path / "packed-examples.jsonl"
                     ),
-                },
+                } if packed_path and packing_path and packing_manifest else None),
                 "rawSessions": raw_sources,
                 "semanticSessions": semantic_sources,
                 "selection": (

@@ -263,6 +263,27 @@ python3 scripts/audit-phase1-read-surface-evidence.py \
   ./coupled-data/my-first-session
 ```
 
+The compiler derives a compact model-facing WRITE destination from the raw
+pre-mutation Accessibility evidence. Literal terminal titles such as `zsh` or
+`codex` can identify a shell or agent interface directly. A title that is only
+meaningful in one local setup remains `unknown` unless it has been reviewed and
+configured explicitly:
+
+```sh
+./scripts/coupled compile \
+  --input ./coupled-data/my-first-session-reduced \
+  --source ./coupled-data/my-first-session \
+  --output ./coupled-data/my-first-session-dataset \
+  --terminal-agent-title coupled=Codex
+```
+
+Repeat `--terminal-agent-title TITLE=AGENT` for additional reviewed mappings.
+Mappings are recorded in `dataset.json` and must match across sessions combined
+into one corpus. Coupled does not infer terminal identity from an arbitrary
+earlier READ; when the pre-write evidence does not distinguish shell from agent,
+the model-facing interaction mode remains `unknown` while the raw conditioning
+state stays intact for audit.
+
 Each output directory must be new. The current `phase1-semantic-v13` reducer
 consumes `session.json`, `raw.jsonl`, and the immutable read-surface artifact.
 That artifact re-runs local Apple Vision OCR on each retained full-window

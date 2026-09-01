@@ -2766,6 +2766,88 @@ expect(
     "a different capture-time surface cannot close the old prompt"
 )
 
+let unmappedTerminalDestination = Phase1WriteDestinationNormalizer.normalize([
+    "appName": "Code",
+    "bundleIdentifier": "com.microsoft.VSCode",
+    "windowTitle": "checkpoint.md",
+    "role": "AXTextField",
+    "fieldDescription": "Terminal 2, coupled Use ⌥F1 for terminal accessibility help",
+])
+expect(
+    unmappedTerminalDestination.application == "Visual Studio Code"
+        && unmappedTerminalDestination.surfaceKind == "integrated_terminal"
+        && unmappedTerminalDestination.surfaceLabel == "Terminal 2"
+        && unmappedTerminalDestination.terminalProgramLabel == "coupled"
+        && unmappedTerminalDestination.interactionMode == "unknown"
+        && unmappedTerminalDestination.agent == nil
+        && unmappedTerminalDestination.resourceTitle == nil,
+    "an unrecognized terminal title remains conservatively unresolved"
+)
+let mappedTerminalDestination = Phase1WriteDestinationNormalizer.normalize([
+    "appName": "Code",
+    "bundleIdentifier": "com.microsoft.VSCode",
+    "windowTitle": "checkpoint.md",
+    "role": "AXTextField",
+    "fieldDescription": "Terminal 2, coupled Use ⌥F1 for terminal accessibility help",
+], terminalAgentProgramMappings: ["coupled": "Codex"])
+expect(
+    mappedTerminalDestination.interactionMode == "agent_cli"
+        && mappedTerminalDestination.agent == "Codex"
+        && mappedTerminalDestination.rule
+            == "vscode_terminal_configured_agent_title",
+    "a reviewed compiler mapping can identify a local agent terminal title"
+)
+let shellDestination = Phase1WriteDestinationNormalizer.normalize([
+    "appName": "Code",
+    "bundleIdentifier": "com.microsoft.VSCode",
+    "windowTitle": "checkpoint.md",
+    "role": "AXTextField",
+    "fieldDescription": "Terminal 2, zsh Use ⌥F1 for terminal accessibility help",
+])
+expect(
+    shellDestination.surfaceLabel == "Terminal 2"
+        && shellDestination.terminalProgramLabel == "zsh"
+        && shellDestination.interactionMode == "shell"
+        && shellDestination.agent == nil,
+    "recognized pre-write terminal program distinguishes shell from agent CLI"
+)
+let addressDestination = Phase1WriteDestinationNormalizer.normalize([
+    "appName": "Google Chrome",
+    "bundleIdentifier": "com.google.Chrome",
+    "windowTitle": "Article behind the omnibox - Google Chrome - Niyant",
+    "role": "AXTextField",
+    "fieldDescription": "Address and search bar",
+])
+expect(
+    addressDestination.surfaceKind == "browser_address_bar"
+        && addressDestination.resourceTitle == nil,
+    "focused browser address bar identity excludes the background page title"
+)
+let noteDestination = Phase1WriteDestinationNormalizer.normalize([
+    "appName": "Obsidian",
+    "bundleIdentifier": "md.obsidian",
+    "windowTitle": "Entry - Notes - Obsidian 1.13.7",
+    "role": "AXTextArea",
+])
+expect(
+    noteDestination.surfaceKind == "note_editor"
+        && noteDestination.resourceTitle == "Entry",
+    "Obsidian note identity retains the receiving note resource"
+)
+let chatDestination = Phase1WriteDestinationNormalizer.normalize([
+    "appName": "Google Chrome",
+    "bundleIdentifier": "com.google.Chrome",
+    "windowTitle": "Google Gemini - Google Chrome - Niyant",
+    "role": "AXTextArea",
+    "placeholder": "Ask Gemini",
+])
+expect(
+    chatDestination.surfaceKind == "chat_prompt"
+        && chatDestination.surfaceLabel == "Ask Gemini"
+        && chatDestination.resourceTitle == "Google Gemini",
+    "browser chat identity retains both focused prompt and conversation resource"
+)
+
 try! FileManager.default.removeItem(at: fixtureRoot)
 
 print("CoupledCore checks passed")

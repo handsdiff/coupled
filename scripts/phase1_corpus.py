@@ -23,6 +23,16 @@ SUPPORTED_RAW_EPISODE_EXPERIMENT_CONTRACT = {
     "episodeVersion": "phase1-raw-episode-v6",
     "conversionVersion": "phase1-raw-episode-causal-v6",
 }
+SUPPORTED_RAW_EPISODE_V7_EXPERIMENT_CONTRACT = {
+    **SUPPORTED_RAW_EPISODE_EXPERIMENT_CONTRACT,
+    "episodeVersion": "phase1-raw-episode-v7",
+    "conversionVersion": "phase1-raw-episode-causal-v7",
+}
+SUPPORTED_RAW_EPISODE_V8_EXPERIMENT_CONTRACT = {
+    **SUPPORTED_RAW_EPISODE_EXPERIMENT_CONTRACT,
+    "episodeVersion": "phase1-raw-episode-v8",
+    "conversionVersion": "phase1-raw-episode-causal-v8",
+}
 
 
 def json_bytes(value: Any) -> bytes:
@@ -87,6 +97,7 @@ def contract(manifest: dict[str, Any]) -> dict[str, Any]:
         "eligibility": manifest.get("eligibility"),
         "timing": manifest.get("timing"),
         "reducerVersion": manifest.get("source", {}).get("reducerVersion"),
+        "writeDestination": manifest.get("writeDestination"),
     }
 
 
@@ -96,8 +107,10 @@ def load_session(path: Path) -> dict[str, Any]:
         if not (path / name).is_file():
             raise ValueError(f"{path}: missing {name}")
     manifest = load_json(path / "dataset.json")
-    if manifest.get("conversionVersion") != "phase1-causal-v14":
-        raise ValueError(f"{path}: corpus assembly requires phase1-causal-v14")
+    if manifest.get("conversionVersion") not in {
+        "phase1-causal-v14", "phase1-causal-v15",
+    }:
+        raise ValueError(f"{path}: corpus assembly requires phase1-causal-v14 or v15")
     session_id = manifest.get("sessionID")
     if not isinstance(session_id, str) or not session_id:
         raise ValueError(f"{path}: missing sessionID")
@@ -509,11 +522,17 @@ def audit(directory: Path) -> dict[str, Any]:
     multi_session = (
         manifest.get("artifactType") == "phase1_multi_session_corpus"
         and manifest.get("assemblerVersion") in {"phase1-corpus-v1", ASSEMBLER_VERSION}
-        and manifest.get("conversionVersion") == "phase1-causal-v14"
+        and manifest.get("conversionVersion") in {
+            "phase1-causal-v14", "phase1-causal-v15",
+        }
     )
-    raw_episode = all(
-        manifest.get(key) == value
-        for key, value in SUPPORTED_RAW_EPISODE_EXPERIMENT_CONTRACT.items()
+    raw_episode = any(
+        all(manifest.get(key) == value for key, value in candidate.items())
+        for candidate in (
+            SUPPORTED_RAW_EPISODE_EXPERIMENT_CONTRACT,
+            SUPPORTED_RAW_EPISODE_V7_EXPERIMENT_CONTRACT,
+            SUPPORTED_RAW_EPISODE_V8_EXPERIMENT_CONTRACT,
+        )
     ) and (
         manifest.get("rawEpisodeArchitecture", {}).get(
             "productionConsumesRegressionFixture"
@@ -674,6 +693,47 @@ def audit(directory: Path) -> dict[str, Any]:
     elif redacted_count:
         raise ValueError("legacy corpus contains privacy redactions")
     if raw_episode:
+        if manifest.get("episodeVersion") == "phase1-raw-episode-v8":
+            architecture = manifest.get("rawEpisodeArchitecture", {})
+            write_destination = manifest.get("writeDestination")
+            comparisons = load_jsonl(
+                directory / "destination-identity-shadow.jsonl"
+            )
+            candidates = load_jsonl(directory / "raw-episode-candidates.jsonl")
+            changed = [
+                row for row in comparisons
+                if row.get("wouldChangeIdentityGate") is True
+            ]
+            if not (
+                architecture.get("destinationMembershipAuthority")
+                    == "normalized_destination_v1"
+                and architecture.get("normalizedDestinationMembershipActivated")
+                    is True
+                and architecture.get("changedDestinationBoundaryCount")
+                    == len(changed)
+                and isinstance(write_destination, dict)
+                and isinstance(
+                    write_destination.get(
+                        "configuredTerminalAgentProgramMappings"
+                    ),
+                    dict,
+                )
+            ):
+                raise ValueError(
+                    "raw episode v8 WRITE-destination authority disagrees"
+                )
+            for candidate in candidates:
+                for boundary in candidate.get(
+                    "episodeStateMachine", {}
+                ).get("boundaryEvidence", []):
+                    if (
+                        boundary.get("decision") == "continue"
+                        and boundary.get("sameLogicalDestination") is not True
+                    ):
+                        raise ValueError(
+                            "raw episode v8 continued across different normalized "
+                            "WRITE destinations"
+                        )
         # The frozen episode artifact remains byte-for-byte immutable. Expose
         # its separately hashed episode-block ledger only in the in-memory
         # experiment contract consumed by provider-neutral runners.

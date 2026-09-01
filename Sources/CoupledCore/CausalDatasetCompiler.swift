@@ -5,20 +5,43 @@ public struct CausalDatasetCompilerConfiguration: Sendable {
     public let conversionVersion: String
     public let includeTimestampsInContext: Bool
     public let minimumTrimmedAuthoredCharacters: Int
+    public let terminalAgentProgramMappings: [String: String]
 
     public init(
         conversionVersion: String = "phase1-causal-v14",
         includeTimestampsInContext: Bool = false,
-        minimumTrimmedAuthoredCharacters: Int? = nil
+        minimumTrimmedAuthoredCharacters: Int? = nil,
+        terminalAgentProgramMappings: [String: String] = [:]
     ) {
         self.conversionVersion = conversionVersion
         self.includeTimestampsInContext = includeTimestampsInContext
         self.minimumTrimmedAuthoredCharacters = minimumTrimmedAuthoredCharacters
-            ?? (conversionVersion == "phase1-causal-v14" ? 4 : 0)
+            ?? (["phase1-causal-v14", "phase1-causal-v15"].contains(conversionVersion) ? 4 : 0)
         precondition(
             self.minimumTrimmedAuthoredCharacters >= 0,
             "minimum trimmed authored characters must be nonnegative"
         )
+        var normalizedMappings = [String: String]()
+        for (rawProgramLabel, rawAgent) in terminalAgentProgramMappings {
+            let programLabel = rawProgramLabel.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            ).lowercased()
+            let agent = rawAgent.trimmingCharacters(in: .whitespacesAndNewlines)
+            precondition(
+                !programLabel.isEmpty && !agent.isEmpty,
+                "terminal agent program mappings must have nonempty labels and agents"
+            )
+            precondition(
+                normalizedMappings[programLabel] == nil,
+                "terminal agent program mappings must be unique case-insensitively"
+            )
+            normalizedMappings[programLabel] = agent
+        }
+        precondition(
+            conversionVersion == "phase1-causal-v15" || normalizedMappings.isEmpty,
+            "terminal agent program mappings require phase1-causal-v15"
+        )
+        self.terminalAgentProgramMappings = normalizedMappings
     }
 }
 
@@ -324,20 +347,46 @@ public struct CausalDatasetCompiler {
                 : canonicalWrite(event: event, attempts: attempts)
             switch verification {
             case .success(let canonicalEvent):
+                var modelEvent = canonicalEvent
+                if configuration.conversionVersion == "phase1-causal-v15" {
+                    guard let rawConditioning = canonicalEvent["conditioningState"]
+                            as? [String: Any],
+                          let rawDestination = rawConditioning["destination"]
+                            as? [String: Any] else {
+                        rejections.append(rejection(
+                            source: source,
+                            sourceEventID: eventID,
+                            reason: "missing_pre_mutation_destination_for_v15"
+                        ))
+                        continue
+                    }
+                    let normalized = Phase1WriteDestinationNormalizer.normalize(
+                        rawDestination,
+                        terminalAgentProgramMappings:
+                            configuration.terminalAgentProgramMappings
+                    )
+                    modelEvent["modelFacingDestination"] = normalized.modelFacingJSONObject
+                    modelEvent["logicalDestinationKey"] = normalized.logicalDestinationKey
+                    modelEvent["destinationDerivation"] =
+                        Phase1WriteDestinationNormalizer.provenance(
+                            evidence: rawDestination,
+                            normalized: normalized
+                        )
+                }
                 converted.append(ConvertedEvent(
                     source: source,
-                    object: canonicalEvent,
+                    object: modelEvent,
                     sourceEventID: eventID,
                     kind: kind,
                     availableAt: availableAt,
                     beganAt: beganAt,
                     serialized: try serializeContextEvent(
-                        canonicalEvent,
+                        modelEvent,
                         availableAt: availableAt,
                         includeTimestamp: configuration.includeTimestampsInContext
                     ),
                     auditSerialized: try serializeAuditContextEvent(
-                        canonicalEvent,
+                        modelEvent,
                         availableAt: availableAt,
                         includeTimestamp: configuration.includeTimestampsInContext
                     )
@@ -398,6 +447,8 @@ public struct CausalDatasetCompiler {
             )
             let query = try serializeQuery(
                 conditioningState,
+                modelFacingDestination: target.object["modelFacingDestination"]
+                    as? [String: Any],
                 includeTimestamp: configuration.includeTimestampsInContext
             )
             let modelInput = context.isEmpty ? query : context + "\n" + query
@@ -471,7 +522,7 @@ public struct CausalDatasetCompiler {
                 ))
                 continue
             }
-            examples.append([
+            var example: [String: Any] = [
                 "schemaVersion": 10,
                 "exampleID": "\(sessionID):\(target.sourceEventID)",
                 "conversionVersion": configuration.conversionVersion,
@@ -504,7 +555,13 @@ public struct CausalDatasetCompiler {
                     "eosTokenCount": 1,
                     "eosReceivesLoss": true,
                 ],
-            ])
+            ]
+            if configuration.conversionVersion == "phase1-causal-v15" {
+                example["modelFacingDestination"] = target.object["modelFacingDestination"]
+                example["logicalDestinationKey"] = target.object["logicalDestinationKey"]
+                example["destinationDerivation"] = target.object["destinationDerivation"]
+            }
+            examples.append(example)
         }
 
         try FileManager.default.createDirectory(
@@ -551,7 +608,7 @@ public struct CausalDatasetCompiler {
             compiledSourceDigests["reduction.json"] = try sha256(of: reductionURL)
             compiledSourceDigests["unresolved.jsonl"] = try sha256(of: unresolvedURL)
         }
-        let datasetManifest: [String: Any] = [
+        var datasetManifest: [String: Any] = [
             "schemaVersion": 11,
             "conversionVersion": configuration.conversionVersion,
             "sessionID": sessionID,
@@ -637,6 +694,25 @@ public struct CausalDatasetCompiler {
                 "eosReceivesLoss": true,
             ],
         ]
+        if configuration.conversionVersion == "phase1-causal-v15" {
+            datasetManifest["schemaVersion"] = 12
+            var serialization = datasetManifest["serialization"] as! [String: Any]
+            serialization["contextVersion"] = 4
+            serialization["queryVersion"] = 4
+            serialization["writeDestinationVersion"] =
+                Phase1WriteDestinationNormalizer.version
+            datasetManifest["serialization"] = serialization
+            datasetManifest["writeDestination"] = [
+                "authority": "synchronous_pre_mutation_accessibility_destination",
+                "modelFacingField": "modelFacingDestination",
+                "logicalIdentityField": "logicalDestinationKey",
+                "auditField": "destinationDerivation",
+                "rawConditioningStateRetainedForAudit": true,
+                "resultingWriteContentUsedForNormalization": false,
+                "configuredTerminalAgentProgramMappings":
+                    configuration.terminalAgentProgramMappings,
+            ]
+        }
         try writeJSONObject(datasetManifest, to: outputFiles[0], pretty: true)
 
         return CausalDatasetCompilerResult(
@@ -1268,10 +1344,13 @@ private func serializeContextEvent(
     let content = kind == "write"
         ? resolvedWriteContent(event)
         : event.string("content") ?? ""
-    let location = compactJSONObject([
+    let legacyLocation = compactJSONObject([
         "application": nonEmpty(event.string("appName")),
         "window": nonEmpty(event.string("windowTitle")),
     ])
+    let location = kind == "write"
+        ? (event["modelFacingDestination"] as? [String: Any] ?? legacyLocation)
+        : legacyLocation
     var serialized: [String: Any] = compactJSONObject([
         "kind": kind,
         (kind == "read" ? "source" : "destination"): location.isEmpty ? nil : location,
@@ -1591,10 +1670,14 @@ private func rangeSemanticCursorJSONObject(
 
 private func serializeQuery(
     _ conditioningState: [String: Any],
+    modelFacingDestination: [String: Any]? = nil,
     includeTimestamp: Bool
 ) throws -> String {
-    var destination = conditioningState["destination"] as? [String: Any] ?? [:]
-    destination.removeValue(forKey: "processIdentifier")
+    var destination = modelFacingDestination
+        ?? (conditioningState["destination"] as? [String: Any] ?? [:])
+    if modelFacingDestination == nil {
+        destination.removeValue(forKey: "processIdentifier")
+    }
     let cursor = conditioningState["cursorContext"] as? [String: Any]
     let modelCursor: Any
     if cursor?.string("source") == "accessibility_string_for_range" {
@@ -1774,6 +1857,15 @@ private func convertedRecord(
             "sourceOutcomeReconstructedUsedObservation"
         ) ?? false
         record["cursorFidelity"] = event.object["cursorFidelity"] ?? NSNull()
+        if let destination = event.object["modelFacingDestination"] {
+            record["modelFacingDestination"] = destination
+        }
+        if let key = event.object.string("logicalDestinationKey") {
+            record["logicalDestinationKey"] = key
+        }
+        if let derivation = event.object["destinationDerivation"] {
+            record["destinationDerivation"] = derivation
+        }
     }
     return record
 }

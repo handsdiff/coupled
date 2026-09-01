@@ -104,6 +104,7 @@ def main() -> int:
         "beforeLogicalValue": base,
         "selectedTerminalLogicalValue": base + provisional,
         "targetIdentity": identity,
+        "logicalDestinationKey": "Obsidian\u001fnote_editor\u001f\u001fGTM\u001f\u001f",
         "conditioningState": {"cursorContext": {"selectedText": ""}},
     }
     revision_right = {
@@ -115,6 +116,7 @@ def main() -> int:
         "beforeLogicalValue": base + revised_before,
         "selectedTerminalLogicalValue": base + finalized,
         "targetIdentity": identity,
+        "logicalDestinationKey": "Obsidian\u001fnote_editor\u001f\u001fGTM\u001f\u001f",
         "conditioningState": {"cursorContext": {"selectedText": ""}},
     }
     revision_episode = reducer.OpenEpisode(
@@ -329,6 +331,10 @@ def main() -> int:
             "fieldDescription": "Terminal 1, ⠏ coupled Use help",
             "fieldLabel": "",
         },
+        "logicalDestinationKey": (
+            "Visual Studio Code\u001fintegrated_terminal\u001fTerminal 1"
+            "\u001f\u001fagent_cli\u001fCodex"
+        ),
         "conditioningState": {"cursorContext": {"selectedText": ""}},
     }
     right = {
@@ -342,6 +348,10 @@ def main() -> int:
             **left["targetIdentity"],
             "fieldDescription": "Terminal 1, ⠸ coupled Use help",
         },
+        "logicalDestinationKey": (
+            "Visual Studio Code\u001fintegrated_terminal\u001fTerminal 1"
+            "\u001f\u001fagent_cli\u001fCodex"
+        ),
         "conditioningState": {
             "cursorContext": {"selectedText": ""},
             "clipboard": {

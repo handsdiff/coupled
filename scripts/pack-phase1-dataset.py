@@ -100,6 +100,7 @@ def require_compiled_dataset(
         "phase1-causal-v12",
         "phase1-causal-v13",
         "phase1-causal-v14",
+        "phase1-causal-v15",
         "phase1-episode-causal-v1",
         "phase1-episode-causal-v2",
         "phase1-episode-causal-v3",
@@ -111,12 +112,14 @@ def require_compiled_dataset(
         "phase1-raw-episode-causal-v4",
         "phase1-raw-episode-causal-v5",
         "phase1-raw-episode-causal-v6",
+        "phase1-raw-episode-causal-v7",
+        "phase1-raw-episode-causal-v8",
     }:
         raise ValueError(
             "packer requires a supported causal or episode-causal conversion"
         )
-    if manifest.get("serialization", {}).get("contextVersion") != 3:
-        raise ValueError("packer requires model-facing contextVersion 3")
+    if manifest.get("serialization", {}).get("contextVersion") not in {3, 4}:
+        raise ValueError("packer requires model-facing contextVersion 3 or 4")
     if manifest.get("serialization", {}).get("targetFormat") != "structured_authorship_segments":
         raise ValueError("packer requires structured authorship targets")
     if manifest.get("counts", {}).get("examples") != len(examples):
@@ -691,6 +694,8 @@ def main() -> int:
                     "phase1-raw-episode-causal-v4",
                     "phase1-raw-episode-causal-v5",
                     "phase1-raw-episode-causal-v6",
+                    "phase1-raw-episode-causal-v7",
+                    "phase1-raw-episode-causal-v8",
                 }:
                     # v2 deliberately removes micro-WRITEs from model-facing
                     # events. Their IDs remain immutable audit lineage on the

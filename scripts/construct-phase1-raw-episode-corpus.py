@@ -23,8 +23,11 @@ from pathlib import Path
 from typing import Any
 
 
-EPISODE_VERSION = "phase1-raw-episode-v6"
-CONVERSION_VERSION = "phase1-raw-episode-causal-v6"
+EPISODE_VERSION = "phase1-raw-episode-v8"
+CONVERSION_VERSION = "phase1-raw-episode-causal-v8"
+DESTINATION_MEMBERSHIP_SHADOW_VERSION = (
+    "phase1-write-destination-membership-activation-v1"
+)
 MIN_PERSISTENT_CHARACTERS = 40
 MIN_PERSISTENT_WORDS = 6
 MIN_SUBMITTED_CHARACTERS = 4
@@ -98,6 +101,29 @@ def stable_destination(member: dict[str, Any]) -> tuple[Any, ...]:
         stable_field_description(identity.get("fieldDescription")),
         identity.get("fieldLabel"),
     )
+
+
+def normalized_destination_key(member: dict[str, Any]) -> str | None:
+    value = member.get("logicalDestinationKey")
+    return value if isinstance(value, str) and value else None
+
+
+def same_episode_destination(
+    left: dict[str, Any], right: dict[str, Any]
+) -> bool:
+    """Compare the authoritative model-facing receiving surfaces.
+
+    Raw AX identity remains audit evidence, but volatile window titles and
+    element metadata no longer define composition boundaries in v8.
+    """
+    left_key = normalized_destination_key(left)
+    right_key = normalized_destination_key(right)
+    if left_key is None or right_key is None:
+        raise ValueError(
+            "phase1-raw-episode-v8 requires normalized logicalDestinationKey "
+            "on every WRITE primitive"
+        )
+    return left_key == right_key
 
 
 def normalized_text(value: str) -> str:
@@ -266,7 +292,7 @@ def prompt_epoch_reset_compatible(
     return (
         is_prompt_surface(left)
         and is_prompt_surface(right)
-        and stable_destination(left) == stable_destination(right)
+        and same_episode_destination(left, right)
         and left.get("boundaryReason") == "write_delay_elapsed"
         and "return" not in left_hints
         and isinstance(terminal, str)
@@ -382,7 +408,7 @@ def same_element_internal_revision_continuation(
         "currentCompositionSubstantive": current_substantive,
     })
     proven = (
-        stable_destination(left) == stable_destination(right)
+        same_episode_destination(left, right)
         and same_element
         and left.get("boundaryReason") == "pointer_selection_boundary"
         and 0 <= gap <= MAX_INTERNAL_REVISION_GAP_SECONDS
@@ -1181,8 +1207,7 @@ def classify_episode(
     )
     internal_revision_count = len(proven_revision_pairs)
     same_destination = all(
-        stable_destination(member) == stable_destination(first)
-        for member in episode.members
+        same_episode_destination(member, first) for member in episode.members
     )
     if not isinstance(after, str):
         reconstruction_status = "unreconstructible_missing_endpoint"
@@ -1423,6 +1448,9 @@ def classify_episode(
         "beganAt": first["beganAt"],
         "candidateAvailableAt": candidate_available_at,
         "initialConditioningState": conditioning,
+        "initialModelFacingDestination": first.get("modelFacingDestination"),
+        "initialLogicalDestinationKey": first.get("logicalDestinationKey"),
+        "initialDestinationDerivation": first.get("destinationDerivation"),
         "initialObservationSource": (
             "strict_single_character_fast_start_recovery" if recovered
             else episode.primitives[0].get("initialObservationSource")
@@ -1522,6 +1550,19 @@ def assemble(
     projection: Any,
 ) -> dict[str, Any]:
     manifest = load_json(corpus / "corpus.json")
+    write_destination = manifest.get("writeDestination")
+    if not (
+        manifest.get("conversionVersion") == "phase1-causal-v15"
+        and isinstance(write_destination, dict)
+        and isinstance(
+            write_destination.get("configuredTerminalAgentProgramMappings"),
+            dict,
+        )
+    ):
+        raise ValueError(
+            "phase1-raw-episode-v8 requires a phase1-causal-v15 corpus with "
+            "an explicit WRITE-destination configuration"
+        )
     primitive_manifest = load_json(primitives_path / "episode-review.json")
     source = primitive_manifest.get("source") or {}
     if source.get("corpusID") != manifest.get("corpusID"):
@@ -1574,6 +1615,7 @@ def assemble(
         event = event_by_id[primitive["memberWriteEventIDs"][0]]
         by_session.setdefault(event["sessionID"], []).append(primitive)
     episodes: list[OpenEpisode] = []
+    destination_identity_shadow: list[dict[str, Any]] = []
     for session_id, rows in by_session.items():
         rows.sort(key=lambda row: (row["beganAt"], row["memberWriteEventIDs"][0]))
         current = OpenEpisode([rows[0]], "session_start")
@@ -1594,7 +1636,32 @@ def assemble(
                 events, session_id, timestamp(current.first["beganAt"]), lower, upper,
                 current_completion, left.get("application"),
             )
-            same_destination = stable_destination(left) == stable_destination(right)
+            raw_same_destination = (
+                stable_destination(left) == stable_destination(right)
+            )
+            left_normalized_key = normalized_destination_key(left)
+            right_normalized_key = normalized_destination_key(right)
+            same_destination = same_episode_destination(left, right)
+            normalized_same_destination = same_destination
+            destination_identity_shadow.append({
+                "schemaVersion": 1,
+                "shadowVersion": DESTINATION_MEMBERSHIP_SHADOW_VERSION,
+                "sessionID": session_id,
+                "between": [left["writeEventID"], right["writeEventID"]],
+                "authoritativeMembershipPolicy": "normalized_destination_v1",
+                "authoritativeSameDestination": same_destination,
+                "rawSameDestination": raw_same_destination,
+                "normalizedSameDestination": normalized_same_destination,
+                "wouldChangeIdentityGate": (
+                    normalized_same_destination != raw_same_destination
+                ),
+                "leftLogicalDestinationKey": left_normalized_key,
+                "rightLogicalDestinationKey": right_normalized_key,
+                "leftModelFacingDestination": left.get("modelFacingDestination"),
+                "rightModelFacingDestination": right.get("modelFacingDestination"),
+                "leftRawTargetIdentity": left.get("targetIdentity"),
+                "rightRawTargetIdentity": right.get("targetIdentity"),
+            })
             exact_continuity = field_state_continuous(left, right)
             epoch_reset = prompt_epoch_reset_compatible(left, right)
             internal_revision, internal_revision_evidence = (
@@ -1700,6 +1767,10 @@ def assemble(
     # The projection copies its decisions and candidates' hashes. Preserve a
     # complete state-machine audit next to the model-facing corpus as well.
     write_jsonl(output / "raw-episode-candidates.jsonl", candidates)
+    write_jsonl(
+        output / "destination-identity-shadow.jsonl",
+        destination_identity_shadow,
+    )
     artifact = load_json(output / "corpus.json")
     artifact["artifactType"] = "phase1_raw_authoritative_episode_corpus"
     artifact["source"]["candidateEvidenceSHA256"] = {
@@ -1732,9 +1803,21 @@ def assemble(
         "separateStatuses": [
             "reconstructionStatus", "closureStatus", "lossEligibility",
         ],
+        "destinationMembershipAuthority": "normalized_destination_v1",
+        "destinationMembershipComparisonVersion": (
+            DESTINATION_MEMBERSHIP_SHADOW_VERSION
+        ),
+        "normalizedDestinationMembershipActivated": True,
+        "changedDestinationBoundaryCount": sum(
+            bool(row["wouldChangeIdentityGate"])
+            for row in destination_identity_shadow
+        ),
     }
     artifact["artifactDigestsSHA256"]["raw-episode-candidates.jsonl"] = sha256(
         output / "raw-episode-candidates.jsonl"
+    )
+    artifact["artifactDigestsSHA256"]["destination-identity-shadow.jsonl"] = sha256(
+        output / "destination-identity-shadow.jsonl"
     )
     (output / "corpus.json").write_text(
         json.dumps(artifact, ensure_ascii=False, sort_keys=True) + "\n",

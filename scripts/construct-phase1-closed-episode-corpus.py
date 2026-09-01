@@ -160,9 +160,17 @@ def model_target(target: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def serialize_query(conditioning: dict[str, Any]) -> str:
-    destination = dict(conditioning.get("destination") or {})
-    destination.pop("processIdentifier", None)
+def serialize_query(
+    conditioning: dict[str, Any],
+    model_facing_destination: dict[str, Any] | None = None,
+) -> str:
+    destination = dict(
+        model_facing_destination
+        if model_facing_destination is not None
+        else conditioning.get("destination") or {}
+    )
+    if model_facing_destination is None:
+        destination.pop("processIdentifier", None)
     cursor = conditioning.get("cursorContext") or {}
     if cursor.get("source") == "accessibility_string_for_range":
         cursor = {
@@ -236,8 +244,10 @@ def construct(
     output: Path,
 ) -> dict[str, Any]:
     manifest = load_json(source / "corpus.json")
-    if manifest.get("conversionVersion") != "phase1-causal-v14":
-        raise ValueError("strict episodes require phase1-causal-v14 source")
+    if manifest.get("conversionVersion") not in {
+        "phase1-causal-v14", "phase1-causal-v15",
+    }:
+        raise ValueError("strict episodes require phase1-causal-v14 or v15 source")
     source_events = load_jsonl(source / "events.jsonl")
     source_blocks = load_jsonl(source / "context-blocks.jsonl")
     source_examples = load_jsonl(source / "examples.jsonl")
@@ -404,6 +414,16 @@ def construct(
             "closureStatus": adjudication.get("closureStatus"),
             "lossEligibility": adjudication.get("lossEligibility"),
         }
+        if isinstance(candidate.get("initialModelFacingDestination"), dict):
+            event["modelFacingDestination"] = candidate[
+                "initialModelFacingDestination"
+            ]
+            event["logicalDestinationKey"] = candidate.get(
+                "initialLogicalDestinationKey"
+            )
+            event["destinationDerivation"] = candidate.get(
+                "initialDestinationDerivation"
+            )
         normalized_events.append(event)
         normalized_by_id[episode_event_id] = event
         if adjudication["decision"] == "closed_loss_episode":
@@ -493,7 +513,16 @@ def construct(
         conditioning = candidate.get("initialConditioningState")
         if not isinstance(conditioning, dict):
             raise ValueError(f"candidate lacks initial conditioning: {adjudication.get('label')}")
-        query = serialize_query(conditioning)
+        model_facing_destination = candidate.get("initialModelFacingDestination")
+        if (
+            manifest.get("conversionVersion") == "phase1-causal-v15"
+            and not isinstance(model_facing_destination, dict)
+        ):
+            raise ValueError(
+                f"candidate lacks compiler-normalized destination: "
+                f"{adjudication.get('label')}"
+            )
+        query = serialize_query(conditioning, model_facing_destination)
         context_ids = normalized_context(first, event["beganAt"], event["sourceEventID"])
         serialized_blocks = [normalized_block_by_id[value]["serialized"] for value in context_ids]
         context = "\n".join(serialized_blocks)
@@ -505,7 +534,7 @@ def construct(
             if normalized_block_by_id[block_id]["contextBlockType"] == "semantic_event"
             for record_id in normalized_by_id[block_id].get("sourceRecordIDs", [])
         })
-        episode_examples.append({
+        episode_example = {
             **first,
             "schemaVersion": 12,
             "conversionVersion": CONVERSION_VERSION,
@@ -550,7 +579,16 @@ def construct(
                 "availableAt": event["availableAt"],
                 "decision": adjudication["decision"],
             },
-        })
+        }
+        if isinstance(model_facing_destination, dict):
+            episode_example["modelFacingDestination"] = model_facing_destination
+            episode_example["logicalDestinationKey"] = candidate.get(
+                "initialLogicalDestinationKey"
+            )
+            episode_example["destinationDerivation"] = candidate.get(
+                "initialDestinationDerivation"
+            )
+        episode_examples.append(episode_example)
 
     episode_examples.sort(key=lambda row: (row["targetBeganAt"], row["exampleID"]))
     for ordinal, row in enumerate(episode_examples):
@@ -602,6 +640,11 @@ def construct(
                 },
             },
             "serialization": manifest["serialization"],
+            **(
+                {"writeDestination": manifest["writeDestination"]}
+                if isinstance(manifest.get("writeDestination"), dict)
+                else {}
+            ),
             "objective": {
                 **manifest["objective"],
                 "predictionUnit": "closed_composition_episode",

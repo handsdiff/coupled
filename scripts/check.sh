@@ -25,6 +25,7 @@ swiftc \
   "$project_dir/Sources/CoupledCore/ViewportCrop.swift" \
   "$project_dir/Sources/CoupledCore/LiveEventLogFormatter.swift" \
   "$project_dir/Sources/CoupledCore/Phase1SemanticReducer.swift" \
+  "$project_dir/Sources/CoupledCore/Phase1WriteDestination.swift" \
   "$project_dir/Sources/CoupledCore/CausalDatasetCompiler.swift" \
   "$project_dir/Checks/main.swift" \
   -o "$check_binary"
@@ -114,6 +115,8 @@ python3 -m py_compile \
   "$project_dir/scripts/check-phase1-read-surface-v2.py" \
   "$project_dir/scripts/build-phase1-read-surface-v2-review.py" \
   "$project_dir/scripts/serve-phase1-read-surface-v2-review.py" \
+  "$project_dir/scripts/prepare-phase1-write-identity-review.py" \
+  "$project_dir/scripts/serve-phase1-write-identity-review.py" \
   "$project_dir/scripts/build-phase1-read-surface-evidence.py" \
   "$project_dir/scripts/audit-phase1-read-surface-evidence.py" \
   "$project_dir/scripts/audit-read-accessibility-surfaces.py" \

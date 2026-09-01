@@ -161,7 +161,7 @@ rectangular screenshot.
 
 ## Implemented semantic reduction and causal compilation
 
-Current compiler: `phase1-causal-v14`
+Current compiler: `phase1-causal-v15`
 Current reducer: `phase1-semantic-v13`
 
 Semantic v13 consumes `session.json`, `raw.jsonl`, and immutable read-surface
@@ -192,6 +192,31 @@ Manual overlay review found v2 clearly better in every case. The final
 rule selected six semantic containers, six repeated vertical panes, six
 repeated bounded surfaces, and one nearest outer AX container. The production
 evidence replay then produced 19 hash-bound OCR records with zero unresolved.
+
+Causal v15 constructs a smaller model-facing WRITE destination from the
+pre-mutation Accessibility evidence while preserving the complete original
+conditioning state and lineage for audit. In VS Code, proven terminal focus is
+represented as an integrated-terminal surface rather than inheriting the title
+of a background editor. Literal terminal program titles can identify known
+shells or agent interfaces. Local aliases such as `coupled` are not universal
+evidence: they require an explicit `--terminal-agent-title coupled=Codex`
+mapping, which is pinned in `dataset.json` and the compatible corpus contract.
+The compiler does not use a nearest prior READ to guess terminal identity. If
+the pre-write evidence cannot prove shell versus agent, the interaction mode is
+`unknown`; the current observed `git` case therefore remains unresolved rather
+than receiving a convenient label.
+
+Raw episode v8 makes that normalized logical destination authoritative for
+composition grouping. Volatile raw AX window titles, element hashes, and
+background-editor labels remain audit evidence but no longer create or erase a
+closed-WRITE boundary. The other gates remain independent: continuous editable
+state, affected composition region, novel causally available READs, and
+submission still determine whether adjacent micro-WRITEs can merge. Replaying
+the eight reviewed historical sessions produced the same 787 closed episodes
+and 450 loss-bearing examples as v7. All 18 raw-versus-normalized identity
+disagreements remained partitions for another proven reason (14 submissions,
+two novel READs, and two state discontinuities). The `coupled=Codex` mapping is
+explicitly pinned in the corpus, and two v8 constructions were byte-identical.
 
 The full-session v11 replay on `phase1-ordinary-work-2026-08-31-1` audited all
 1,337 raw screen observations: 1,334 produced surface evidence and three were
@@ -939,14 +964,14 @@ comparable target-token NLL through the subscription interface.
 
 ### Before the next authoritative collection
 
-Treat `phase1-semantic-v13`, `phase1-causal-v14`, the one-second READ delay,
+Treat `phase1-semantic-v13`, `phase1-causal-v15`, the one-second READ delay,
 three-second WRITE delay, zero fixed preview crops, retained full-window
 screenshots, and schema-7 AX ancestry as the candidate baseline.
 
 1. Run normal work without changing collector rules mid-session.
 2. Build and audit immutable `ax-pane-read-v2` evidence from schema-7 retained full-window screenshots; use `pointer-local-read-v1` only for older sessions.
 3. Reduce the raw session with `phase1-semantic-v13` plus that evidence; inspect finalized events, fallback dispositions, and every non-event disposition.
-4. Compile the finalized reduction with `phase1-causal-v14`, supplying the raw session directory for hash and lineage verification.
+4. Compile the finalized reduction with `phase1-causal-v15`, supplying the raw session directory for hash and lineage verification. Supply only manually reviewed terminal-title mappings; otherwise preserve an unknown interaction mode.
 5. Manually sample the temporal trace against the actual work and record Phase 1's fidelity categories: missing events, temporal-ordering errors, incorrect content inclusion, authorship errors, write-boundary disagreement, destination ambiguity, and future leakage.
 6. Quantify reducer unresolved reasons plus target/context exclusions. Fix only recurrent material errors demonstrated by that trace; otherwise freeze the collector/reducer/compiler versions.
 

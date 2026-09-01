@@ -14,11 +14,18 @@ def main() -> int:
     parser.add_argument("corpus", type=Path)
     arguments = parser.parse_args()
     manifest = audit(arguments.corpus)
-    print(
-        f"Phase 1 corpus audit passed: {manifest['counts']['examples']} examples, "
-        f"{manifest['counts']['sessions']} sessions, "
-        f"{manifest['blocking']['blockCount']} chronological blocks"
-    )
+    if manifest.get("artifactType") == "phase1_raw_authoritative_episode_corpus":
+        print(
+            f"Phase 1 corpus audit passed: {manifest['counts']['examples']} examples, "
+            f"{manifest['counts']['closedEpisodeEvents']} closed episodes, "
+            f"{manifest['blocking']['blockCount']} chronological blocks"
+        )
+    else:
+        print(
+            f"Phase 1 corpus audit passed: {manifest['counts']['examples']} examples, "
+            f"{manifest['counts']['sessions']} sessions, "
+            f"{manifest['blocking']['blockCount']} chronological blocks"
+        )
     return 0
 
 
