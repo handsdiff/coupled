@@ -1045,7 +1045,9 @@ writeFixtureJSONL([rawFirstAttempt], to: rawFirstInput.appendingPathComponent("r
 try! Data("deliberately corrupt preview\n".utf8).write(
     to: rawFirstInput.appendingPathComponent("events.preview.jsonl")
 )
-let reducer = Phase1SemanticReducer()
+let reducer = Phase1SemanticReducer(configuration: .init(
+    reducerVersion: "phase1-semantic-v10"
+))
 _ = try! reducer.reduce(sourceDirectory: rawFirstInput, outputDirectory: rawFirstReductionA)
 try! Data("different corrupt preview\n".utf8).write(
     to: rawFirstInput.appendingPathComponent("events.preview.jsonl")
@@ -2437,7 +2439,9 @@ writeFixtureJSONL(
     ],
     to: promptClosureInput.appendingPathComponent("raw.jsonl")
 )
-_ = try! Phase1SemanticReducer().reduce(
+_ = try! Phase1SemanticReducer(configuration: .init(
+    reducerVersion: "phase1-semantic-v10"
+)).reduce(
     sourceDirectory: promptClosureInput,
     outputDirectory: promptClosureReduction
 )
@@ -2591,7 +2595,9 @@ writeFixtureJSONL(
     ],
     to: fastStartClosureInput.appendingPathComponent("raw.jsonl")
 )
-_ = try! Phase1SemanticReducer().reduce(
+_ = try! Phase1SemanticReducer(configuration: .init(
+    reducerVersion: "phase1-semantic-v10"
+)).reduce(
     sourceDirectory: fastStartClosureInput,
     outputDirectory: fastStartClosureReduction
 )

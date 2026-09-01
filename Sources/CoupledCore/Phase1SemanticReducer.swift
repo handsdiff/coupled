@@ -6,7 +6,7 @@ public struct Phase1SemanticReducerConfiguration: Sendable {
     public let readSurfaceEvidenceDirectory: URL?
 
     public init(
-        reducerVersion: String = "phase1-semantic-v10",
+        reducerVersion: String,
         readSurfaceEvidenceDirectory: URL? = nil
     ) {
         self.reducerVersion = reducerVersion
@@ -47,7 +47,7 @@ public enum Phase1SemanticReducerError: Error, CustomStringConvertible {
 public struct Phase1SemanticReducer {
     public let configuration: Phase1SemanticReducerConfiguration
 
-    public init(configuration: Phase1SemanticReducerConfiguration = .init()) {
+    public init(configuration: Phase1SemanticReducerConfiguration) {
         self.configuration = configuration
     }
 
