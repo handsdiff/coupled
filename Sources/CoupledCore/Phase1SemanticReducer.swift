@@ -3,9 +3,14 @@ import Foundation
 
 public struct Phase1SemanticReducerConfiguration: Sendable {
     public let reducerVersion: String
+    public let readSurfaceEvidenceDirectory: URL?
 
-    public init(reducerVersion: String = "phase1-semantic-v10") {
+    public init(
+        reducerVersion: String = "phase1-semantic-v10",
+        readSurfaceEvidenceDirectory: URL? = nil
+    ) {
         self.reducerVersion = reducerVersion
+        self.readSurfaceEvidenceDirectory = readSurfaceEvidenceDirectory
     }
 }
 
@@ -29,7 +34,7 @@ public enum Phase1SemanticReducerError: Error, CustomStringConvertible {
         switch self {
         case .missingFile(let path): return "required source file is missing: \(path)"
         case .outputAlreadyExists(let path): return "reducer output is not empty: \(path)"
-        case .invalidManifest(let reason): return "invalid session manifest: \(reason)"
+        case .invalidManifest(let reason): return "invalid reducer input manifest: \(reason)"
         case .invalidJSON(let path, let line): return "invalid JSON object at \(path):\(line)"
         case .duplicateRawRecordID(let id): return "duplicate raw record ID: \(id)"
         case .couldNotCreate(let path): return "could not create reducer output: \(path)"
@@ -67,6 +72,13 @@ public struct Phase1SemanticReducer {
             throw Phase1SemanticReducerError.invalidManifest("missing sessionID")
         }
         let raw = try reducerReadJSONL(rawURL)
+        let readSurfaceEvidence = try loadReadSurfaceEvidence(
+            configuration: configuration,
+            sessionURL: sessionURL,
+            rawURL: rawURL,
+            sessionID: sessionID,
+            raw: raw
+        )
         let fastStartChains = reducerFastStartChains(raw)
         let navigationChains = reducerNavigationChains(raw)
         let writeOverlapBoundaries = raw.compactMap { record -> ReducerWriteBoundary? in
@@ -105,17 +117,26 @@ public struct Phase1SemanticReducer {
             }
             switch object["recordType"] as? String {
             case "screen_ocr_observation":
-                switch reduceRead(object, sessionID: sessionID) {
+                let effectiveObject = effectiveReadObject(
+                    object,
+                    evidence: readSurfaceEvidence?.bySourceRecordID[
+                        stringValue(object["recordID"]) ?? ""
+                    ],
+                    unresolvedReason: readSurfaceEvidence?.unresolvedReasonBySourceRecordID[
+                        stringValue(object["recordID"]) ?? ""
+                    ]
+                )
+                switch reduceRead(effectiveObject, sessionID: sessionID) {
                 case .failure(let failure):
                     dispositions.append(ReducerDisposition(line: record.line, object: reducerUnresolved(
-                        sessionID: sessionID, raw: object, line: record.line,
+                        sessionID: sessionID, raw: effectiveObject, line: record.line,
                         kind: "read", rule: failure.rule, reason: failure.reason,
                         details: failure.details
                     )))
                 case .success(let event):
-                    guard let capturedAt = stringValue(object["capturedAt"]) else {
+                    guard let capturedAt = stringValue(effectiveObject["capturedAt"]) else {
                         dispositions.append(ReducerDisposition(line: record.line, object: reducerUnresolved(
-                            sessionID: sessionID, raw: object, line: record.line,
+                            sessionID: sessionID, raw: effectiveObject, line: record.line,
                             kind: "read", rule: "semantic_time_overlap_v1",
                             reason: "read_missing_captured_at"
                         )))
@@ -123,7 +144,7 @@ public struct Phase1SemanticReducer {
                     }
                     candidates.append(ReducerCandidate(
                         rawLine: record.line, kind: "read",
-                        overlapBoundaryAt: capturedAt, raw: object, event: event
+                        overlapBoundaryAt: capturedAt, raw: effectiveObject, event: event
                     ))
                 }
             case "active_tap_write_attempt":
@@ -225,17 +246,29 @@ public struct Phase1SemanticReducer {
         let unresolvedURL = output.appendingPathComponent("unresolved.jsonl")
         try reducerWriteJSONL(events, to: eventsURL)
         try reducerWriteJSONL(unresolved, to: unresolvedURL)
-        let reduction: [String: Any] = [
+        var sourceDescription: [String: Any] = [
+            "digestsSHA256": [
+                "session.json": try reducerSHA256(sessionURL),
+                "raw.jsonl": try reducerSHA256(rawURL),
+            ],
+            "rawRecordCount": raw.count,
+        ]
+        if let readSurfaceEvidence {
+            sourceDescription["readSurfaceEvidence"] = [
+                "schemaVersion": readSurfaceEvidence.schemaVersion,
+                "ruleVersion": readSurfaceEvidence.ruleVersion,
+                "manifestSHA256": readSurfaceEvidence.manifestSHA256,
+                "readSurfacesSHA256": readSurfaceEvidence.readSurfacesSHA256,
+                "unresolvedSHA256": readSurfaceEvidence.unresolvedSHA256,
+                "evidenceCount": readSurfaceEvidence.bySourceRecordID.count,
+                "fallbackCount": readSurfaceEvidence.unresolvedReasonBySourceRecordID.count,
+            ]
+        }
+        var reduction: [String: Any] = [
             "schemaVersion": 1,
             "reducerVersion": configuration.reducerVersion,
             "sessionID": sessionID,
-            "source": [
-                "digestsSHA256": [
-                    "session.json": try reducerSHA256(sessionURL),
-                    "raw.jsonl": try reducerSHA256(rawURL),
-                ],
-                "rawRecordCount": raw.count,
-            ],
+            "source": sourceDescription,
             "artifacts": [
                 "digestsSHA256": [
                     "events.jsonl": try reducerSHA256(eventsURL),
@@ -261,6 +294,9 @@ public struct Phase1SemanticReducer {
             "readOverlapOrdering": "READ capturedAt with finalized WRITE beganAt boundaries; raw append order ignored",
             "previewAuthority": false,
         ]
+        if readSurfaceEvidence != nil {
+            reduction["readSurfaceRule"] = "hash-verified pointer-local-read-v1 evidence before causal overlap; unresolved evidence falls back to collector OCR"
+        }
         try reducerWriteJSON(reduction, to: output.appendingPathComponent("reduction.json"))
         return Phase1SemanticReducerResult(
             rawRecordCount: raw.count,
@@ -273,6 +309,15 @@ public struct Phase1SemanticReducer {
 }
 
 private struct ReducerLine { let line: Int; let object: [String: Any] }
+private struct ReducerReadSurfaceEvidence {
+    let schemaVersion: Int
+    let ruleVersion: String
+    let manifestSHA256: String
+    let readSurfacesSHA256: String
+    let unresolvedSHA256: String
+    let bySourceRecordID: [String: [String: Any]]
+    let unresolvedReasonBySourceRecordID: [String: String]
+}
 private struct ReducerCandidate {
     let rawLine: Int
     let kind: String
@@ -301,6 +346,215 @@ private struct ReducerFailure: Error {
     let rule: String
     let reason: String
     let details: [String: Any]
+}
+
+private func loadReadSurfaceEvidence(
+    configuration: Phase1SemanticReducerConfiguration,
+    sessionURL: URL,
+    rawURL: URL,
+    sessionID: String,
+    raw: [ReducerLine]
+) throws -> ReducerReadSurfaceEvidence? {
+    let expectedReducerVersion = "phase1-semantic-v11"
+    if configuration.reducerVersion != expectedReducerVersion {
+        guard configuration.readSurfaceEvidenceDirectory == nil else {
+            throw Phase1SemanticReducerError.invalidManifest(
+                "--read-surface-evidence requires \(expectedReducerVersion)"
+            )
+        }
+        return nil
+    }
+    guard let directory = configuration.readSurfaceEvidenceDirectory?
+        .standardizedFileURL else {
+        throw Phase1SemanticReducerError.invalidManifest(
+            "\(expectedReducerVersion) requires --read-surface-evidence"
+        )
+    }
+    let manifestURL = directory.appendingPathComponent("read-surface-evidence.json")
+    let evidenceURL = directory.appendingPathComponent("read-surfaces.jsonl")
+    let unresolvedURL = directory.appendingPathComponent("unresolved.jsonl")
+    let jobsURL = directory.appendingPathComponent("jobs.jsonl")
+    for url in [manifestURL, evidenceURL, unresolvedURL, jobsURL]
+        where !FileManager.default.fileExists(atPath: url.path)
+    {
+        throw Phase1SemanticReducerError.missingFile(url.path)
+    }
+    let manifestData = try Data(contentsOf: manifestURL)
+    let sessionHash = try reducerSHA256(sessionURL)
+    let rawHash = try reducerSHA256(rawURL)
+    let jobsHash = try reducerSHA256(jobsURL)
+    let readSurfacesHash = try reducerSHA256(evidenceURL)
+    let unresolvedHash = try reducerSHA256(unresolvedURL)
+    let evidenceManifestHash = try reducerSHA256(manifestURL)
+    guard let manifest = try JSONSerialization.jsonObject(with: manifestData)
+        as? [String: Any],
+        intValue(manifest["schemaVersion"]) == 1,
+        stringValue(manifest["ruleVersion"]) == "pointer-local-read-v1",
+        stringValue(manifest["sessionID"]) == sessionID,
+        let source = manifest["source"] as? [String: Any],
+        let sourceDigests = source["digestsSHA256"] as? [String: Any],
+        stringValue(sourceDigests["session.json"]) == sessionHash,
+        stringValue(sourceDigests["raw.jsonl"]) == rawHash,
+        let artifacts = manifest["artifacts"] as? [String: Any],
+        let artifactDigests = artifacts["digestsSHA256"] as? [String: Any],
+        stringValue(artifactDigests["jobs.jsonl"]) == jobsHash,
+        stringValue(artifactDigests["read-surfaces.jsonl"])
+            == readSurfacesHash,
+        stringValue(artifactDigests["unresolved.jsonl"])
+            == unresolvedHash else {
+        throw Phase1SemanticReducerError.invalidManifest(
+            "read-surface evidence identity or digest differs from the raw session"
+        )
+    }
+
+    let rawScreenRecords = raw.filter {
+        stringValue($0.object["recordType"]) == "screen_ocr_observation"
+    }
+    let rawScreenByID = Dictionary(uniqueKeysWithValues: rawScreenRecords.compactMap {
+        line in stringValue(line.object["recordID"]).map { ($0, line) }
+    })
+    var evidenceBySourceID = [String: [String: Any]]()
+    for row in try reducerReadJSONL(evidenceURL) {
+        let object = row.object
+        guard intValue(object["schemaVersion"]) == 1,
+              stringValue(object["ruleVersion"]) == "pointer-local-read-v1",
+              stringValue(object["sessionID"]) == sessionID,
+              let sourceID = nonEmptyString(object["sourceRecordID"]),
+              let sourceRecord = rawScreenByID[sourceID],
+              intValue(object["sourceRawLine"]) == sourceRecord.line,
+              stringValue(object["capturedAt"])
+                == stringValue(sourceRecord.object["capturedAt"]),
+              stringValue(object["screenshotSHA256"])
+                == stringValue(sourceRecord.object["screenshotSHA256"]),
+              let content = object["content"] as? String, !content.isEmpty,
+              nonEmptyString(object["evidenceID"]) != nil,
+              stringValue(object["contentSHA256"])
+                == reducerSHA256String(content),
+              intValue(object["recognizedLineCount"]) != nil,
+              object["surfaceSelection"] is [String: Any],
+              validNormalizedRegion(object["regionOfInterest"] as? [String: Any]),
+              evidenceBySourceID[sourceID] == nil else {
+            throw Phase1SemanticReducerError.invalidManifest(
+                "invalid or duplicate read-surface evidence at line \(row.line)"
+            )
+        }
+        evidenceBySourceID[sourceID] = object
+    }
+
+    var unresolvedBySourceID = [String: String]()
+    for row in try reducerReadJSONL(unresolvedURL) {
+        guard intValue(row.object["schemaVersion"]) == 1,
+              stringValue(row.object["ruleVersion"]) == "pointer-local-read-v1",
+              stringValue(row.object["sessionID"]) == sessionID,
+              let sourceID = nonEmptyString(row.object["sourceRecordID"]),
+              let sourceRecord = rawScreenByID[sourceID],
+              intValue(row.object["sourceRawLine"]) == sourceRecord.line,
+              let reason = nonEmptyString(row.object["reason"]),
+              evidenceBySourceID[sourceID] == nil,
+              unresolvedBySourceID[sourceID] == nil else {
+            throw Phase1SemanticReducerError.invalidManifest(
+                "invalid, overlapping, or duplicate read-surface disposition at line \(row.line)"
+            )
+        }
+        unresolvedBySourceID[sourceID] = reason
+    }
+    let disposed = Set(evidenceBySourceID.keys).union(unresolvedBySourceID.keys)
+    guard disposed == Set(rawScreenByID.keys),
+          let counts = manifest["counts"] as? [String: Any],
+          intValue(counts["rawRecords"]) == raw.count,
+          intValue(counts["screenObservations"]) == rawScreenRecords.count,
+          intValue(counts["evidence"]) == evidenceBySourceID.count,
+          intValue(counts["unresolved"]) == unresolvedBySourceID.count else {
+        throw Phase1SemanticReducerError.invalidManifest(
+            "read-surface evidence does not account for every screen observation"
+        )
+    }
+    return ReducerReadSurfaceEvidence(
+        schemaVersion: 1,
+        ruleVersion: "pointer-local-read-v1",
+        manifestSHA256: evidenceManifestHash,
+        readSurfacesSHA256: readSurfacesHash,
+        unresolvedSHA256: unresolvedHash,
+        bySourceRecordID: evidenceBySourceID,
+        unresolvedReasonBySourceRecordID: unresolvedBySourceID
+    )
+}
+
+private func validNormalizedRegion(_ region: [String: Any]?) -> Bool {
+    guard let region,
+          let x = doubleValue(region["x"]),
+          let y = doubleValue(region["y"]),
+          let width = doubleValue(region["width"]),
+          let height = doubleValue(region["height"]) else { return false }
+    let tolerance = 0.000_001
+    return x >= -tolerance && y >= -tolerance
+        && width > 0 && height > 0
+        && x + width <= 1 + tolerance
+        && y + height <= 1 + tolerance
+}
+
+private func effectiveReadObject(
+    _ raw: [String: Any],
+    evidence: [String: Any]?,
+    unresolvedReason: String?
+) -> [String: Any] {
+    var effective = raw
+    guard let evidence else {
+        if let unresolvedReason {
+            effective["readSurface"] = [
+                "schemaVersion": 1,
+                "ruleVersion": "pointer-local-read-v1",
+                "status": "fallback_original_ocr",
+                "reason": unresolvedReason,
+            ]
+        }
+        return effective
+    }
+    let originalContent = stringValue(raw["content"]) ?? ""
+    effective["content"] = evidence["content"]
+    effective["recognizedLineCount"] = evidence["recognizedLineCount"]
+    effective["contentWasTruncated"] = false
+    for key in [
+        "viewportSideCropFraction", "viewportTopCropFraction",
+        "viewportBottomCropFraction",
+    ] { effective.removeValue(forKey: key) }
+    if let bounds = readSurfaceCaptureBounds(raw: raw, evidence: evidence) {
+        effective["captureBounds"] = bounds
+    }
+    effective["captureScope"] = "active_surface_proxy"
+    effective["readSurface"] = [
+        "schemaVersion": 1,
+        "ruleVersion": "pointer-local-read-v1",
+        "status": "surface_ocr_replacement",
+        "evidenceID": evidence["evidenceID"]!,
+        "surfaceSelection": evidence["surfaceSelection"]!,
+        "regionOfInterest": evidence["regionOfInterest"]!,
+        "originalContentSHA256": reducerSHA256String(originalContent),
+        "replacementContentSHA256": evidence["contentSHA256"]!,
+    ]
+    return effective
+}
+
+private func readSurfaceCaptureBounds(
+    raw: [String: Any], evidence: [String: Any]
+) -> [String: Any]? {
+    guard let window = raw["windowBounds"] as? [String: Any],
+          let region = evidence["regionOfInterest"] as? [String: Any],
+          validNormalizedRegion(region),
+          let windowX = doubleValue(window["x"]),
+          let windowY = doubleValue(window["y"]),
+          let windowWidth = doubleValue(window["width"]),
+          let windowHeight = doubleValue(window["height"]),
+          let x = doubleValue(region["x"]),
+          let y = doubleValue(region["y"]),
+          let width = doubleValue(region["width"]),
+          let height = doubleValue(region["height"]) else { return nil }
+    return [
+        "x": windowX + (x * windowWidth),
+        "y": windowY + ((1 - y - height) * windowHeight),
+        "width": width * windowWidth,
+        "height": height * windowHeight,
+    ]
 }
 
 private struct ReducerNavigationChain {

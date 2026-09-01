@@ -5,11 +5,13 @@ struct ReduceCommand {
     let inputDirectory: URL
     let outputDirectory: URL
     let reducerVersion: String
+    let readSurfaceEvidenceDirectory: URL?
 
     init(arguments: [String]) throws {
         var input: String?
         var output: String?
         var version = "phase1-semantic-v10"
+        var readSurfaceEvidence: String?
         var index = 0
         while index < arguments.count {
             let argument = arguments[index]
@@ -24,6 +26,7 @@ struct ReduceCommand {
             case "--input": input = try value()
             case "--output": output = try value()
             case "--reducer-version": version = try value()
+            case "--read-surface-evidence": readSurfaceEvidence = try value()
             default: throw ReduceCommandError.unknownOption(argument)
             }
             index += 1
@@ -33,11 +36,15 @@ struct ReduceCommand {
         inputDirectory = URL(fileURLWithPath: input).standardizedFileURL
         outputDirectory = URL(fileURLWithPath: output).standardizedFileURL
         reducerVersion = version
+        readSurfaceEvidenceDirectory = readSurfaceEvidence.map {
+            URL(fileURLWithPath: $0).standardizedFileURL
+        }
     }
 
     func run() throws {
         let result = try Phase1SemanticReducer(configuration: .init(
-            reducerVersion: reducerVersion
+            reducerVersion: reducerVersion,
+            readSurfaceEvidenceDirectory: readSurfaceEvidenceDirectory
         )).reduce(sourceDirectory: inputDirectory, outputDirectory: outputDirectory)
         print("Phase 1 semantic reduction complete.")
         print("Raw records:  \(result.rawRecordCount)")

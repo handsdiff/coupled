@@ -1,5 +1,6 @@
 import Foundation
 import CoreGraphics
+import CryptoKit
 
 func expect(_ condition: @autoclosure () -> Bool, _ message: String) {
     guard condition() else {
@@ -330,6 +331,12 @@ func readFixtureJSONL(_ url: URL) -> [[String: Any]] {
     return text.split(separator: "\n").map {
         try! JSONSerialization.jsonObject(with: Data($0.utf8)) as! [String: Any]
     }
+}
+
+func fixtureSHA256(_ url: URL) -> String {
+    SHA256.hash(data: try! Data(contentsOf: url))
+        .map { String(format: "%02x", $0) }
+        .joined()
 }
 
 func observation(
@@ -1069,6 +1076,12 @@ expect(
 
 let motivatingInput = fixtureRoot.appendingPathComponent("motivating-input")
 let motivatingReduction = fixtureRoot.appendingPathComponent("motivating-reduction")
+let motivatingSurfaceEvidence = fixtureRoot.appendingPathComponent(
+    "motivating-read-surface-evidence"
+)
+let motivatingReductionV11 = fixtureRoot.appendingPathComponent(
+    "motivating-reduction-v11"
+)
 try! FileManager.default.createDirectory(at: motivatingInput, withIntermediateDirectories: true)
 try! jsonData([
     "sessionID": "motivating-session",
@@ -1731,8 +1744,121 @@ _ = try! reducer.reduce(
     sourceDirectory: motivatingInput,
     outputDirectory: motivatingReduction
 )
+try! FileManager.default.createDirectory(
+    at: motivatingSurfaceEvidence, withIntermediateDirectories: true
+)
+let motivatingRawRows = readFixtureJSONL(
+    motivatingInput.appendingPathComponent("raw.jsonl")
+)
+let surfaceContentByRecordID = [
+    "read-before-write": "surface alpha\nsurface beta",
+    "read-after-write-began": "surface beta\nsurface gamma",
+    "read-containing-active-write": "page text\nthere was a paper about encr",
+    "stale-delayed-read": "surface stale content",
+]
+let motivatingSurfaceRows: [[String: Any]] = motivatingRawRows.enumerated().compactMap {
+    offset, raw in
+    guard raw["recordType"] as? String == "screen_ocr_observation",
+          let recordID = raw["recordID"] as? String,
+          let content = surfaceContentByRecordID[recordID] else { return nil }
+    let evidenceID = "fixture-surface-\(recordID)"
+    return [
+        "schemaVersion": 1,
+        "ruleVersion": "pointer-local-read-v1",
+        "evidenceID": evidenceID,
+        "jobID": evidenceID,
+        "sessionID": "motivating-session",
+        "sourceRecordID": recordID,
+        "sourceRawLine": offset + 1,
+        "capturedAt": raw["capturedAt"]!,
+        "regionOfInterest": ["x": 0.2, "y": 0.2, "width": 0.6, "height": 0.6],
+        "surfaceSelection": [
+            "ruleVersion": "pointer-local-read-v1",
+            "method": "pointer_local",
+            "confidence": "interaction_locus",
+        ],
+        "content": content,
+        "contentSHA256": SHA256.hash(data: Data(content.utf8))
+            .map { String(format: "%02x", $0) }.joined(),
+        "recognizedLineCount": content.split(separator: "\n").count,
+        "lines": content.split(separator: "\n").map {
+            ["text": String($0), "confidence": 1] as [String: Any]
+        },
+    ]
+}
+let motivatingJobsURL = motivatingSurfaceEvidence.appendingPathComponent("jobs.jsonl")
+let motivatingSurfacesURL = motivatingSurfaceEvidence.appendingPathComponent(
+    "read-surfaces.jsonl"
+)
+let motivatingSurfaceUnresolvedURL = motivatingSurfaceEvidence.appendingPathComponent(
+    "unresolved.jsonl"
+)
+writeFixtureJSONL([], to: motivatingJobsURL)
+writeFixtureJSONL(motivatingSurfaceRows, to: motivatingSurfacesURL)
+writeFixtureJSONL([], to: motivatingSurfaceUnresolvedURL)
+try! jsonData([
+    "schemaVersion": 1,
+    "ruleVersion": "pointer-local-read-v1",
+    "sessionID": "motivating-session",
+    "source": [
+        "digestsSHA256": [
+            "session.json": fixtureSHA256(
+                motivatingInput.appendingPathComponent("session.json")
+            ),
+            "raw.jsonl": fixtureSHA256(
+                motivatingInput.appendingPathComponent("raw.jsonl")
+            ),
+        ],
+    ],
+    "counts": [
+        "rawRecords": motivatingRawRows.count,
+        "screenObservations": motivatingSurfaceRows.count,
+        "jobs": 0,
+        "evidence": motivatingSurfaceRows.count,
+        "unresolved": 0,
+    ],
+    "artifacts": [
+        "digestsSHA256": [
+            "jobs.jsonl": fixtureSHA256(motivatingJobsURL),
+            "read-surfaces.jsonl": fixtureSHA256(motivatingSurfacesURL),
+            "unresolved.jsonl": fixtureSHA256(motivatingSurfaceUnresolvedURL),
+        ],
+    ],
+], pretty: true).write(
+    to: motivatingSurfaceEvidence.appendingPathComponent(
+        "read-surface-evidence.json"
+    )
+)
+_ = try! Phase1SemanticReducer(configuration: .init(
+    reducerVersion: "phase1-semantic-v11",
+    readSurfaceEvidenceDirectory: motivatingSurfaceEvidence
+)).reduce(
+    sourceDirectory: motivatingInput,
+    outputDirectory: motivatingReductionV11
+)
 let motivatingEvents = readFixtureJSONL(
     motivatingReduction.appendingPathComponent("events.jsonl")
+)
+let motivatingV11Events = readFixtureJSONL(
+    motivatingReductionV11.appendingPathComponent("events.jsonl")
+)
+expect(
+    motivatingV11Events.first {
+        ($0["sourceRecordIDs"] as? [String]) == ["read-after-write-began"]
+    }?["content"] as? String == "surface beta\nsurface gamma"
+        && motivatingV11Events.filter { $0["kind"] as? String == "read" }
+            .allSatisfy {
+                (($0["readSurface"] as? [String: Any])?["status"] as? String)
+                    == "surface_ocr_replacement"
+            },
+    "semantic v11 consumes hash-bound READ surface evidence before overlap"
+)
+expect(
+    motivatingV11Events.filter { $0["kind"] as? String == "write" }
+        .map { jsonData($0) }
+        == motivatingEvents.filter { $0["kind"] as? String == "write" }
+            .map { jsonData($0) },
+    "READ surface enrichment leaves every WRITE event unchanged"
 )
 let motivatingDispositions = readFixtureJSONL(
     motivatingReduction.appendingPathComponent("unresolved.jsonl")
