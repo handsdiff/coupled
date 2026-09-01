@@ -39,7 +39,7 @@ RUNNER = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = RUNNER
 SPEC.loader.exec_module(RUNNER)
 
-PREFLIGHT_VERSION = "phase1-qwen35-paid-preflight-v1"
+PREFLIGHT_VERSION = "phase1-qwen35-paid-preflight-v2"
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -312,7 +312,8 @@ def main_run() -> int:
             after_scores
         )
         clean_after = sum(
-            value["rendererParseTermination"] == "stop_sequence"
+            value["rendererParseTermination"]
+            == value["expectedRendererParseTermination"]
             for value in after_scores
         )
         exact_after = sum(value["exactMatch"] for value in after_scores)

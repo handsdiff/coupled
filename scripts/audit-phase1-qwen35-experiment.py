@@ -10,7 +10,7 @@ from typing import Any
 
 from phase1_qwen35_native import (
     MODEL_SPECS,
-    RENDERER_NAME,
+    RENDERER_CONTRACT,
     audit_native_pack,
     canonical_sha256,
     load_jsonl,
@@ -54,8 +54,13 @@ def audit_plan(
         "provider plan authorization boundary changed",
     )
     require(
-        plan.get("training", {}).get("renderer") == RENDERER_NAME,
-        "provider plan uses the wrong renderer",
+        plan.get("training", {}).get("rendererContract") == RENDERER_CONTRACT,
+        "provider plan uses the wrong renderer contract",
+    )
+    require(
+        plan.get("training", {}).get("renderersByModel")
+        == {key: MODEL_SPECS[key]["renderer"] for key in MODEL_SPECS},
+        "provider plan model-specific renderers changed",
     )
     require(
         plan.get("training", {}).get("rendererReduction") == "none",
@@ -99,19 +104,20 @@ def audit_plan(
         "the two tokenizers encode <|paste|> differently",
     )
     require(
-        base["responseTerminatorTokenID"]
-        == hybrid["responseTerminatorTokenID"]
-        == 248046,
-        "native response terminator is not <|im_end|>",
+        base["rendererStrategy"] == "raw_completion_eos"
+        and base["responseTerminatorTokenID"] == base["tokenizerEOSID"] == 248044
+        and base["expectedParseTermination"] == "eos",
+        "Base arm is not exact raw continuation terminated by tokenizer EOS",
     )
     require(
-        base["tokenizerEOSID"] != base["responseTerminatorTokenID"],
-        "Base tokenizer EOS trap is no longer exercised by the audit",
+        hybrid["rendererStrategy"] == "qwen3_5_disable_thinking_exact_content"
+        and hybrid["responseTerminatorTokenID"]
+        == hybrid["tokenizerEOSID"]
+        == 248046
+        and hybrid["expectedParseTermination"] == "stop_sequence",
+        "hybrid arm is not exact-content native non-thinking chat",
     )
-    require(
-        hybrid["tokenizerEOSID"] == hybrid["responseTerminatorTokenID"],
-        "hybrid tokenizer EOS metadata changed unexpectedly",
-    )
+    require(base["renderer"] != hybrid["renderer"], "model renderers were conflated")
 
     base_rows = rows_by_model["qwen35_base"]
     hybrid_rows = rows_by_model["qwen36_hybrid"]
@@ -120,48 +126,52 @@ def audit_plan(
         == [row["exampleID"] for row in hybrid_rows],
         "native model packs have different example order",
     )
+    tokenized_sequences_differ = 0
     for left, right in zip(base_rows, hybrid_rows, strict=True):
         for key in (
             "semanticModelInputSHA256",
             "targetTextSHA256",
-            "inputIDs",
-            "labels",
-            "modelInputTokenCount",
-            "targetTokenCount",
             "pasteActionCount",
         ):
             require(
                 left[key] == right[key],
                 f"tokenizer packs differ for {left['exampleID']}: {key}",
             )
-        contract = adapt_row_to_tinker(left)
-        weighted = [
-            target
-            for target, weight in zip(
-                contract.target_tokens, contract.weights, strict=True
+        tokenized_sequences_differ += left["inputIDs"] != right["inputIDs"]
+        for row in (left, right):
+            contract = adapt_row_to_tinker(row)
+            weighted = [
+                target
+                for target, weight in zip(
+                    contract.target_tokens, contract.weights, strict=True
+                )
+                if weight == 1.0
+            ]
+            require(
+                weighted[-1] == row["responseTerminatorTokenID"],
+                f"{row['exampleID']} does not weight its response terminator",
             )
-            if weight == 1.0
-        ]
-        require(
-            weighted[-1] == left["responseTerminatorTokenID"],
-            f"{left['exampleID']} does not weight the native terminator",
-        )
-        require(
-            weighted[:-1]
-            == left["inputIDs"][left["modelInputTokenCount"] : -1],
-            f"{left['exampleID']} weighted content is not exact target content",
-        )
-        require(
-            all(
-                label == IGNORE_LABEL
-                for label in left["labels"][: left["modelInputTokenCount"]]
-            ),
-            f"{left['exampleID']} applies loss to prompt/native envelope",
-        )
+            require(
+                weighted[:-1]
+                == row["inputIDs"][row["modelInputTokenCount"] : -1],
+                f"{row['exampleID']} weighted content is not exact target content",
+            )
+            require(
+                all(
+                    label == IGNORE_LABEL
+                    for label in row["labels"][: row["modelInputTokenCount"]]
+                ),
+                f"{row['exampleID']} applies loss to its prompt envelope",
+            )
+    require(
+        tokenized_sequences_differ == len(base_rows),
+        "model-specific renderers unexpectedly produced identical token sequences",
+    )
 
     result = {
         "status": "passed",
         "providerPlanSHA256": sha256(plan_path),
+        "modelSpecificTokenSequences": True,
         "models": {
             key: {
                 "model": manifests[key]["model"],

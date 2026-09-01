@@ -30,7 +30,7 @@ from phase1_qwen35_native import (
     GENERATION_TOKEN_CEILING,
     MODEL_SPECS,
     NATIVE_PACK_VERSION,
-    RENDERER_NAME,
+    RENDERER_CONTRACT,
     audit_native_pack,
     build_native_rows_with_runtime,
     canonical_sha256,
@@ -52,8 +52,8 @@ from phase1_training_contract import (
 )
 
 
-RUNNER_VERSION = "phase1-qwen35-tinker-prequential-v1"
-EXPECTED_PLAN_VERSION = "phase1-qwen35-provider-plan-v1"
+RUNNER_VERSION = "phase1-qwen35-tinker-prequential-v2"
+EXPECTED_PLAN_VERSION = "phase1-qwen35-provider-plan-v2"
 ARM_FROZEN = "frozen"
 ARM_PERSONALIZED = "personalized"
 MODEL_ORDER = ("qwen35_base", "qwen36_hybrid")
@@ -344,7 +344,9 @@ def validate_plan_and_sources(
         plan.get("planVersion") == EXPECTED_PLAN_VERSION
         and plan.get("status")
         == "local_preflight_complete_no_provider_calls_authorization_required"
-        and plan.get("training", {}).get("renderer") == RENDERER_NAME
+        and plan.get("training", {}).get("rendererContract") == RENDERER_CONTRACT
+        and plan.get("training", {}).get("renderersByModel")
+        == {key: MODEL_SPECS[key]["renderer"] for key in MODEL_ORDER}
         and plan.get("training", {}).get("rendererReduction") == "none"
         and plan.get("experiment", {}).get("terminalBlockReceivesUpdate") is False
         and plan.get("tinker", {}).get("projectID") == project_id
@@ -427,8 +429,15 @@ def validate_remote_tokenizer(
     ):
         raise TrainingContractError(f"{model_key} remote tokenizer metadata differs")
     runtime = native_runtime_from_tokenizer(model_key, remote_tokenizer)
-    if runtime.response_terminator_token_id != local_manifest["responseTerminatorTokenID"]:
-        raise TrainingContractError(f"{model_key} remote response terminator differs")
+    if not (
+        runtime.renderer_name == local_manifest["renderer"]
+        and runtime.renderer_strategy == local_manifest["rendererStrategy"]
+        and runtime.response_terminator_token_id
+        == local_manifest["responseTerminatorTokenID"]
+        and runtime.expected_parse_termination
+        == local_manifest["expectedParseTermination"]
+    ):
+        raise TrainingContractError(f"{model_key} remote renderer contract differs")
     remote_rows, _ = build_native_rows_with_runtime(
         corpus_directory=corpus_directory,
         shared_pack_directory=shared_pack_directory,
@@ -606,7 +615,7 @@ def score_example(
     locally_added_terminator = False
     if (
         (not parse_ids or parse_ids[-1] != runtime.response_terminator_token_id)
-        and stop_reason in {"stop", "stop_sequence"}
+        and stop_reason in {"stop", "stop_sequence", "eos"}
     ):
         # Some sampling APIs report a matched stop without returning its token.
         # Add it only to the local renderer parser; preserve provider token IDs
@@ -643,6 +652,7 @@ def score_example(
         "generationSeed": 17,
         "samplingStopReason": stop_reason,
         "rendererParseTermination": parse_termination,
+        "expectedRendererParseTermination": runtime.expected_parse_termination,
         "terminatorAddedForLocalParsing": locally_added_terminator,
         "exactMatch": prediction == target,
         "normalizedExactMatch": prediction.strip() == target.strip(),

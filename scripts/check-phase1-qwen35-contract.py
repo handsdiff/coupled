@@ -9,6 +9,7 @@ from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 
+from phase1_qwen35_native import MODEL_SPECS, RENDERER_CONTRACT
 from phase1_training_contract import TrainingContractError, adapt_row_to_tinker
 
 
@@ -19,6 +20,21 @@ assert SPEC is not None and SPEC.loader is not None
 RUNNER = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = RUNNER
 SPEC.loader.exec_module(RUNNER)
+
+assert RENDERER_CONTRACT == "coupled/qwen35-model-specific-exact-completion-v2"
+assert MODEL_SPECS["qwen35_base"]["rendererStrategy"] == "raw_completion_eos"
+assert MODEL_SPECS["qwen35_base"]["officialRecommendedRenderers"] == ["role_colon"]
+assert (
+    MODEL_SPECS["qwen36_hybrid"]["rendererStrategy"]
+    == "qwen3_5_disable_thinking_exact_content"
+)
+assert "qwen3_5_disable_thinking" in MODEL_SPECS["qwen36_hybrid"][
+    "officialRecommendedRenderers"
+]
+assert (
+    MODEL_SPECS["qwen35_base"]["renderer"]
+    != MODEL_SPECS["qwen36_hybrid"]["renderer"]
+)
 
 
 def native_row(labels: list[int]) -> dict[str, object]:

@@ -19,7 +19,7 @@ from phase1_qwen35_native import (
     MODEL_SPECS,
     NATIVE_PACK_VERSION,
     NATIVE_SCHEMA_VERSION,
-    RENDERER_NAME,
+    RENDERER_CONTRACT,
     build_native_rows,
     canonical_bytes,
     sha256,
@@ -30,7 +30,7 @@ from phase1_qwen35_native import (
 from phase1_training_contract import TrainingContractError, git_revision
 
 
-PLAN_VERSION = "phase1-qwen35-provider-plan-v1"
+PLAN_VERSION = "phase1-qwen35-provider-plan-v2"
 PRICING_AS_OF = "2026-08-21"
 PRICING_SOURCE = "https://tinker-docs.thinkingmachines.ai/tinker/models/"
 PREFILL_PRICE = Decimal("0.54")
@@ -330,7 +330,12 @@ def main() -> int:
                     "localTokenizerRevision"
                 ],
                 "tinkerServedModelRevision": "not_exposed_by_server_capabilities",
-                "renderer": RENDERER_NAME,
+                "rendererContract": RENDERER_CONTRACT,
+                "renderer": metadata["renderer"],
+                "rendererStrategy": metadata["rendererStrategy"],
+                "officialRecommendedRenderers": metadata[
+                    "officialRecommendedRenderers"
+                ],
                 "nativePackSHA256": sha256(native_directory / "native-pack.json"),
                 "renderedExamplesSHA256": sha256(rows_path),
                 "tokenizerVocabularySHA256": metadata[
@@ -384,6 +389,8 @@ def main() -> int:
                 "heldoutTargetNLLCollected": arguments.include_heldout_nll,
                 "primaryEvaluation": "generated_completion_scorecard_and_holistic_judging",
                 "commonSemanticContextPlan": True,
+                "modelSpecificRendering": True,
+                "crossModelTokenIDsExpectedIdentical": False,
             },
             "source": {
                 "corpusID": corpus["corpusID"],
@@ -400,16 +407,26 @@ def main() -> int:
             "training": {
                 **TINKER_TRAINING_CONTRACT,
                 "lossFunction": "cross_entropy",
-                "renderer": RENDERER_NAME,
+                "rendererContract": RENDERER_CONTRACT,
+                "renderersByModel": {
+                    key: native_artifacts[key]["renderer"] for key in MODEL_SPECS
+                },
+                "rendererStrategiesByModel": {
+                    key: native_artifacts[key]["rendererStrategy"]
+                    for key in MODEL_SPECS
+                },
                 "trainOnWhat": "last_assistant_message",
                 "rendererReduction": "none",
-                "lossBearingTokens": (
-                    "authored completion tokens, literal <|paste|> tokens, and exactly "
-                    "one native <|im_end|> response terminator"
-                ),
-                "maskedTokens": (
-                    "complete causal input, chat headers, and injected non-thinking envelope"
-                ),
+                "lossBearingTokens": {
+                    "common": "exact authored content and literal <|paste|> tokens",
+                    "qwen35_base": "one tokenizer EOS after exact raw continuation",
+                    "qwen36_hybrid": "one native <|im_end|> response terminator",
+                },
+                "maskedTokens": {
+                    "common": "complete causal semantic input",
+                    "qwen35_base": "no injected chat envelope",
+                    "qwen36_hybrid": "chat headers and injected non-thinking envelope",
+                },
                 "exactContentRendererEvidence": {
                     "upstreamStringNormalization": "content.strip()",
                     "affectedTargetsInFrozenCorpus": sum(
@@ -427,7 +444,10 @@ def main() -> int:
                         != target_text(value["target"]).rstrip()
                         for value in examples
                     ),
-                    "resolution": "custom namespaced subclass preserves exact content only",
+                    "resolution": (
+                        "Base uses exact raw continuation; hybrid uses a namespaced "
+                        "exact-content subclass of its compatible chat renderer"
+                    ),
                 },
             },
             "generation": {
@@ -472,7 +492,7 @@ def main() -> int:
                 },
             },
             "paidPreflightRequiredAfterAuthorization": {
-                "baseRendererGenerationGatePerModel": True,
+                "frozenGenerationGatePerModel": True,
                 "tinyOverfitFreeGenerationGatePerModel": True,
                 "fullRunMayBeginOnlyAfterBothPass": True,
                 "models": preflight_by_model,

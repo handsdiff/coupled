@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Native Qwen renderer contract for the Phase 1 35B comparison.
+"""Model-specific Qwen rendering contract for the Phase 1 35B comparison.
 
 The semantic corpus and its shared 32K context plans remain tokenizer-neutral
-authority.  This module applies the official Tinker Cookbook Qwen renderer at
-the final model boundary and proves the exact causal loss positions.
+authority.  This module applies a raw continuation contract to the Base model
+and the compatible Tinker Cookbook chat renderer to the hybrid model at the
+final boundary, then proves the exact causal loss positions.
 """
 
 from __future__ import annotations
@@ -28,23 +29,40 @@ from phase1_training_contract import (
 )
 
 
-NATIVE_PACK_VERSION = "phase1-qwen35-native-pack-v1"
-NATIVE_SCHEMA_VERSION = 1
-RENDERER_NAME = "coupled/qwen3_5_disable_thinking_exact_content_v1"
-UPSTREAM_RENDERER_NAME = "qwen3_5_disable_thinking"
+NATIVE_PACK_VERSION = "phase1-qwen35-native-pack-v2"
+NATIVE_SCHEMA_VERSION = 2
+RENDERER_CONTRACT = "coupled/qwen35-model-specific-exact-completion-v2"
 MAXIMUM_CONTEXT_LENGTH = 65_536
 GENERATION_TOKEN_CEILING = 512
 
-MODEL_SPECS: dict[str, dict[str, str]] = {
+MODEL_SPECS: dict[str, dict[str, Any]] = {
     "qwen35_base": {
         "model": "Qwen/Qwen3.5-35B-A3B-Base",
         "localTokenizerRevision": "0f0813072d2358973511097385626f21fcb6d422",
         "modelType": "base",
+        "renderer": "coupled/raw_completion_exact_content_eos_v1",
+        "rendererStrategy": "raw_completion_eos",
+        "upstreamRenderer": None,
+        "officialRecommendedRenderers": ["role_colon"],
+        "rendererCompatibility": (
+            "task-specific raw continuation override for a non-chat Base model; "
+            "Tinker also supports raw Base-model completion"
+        ),
     },
     "qwen36_hybrid": {
         "model": "Qwen/Qwen3.6-35B-A3B",
         "localTokenizerRevision": "995ad96eacd98c81ed38be0c5b274b04031597b0",
         "modelType": "hybrid_nonthinking",
+        "renderer": "coupled/qwen3_5_disable_thinking_exact_content_v1",
+        "rendererStrategy": "qwen3_5_disable_thinking_exact_content",
+        "upstreamRenderer": "qwen3_5_disable_thinking",
+        "officialRecommendedRenderers": [
+            "qwen3_5",
+            "qwen3_5_disable_thinking",
+        ],
+        "rendererCompatibility": (
+            "exact-content subclass of an officially compatible Qwen3.6 renderer"
+        ),
     },
 }
 
@@ -114,11 +132,138 @@ def tokenizer_file_digests(directory: Path) -> dict[str, str]:
 class NativeRuntime:
     tokenizer: Any
     renderer: Any
+    renderer_name: str
+    renderer_strategy: str
+    upstream_renderer_name: str | None
+    official_recommended_renderers: tuple[str, ...]
     response_terminator_token_id: int
     response_terminator_text: str
+    expected_parse_termination: str
 
 
-def _exact_content_renderer(tokenizer: Any) -> Any:
+def _assert_official_renderer_contract(model_key: str) -> tuple[str, ...]:
+    """Fail closed if the pinned Cookbook changes model-format guidance."""
+
+    model = MODEL_SPECS[model_key]
+    try:
+        from tinker_cookbook import model_info
+    except ImportError as error:
+        raise TrainingContractError(
+            "model-specific Qwen rendering requires Tinker Cookbook model metadata"
+        ) from error
+    observed = tuple(model_info.get_recommended_renderer_names(model["model"]))
+    expected = tuple(model["officialRecommendedRenderers"])
+    if observed != expected:
+        raise TrainingContractError(
+            f"{model_key} official renderer guidance changed: {observed!r}"
+        )
+    upstream = model["upstreamRenderer"]
+    if upstream is not None and upstream not in observed:
+        raise TrainingContractError(
+            f"{model_key} renderer is no longer officially compatible: {upstream}"
+        )
+    if model["rendererStrategy"] == "raw_completion_eos" and model["modelType"] != "base":
+        raise TrainingContractError("raw completion is restricted to the Base arm")
+    return observed
+
+
+def _raw_exact_completion_renderer(tokenizer: Any) -> Any:
+    """Render the Base arm as exact plain-text continuation plus tokenizer EOS."""
+
+    try:
+        import tinker
+        import torch
+        from tinker_cookbook.renderers import TrainOnWhat
+        from tinker_cookbook.renderers.base import (
+            Message,
+            ParseTermination,
+            RenderContext,
+            RenderedMessage,
+            Renderer,
+        )
+    except ImportError as error:
+        raise TrainingContractError(
+            "raw Qwen completion rendering requires Tinker Cookbook and torch"
+        ) from error
+
+    eos_token_id = tokenizer.eos_token_id
+    if type(eos_token_id) is not int:
+        raise TrainingContractError("Base tokenizer does not expose one EOS token ID")
+
+    class ExactRawCompletionRenderer(Renderer):
+        @property
+        def has_extension_property(self) -> bool:
+            return True
+
+        def get_stop_sequences(self) -> list[int]:
+            return [eos_token_id]
+
+        def render_message(self, message: Message, ctx: RenderContext) -> RenderedMessage:
+            raise NotImplementedError(
+                "raw completion renders the complete task boundary, not chat messages"
+            )
+
+        def build_generation_prompt(
+            self,
+            messages: list[Message],
+            role: str = "assistant",
+            prefill: str | None = None,
+        ) -> Any:
+            if (
+                len(messages) != 1
+                or messages[0].get("role") != "user"
+                or not isinstance(messages[0].get("content"), str)
+                or role != "assistant"
+                or prefill is not None
+            ):
+                raise TrainingContractError("raw completion prompt shape changed")
+            token_ids = self.tokenizer.encode(
+                messages[0]["content"], add_special_tokens=False
+            )
+            return tinker.ModelInput.from_ints(tokens=list(token_ids))
+
+        def build_supervised_example(
+            self,
+            messages: list[Message],
+            train_on_what: TrainOnWhat = TrainOnWhat.LAST_ASSISTANT_MESSAGE,
+        ) -> tuple[Any, Any]:
+            if (
+                len(messages) != 2
+                or messages[0].get("role") != "user"
+                or messages[1].get("role") != "assistant"
+                or not isinstance(messages[0].get("content"), str)
+                or not isinstance(messages[1].get("content"), str)
+                or train_on_what != TrainOnWhat.LAST_ASSISTANT_MESSAGE
+            ):
+                raise TrainingContractError("raw completion SFT shape changed")
+            prompt_ids = self.tokenizer.encode(
+                messages[0]["content"], add_special_tokens=False
+            )
+            completion_ids = self.tokenizer.encode(
+                messages[1]["content"], add_special_tokens=False
+            )
+            full_ids = [*prompt_ids, *completion_ids, eos_token_id]
+            weights = [0.0] * len(prompt_ids) + [1.0] * (len(completion_ids) + 1)
+            return (
+                tinker.ModelInput.from_ints(tokens=full_ids),
+                torch.tensor(weights),
+            )
+
+        def parse_response(self, response: list[int]) -> tuple[Message, ParseTermination]:
+            terminated = bool(response) and response[-1] == eos_token_id
+            content_ids = response[:-1] if terminated else response
+            content = self.tokenizer.decode(
+                content_ids,
+                skip_special_tokens=False,
+                clean_up_tokenization_spaces=False,
+            )
+            termination = ParseTermination.EOS if terminated else ParseTermination.MALFORMED
+            return Message(role="assistant", content=content), termination
+
+    return ExactRawCompletionRenderer(tokenizer)
+
+
+def _exact_content_chat_renderer(tokenizer: Any) -> Any:
     """Use Qwen's native non-thinking format without normalizing WRITE text.
 
     The upstream Qwen3.5 renderer calls ``strip()`` on every string message.
@@ -171,24 +316,50 @@ def load_native_runtime(model_key: str, tokenizer_directory: Path) -> NativeRunt
 
 
 def native_runtime_from_tokenizer(model_key: str, tokenizer: Any) -> NativeRuntime:
-    """Construct the exact renderer around a local or Tinker-returned tokenizer."""
+    """Construct the model-specific renderer around a local or remote tokenizer."""
     if model_key not in MODEL_SPECS:
         raise TrainingContractError(f"unsupported native Qwen model key: {model_key}")
-    renderer = _exact_content_renderer(tokenizer)
+    model = MODEL_SPECS[model_key]
+    official_renderers = _assert_official_renderer_contract(model_key)
+    if model["rendererStrategy"] == "raw_completion_eos":
+        renderer = _raw_exact_completion_renderer(tokenizer)
+        expected_parse_termination = "eos"
+    elif model["rendererStrategy"] == "qwen3_5_disable_thinking_exact_content":
+        renderer = _exact_content_chat_renderer(tokenizer)
+        expected_parse_termination = "stop_sequence"
+    else:
+        raise TrainingContractError(
+            f"unsupported renderer strategy for {model_key}: {model['rendererStrategy']}"
+        )
     stop_sequences = renderer.get_stop_sequences()
     if len(stop_sequences) != 1 or type(stop_sequences[0]) is not int:
         raise TrainingContractError(
-            "Qwen native renderer must expose one integer response terminator"
+            f"{model_key} renderer must expose one integer response terminator"
         )
     terminator = stop_sequences[0]
     terminator_text = tokenizer.decode(
         [terminator], skip_special_tokens=False, clean_up_tokenization_spaces=False
     )
-    if terminator_text != "<|im_end|>":
+    expected_terminator = (
+        tokenizer.eos_token
+        if model["rendererStrategy"] == "raw_completion_eos"
+        else "<|im_end|>"
+    )
+    if terminator_text != expected_terminator:
         raise TrainingContractError(
-            f"unexpected Qwen response terminator: {terminator_text!r}"
+            f"unexpected {model_key} response terminator: {terminator_text!r}"
         )
-    return NativeRuntime(tokenizer, renderer, terminator, terminator_text)
+    return NativeRuntime(
+        tokenizer=tokenizer,
+        renderer=renderer,
+        renderer_name=model["renderer"],
+        renderer_strategy=model["rendererStrategy"],
+        upstream_renderer_name=model["upstreamRenderer"],
+        official_recommended_renderers=official_renderers,
+        response_terminator_token_id=terminator,
+        response_terminator_text=terminator_text,
+        expected_parse_termination=expected_parse_termination,
+    )
 
 
 def _float_list(value: Any) -> list[float]:
@@ -214,6 +385,7 @@ def render_native_row(
         ) from error
 
     completion = target_text(example["target"])
+    completion_ids = runtime.tokenizer.encode(completion, add_special_tokens=False)
     messages = [
         {"role": "user", "content": semantic_input},
         {"role": "assistant", "content": completion},
@@ -274,13 +446,33 @@ def render_native_row(
         raise TrainingContractError(
             f"{example['exampleID']} completion loss count is inconsistent"
         )
+    if full_ids[len(prompt_ids) : -1] != completion_ids:
+        raise TrainingContractError(
+            f"{example['exampleID']} renderer altered exact target content tokens"
+        )
+    if runtime.renderer_strategy == "raw_completion_eos":
+        expected_prompt_ids = runtime.tokenizer.encode(
+            semantic_input, add_special_tokens=False
+        )
+        if prompt_ids != expected_prompt_ids:
+            raise TrainingContractError(
+                f"{example['exampleID']} Base prompt is not exact raw continuation"
+            )
+        if runtime.response_terminator_token_id != runtime.tokenizer.eos_token_id:
+            raise TrainingContractError(
+                f"{example['exampleID']} Base completion does not use tokenizer EOS"
+            )
 
     response_ids = full_ids[len(prompt_ids) :]
-    parsed_message, _ = runtime.renderer.parse_response(response_ids)
+    parsed_message, termination = runtime.renderer.parse_response(response_ids)
     parsed_text = get_text_content(parsed_message)
-    if parsed_text != completion:
+    parsed_termination = str(getattr(termination, "value", termination))
+    if (
+        parsed_text != completion
+        or parsed_termination != runtime.expected_parse_termination
+    ):
         raise TrainingContractError(
-            f"{example['exampleID']} native response does not round-trip target text"
+            f"{example['exampleID']} response does not round-trip its model format"
         )
 
     labels = [IGNORE_LABEL] * len(prompt_ids) + full_ids[len(prompt_ids) :]
@@ -296,24 +488,29 @@ def render_native_row(
             semantic_input.encode()
         ).hexdigest(),
         "targetTextSHA256": hashlib.sha256(completion.encode()).hexdigest(),
+        "rendererContract": RENDERER_CONTRACT,
+        "renderer": runtime.renderer_name,
+        "rendererStrategy": runtime.renderer_strategy,
         "inputIDs": full_ids,
         "labels": labels,
         "modelInputTokenCount": len(prompt_ids),
         "fullSequenceTokenCount": len(full_ids),
         "targetTokenCount": int(sum(full_weights)),
-        "targetContentTokenCount": int(sum(full_weights)) - 1,
+        "targetContentTokenCount": len(completion_ids),
+        "responseFramingTokenCount": int(sum(full_weights)) - len(completion_ids),
         "pasteActionCount": sum(
             segment.get("type") == "paste"
             for segment in example.get("target", {}).get("segments", [])
         ),
         "responseTerminatorTokenID": runtime.response_terminator_token_id,
         "generationStopTokenIDs": [runtime.response_terminator_token_id],
+        "expectedParseTermination": runtime.expected_parse_termination,
         "lossContract": {
             "trainOnWhat": "last_assistant_message",
             "reduction": "none",
-            "promptAndNativeNonthinkingEnvelopeMasked": True,
+            "promptAndModelSpecificEnvelopeMasked": True,
             "authoredContentAndLiteralPasteMarkerWeighted": True,
-            "oneNativeResponseTerminatorWeighted": True,
+            "oneModelSpecificResponseTerminatorWeighted": True,
         },
     }
     contract = adapt_row_to_tinker(row)
@@ -376,14 +573,17 @@ def build_native_rows_with_runtime(
     metadata = {
         "modelKey": model_key,
         **model,
-        "renderer": RENDERER_NAME,
-        "upstreamRenderer": UPSTREAM_RENDERER_NAME,
-        "rendererAdaptation": (
-            "preserve exact string content; otherwise inherit the official "
-            "Qwen3.5 non-thinking renderer"
+        "rendererContract": RENDERER_CONTRACT,
+        "renderer": runtime.renderer_name,
+        "rendererStrategy": runtime.renderer_strategy,
+        "upstreamRenderer": runtime.upstream_renderer_name,
+        "officialRecommendedRenderers": list(
+            runtime.official_recommended_renderers
         ),
+        "rendererAdaptation": model["rendererCompatibility"],
         "responseTerminatorTokenID": runtime.response_terminator_token_id,
         "responseTerminatorText": runtime.response_terminator_text,
+        "expectedParseTermination": runtime.expected_parse_termination,
         "tokenizerEOSID": runtime.tokenizer.eos_token_id,
         "tokenizerPadID": runtime.tokenizer.pad_token_id,
         "tokenizerLength": len(runtime.tokenizer),
@@ -432,8 +632,12 @@ def audit_native_pack(
     if not (
         manifest.get("schemaVersion") == NATIVE_SCHEMA_VERSION
         and manifest.get("nativePackVersion") == NATIVE_PACK_VERSION
-        and manifest.get("renderer") == RENDERER_NAME
+        and manifest.get("rendererContract") == RENDERER_CONTRACT
         and manifest.get("modelKey") in MODEL_SPECS
+        and manifest.get("renderer")
+        == MODEL_SPECS[manifest.get("modelKey")]["renderer"]
+        and manifest.get("rendererStrategy")
+        == MODEL_SPECS[manifest.get("modelKey")]["rendererStrategy"]
         and manifest.get("artifactDigestsSHA256", {}).get(
             "rendered-examples.jsonl"
         )
@@ -450,12 +654,17 @@ def audit_native_pack(
         if not (
             row.get("schemaVersion") == NATIVE_SCHEMA_VERSION
             and row.get("nativePackVersion") == NATIVE_PACK_VERSION
+            and row.get("rendererContract") == RENDERER_CONTRACT
+            and row.get("renderer") == manifest.get("renderer")
+            and row.get("rendererStrategy") == manifest.get("rendererStrategy")
             and row.get("fullSequenceTokenCount") == len(row.get("inputIDs", []))
             and len(row.get("inputIDs", [])) == len(row.get("labels", []))
             and row.get("responseTerminatorTokenID")
             == manifest.get("responseTerminatorTokenID")
             and row.get("generationStopTokenIDs")
             == [manifest.get("responseTerminatorTokenID")]
+            and row.get("expectedParseTermination")
+            == manifest.get("expectedParseTermination")
             and row.get("labels", [])[-1]
             == manifest.get("responseTerminatorTokenID")
         ):
@@ -477,8 +686,12 @@ def audit_native_pack(
         for key in (
             "model",
             "localTokenizerRevision",
+            "rendererContract",
             "renderer",
+            "rendererStrategy",
+            "officialRecommendedRenderers",
             "responseTerminatorTokenID",
+            "expectedParseTermination",
             "tokenizerEOSID",
             "tokenizerVocabularySHA256",
             "counts",
