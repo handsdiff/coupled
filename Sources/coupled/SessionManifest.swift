@@ -88,6 +88,7 @@ private struct ResolvedCollectorConfiguration: Encodable {
     let visualDifferencePixelThreshold: UInt8
     let visualDifferenceFractionThreshold: Double
     let visualCaptureTransport: String
+    let visualCaptureSurfaceResolver: String
     let visualStreamQueueDepth: Int
     let writeDelaySeconds: Double
     let postPasteCheckpointDelaySeconds: Double
@@ -116,6 +117,7 @@ private struct ResolvedCollectorConfiguration: Encodable {
         visualDifferencePixelThreshold = configuration.visualDifferencePixelThreshold
         visualDifferenceFractionThreshold = configuration.visualDifferenceFractionThreshold
         visualCaptureTransport = "scstream_display_source_rect"
+        visualCaptureSurfaceResolver = "canonical-visual-surface-v1"
         visualStreamQueueDepth = configuration.visualStreamQueueDepth
         writeDelaySeconds = configuration.writeDelay
         postPasteCheckpointDelaySeconds = configuration.postPasteCheckpointDelay

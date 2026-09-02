@@ -3047,6 +3047,81 @@ expect(
     "a stale monitored process falls back instead of attaching its frame"
 )
 
+let browserMain = VisualCaptureWindowCandidate(
+    windowID: 85063,
+    processIdentifier: 17,
+    title: "Gemini - Google Chrome",
+    bounds: VisualCaptureWindowBounds(x: 513, y: -1318, width: 1525, height: 1318)
+)
+let browserStrip = VisualCaptureWindowCandidate(
+    windowID: 85067,
+    processIdentifier: 17,
+    title: nil,
+    bounds: VisualCaptureWindowBounds(x: 513, y: -1399, width: 1525, height: 41)
+)
+let canonicalBrowserSurface = selectCanonicalVisualCaptureSurface(
+    processIdentifier: 17,
+    pointX: 900,
+    pointY: -1385,
+    rawWindowID: browserStrip.windowID,
+    focusedWindow: VisualFocusedWindowHint(
+        title: browserMain.title,
+        bounds: browserMain.bounds
+    ),
+    candidates: [browserStrip, browserMain],
+    lastValidWindowID: nil
+)
+expect(
+    canonicalBrowserSurface?.windowID == browserMain.windowID
+        && canonicalBrowserSurface?.reason == "focused_top_level_window",
+    "a narrow browser helper maps to its focused top-level content window"
+)
+expect(
+    selectCanonicalVisualCaptureSurface(
+        processIdentifier: 17,
+        pointX: 900,
+        pointY: -1385,
+        rawWindowID: browserStrip.windowID,
+        focusedWindow: nil,
+        candidates: [browserStrip, browserMain],
+        lastValidWindowID: browserMain.windowID
+    )?.windowID == browserMain.windowID,
+    "a known helper retains the last valid content window from the same process"
+)
+let legitimateDialog = VisualCaptureWindowCandidate(
+    windowID: 900,
+    processIdentifier: 17,
+    title: "Open File",
+    bounds: VisualCaptureWindowBounds(x: 700, y: -900, width: 480, height: 360)
+)
+expect(
+    selectCanonicalVisualCaptureSurface(
+        processIdentifier: 17,
+        pointX: 800,
+        pointY: -800,
+        rawWindowID: legitimateDialog.windowID,
+        focusedWindow: VisualFocusedWindowHint(
+            title: browserMain.title,
+            bounds: browserMain.bounds
+        ),
+        candidates: [legitimateDialog, browserMain],
+        lastValidWindowID: browserMain.windowID
+    )?.windowID == legitimateDialog.windowID,
+    "a legitimate titled dialog remains a capture surface"
+)
+expect(
+    selectCanonicalVisualCaptureSurface(
+        processIdentifier: 44,
+        pointX: 10,
+        pointY: 10,
+        rawWindowID: nil,
+        focusedWindow: nil,
+        candidates: [browserMain],
+        lastValidWindowID: browserMain.windowID
+    ) == nil,
+    "a last-valid window cannot cross an application process boundary"
+)
+
 try! FileManager.default.removeItem(at: fixtureRoot)
 
 print("CoupledCore checks passed")

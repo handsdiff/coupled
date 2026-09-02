@@ -21,6 +21,9 @@ final class ReadCandidateCollector {
     private var pendingByContext: [ReadCandidateKey: PendingReadCandidate] = [:]
     private var timersByContext: [ReadCandidateKey: Timer] = [:]
     private var cachedPointerWindow: PointerWindowContext?
+    private var lastCanonicalVisualWindow: PointerWindowContext?
+    private var lastCanonicalRawWindowID: UInt32?
+    private var lastCanonicalRawProcessIdentifier: Int32?
     private var lastWindowLookupTimestamp: UInt64 = 0
     private var latestMutatingInputBySurface: [ReadMutationSurfaceKey: ReadMutationBoundary] = [:]
     private var reportedCaptureError = false
@@ -200,7 +203,7 @@ final class ReadCandidateCollector {
         )
         guard let pointerWindow,
               let surface = eligibleSurface(window: pointerWindow, at: point) else { return }
-        visualFrameMonitor?.select(surface: surface, point: point)
+        selectVisualMonitor(interactionSurface: surface, point: point)
         let key = surface.key
         let observedAt = nowTimestamp()
 
@@ -663,7 +666,6 @@ final class ReadCandidateCollector {
         let point = pointerPoint.flatMap { window.bounds.contains($0) ? $0 : nil }
             ?? CGPoint(x: window.bounds.midX, y: window.bounds.midY)
         guard let surface = eligibleSurface(window: window, at: point) else { return }
-        visualFrameMonitor?.select(surface: surface, point: point)
         beginSurfaceTransitionInterval(
             surface,
             point: point,
@@ -700,7 +702,7 @@ final class ReadCandidateCollector {
         trigger: String = "surface_transition_detected",
         replacementReason: String = "read_candidate_replaced_by_surface_transition"
     ) {
-        visualFrameMonitor?.select(surface: surface, point: point)
+        selectVisualMonitor(interactionSurface: surface, point: point)
         let key = surface.key
         collapsePendingCandidates(
             except: key,
@@ -793,6 +795,60 @@ final class ReadCandidateCollector {
             appName: appName,
             bundleIdentifier: bundleIdentifier,
             processIdentifier: window.ownerProcessIdentifier
+        )
+    }
+
+    private func selectVisualMonitor(
+        interactionSurface: ResolvedReadSurface,
+        point: CGPoint
+    ) {
+        guard visualFrameMonitor != nil else { return }
+        let processIdentifier = interactionSurface.processIdentifier
+        let candidates = onScreenWindows(ownedBy: processIdentifier)
+        let lastValidID = lastCanonicalVisualWindow?.ownerProcessIdentifier == processIdentifier
+            ? lastCanonicalVisualWindow?.windowID
+            : nil
+        let rawSurfaceChanged = lastCanonicalRawProcessIdentifier != processIdentifier
+            || lastCanonicalRawWindowID != interactionSurface.windowID
+        let rawLooksLikeContent = interactionSurface.windowBounds.width >= 100
+            && interactionSurface.windowBounds.height >= 100
+            && interactionSurface.windowBounds.width * interactionSurface.windowBounds.height
+                >= 40_000
+            && interactionSurface.windowTitle?.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            ).isEmpty == false
+        // AX is needed to map a newly encountered helper surface, but querying
+        // it on every high-frequency pointer event is unnecessary and costly.
+        let focusedHint = !rawLooksLikeContent && (rawSurfaceChanged || lastValidID == nil)
+            ? focusedVisualWindowHint(processIdentifier: processIdentifier)
+            : nil
+        let selection = selectCanonicalVisualCaptureSurface(
+            processIdentifier: processIdentifier,
+            pointX: point.x,
+            pointY: point.y,
+            rawWindowID: interactionSurface.windowID,
+            focusedWindow: focusedHint,
+            candidates: candidates.map(\.visualCandidate),
+            lastValidWindowID: lastValidID
+        )
+        guard let selection,
+              let window = candidates.first(where: {
+                  $0.windowID == selection.windowID
+              }) else { return }
+        lastCanonicalRawProcessIdentifier = processIdentifier
+        lastCanonicalRawWindowID = interactionSurface.windowID
+        let displayPoint = window.bounds.contains(point)
+            ? point
+            : CGPoint(x: window.bounds.midX, y: window.bounds.midY)
+        guard let captureSurface = eligibleSurface(window: window, at: displayPoint) else {
+            return
+        }
+        lastCanonicalVisualWindow = window
+        visualFrameMonitor?.select(
+            surface: captureSurface,
+            point: point,
+            rawInteractionSurface: interactionSurface,
+            selectionReason: selection.reason
         )
     }
 
@@ -1166,6 +1222,96 @@ private struct PointerWindowContext {
     let ownerName: String?
     let title: String?
     let bounds: CGRect
+}
+
+private extension PointerWindowContext {
+    var visualCandidate: VisualCaptureWindowCandidate {
+        VisualCaptureWindowCandidate(
+            windowID: windowID,
+            processIdentifier: ownerProcessIdentifier,
+            title: title,
+            bounds: VisualCaptureWindowBounds(
+                x: bounds.minX,
+                y: bounds.minY,
+                width: bounds.width,
+                height: bounds.height
+            )
+        )
+    }
+}
+
+private func focusedVisualWindowHint(processIdentifier: Int32) -> VisualFocusedWindowHint? {
+    let application = AXUIElementCreateApplication(processIdentifier)
+    var value: CFTypeRef?
+    var error = AXUIElementCopyAttributeValue(
+        application,
+        kAXFocusedWindowAttribute as CFString,
+        &value
+    )
+    if error != .success {
+        error = AXUIElementCopyAttributeValue(
+            application,
+            kAXMainWindowAttribute as CFString,
+            &value
+        )
+    }
+    guard error == .success,
+          let value,
+          CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+    let window = unsafeBitCast(value, to: AXUIElement.self)
+    return VisualFocusedWindowHint(
+        title: visualStringAttribute(window, kAXTitleAttribute),
+        bounds: visualFrame(of: window).map {
+            VisualCaptureWindowBounds(
+                x: $0.minX,
+                y: $0.minY,
+                width: $0.width,
+                height: $0.height
+            )
+        }
+    )
+}
+
+private func visualStringAttribute(_ element: AXUIElement, _ attribute: String) -> String? {
+    var value: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(
+        element,
+        attribute as CFString,
+        &value
+    ) == .success else { return nil }
+    return value as? String
+}
+
+private func visualFrame(of element: AXUIElement) -> CGRect? {
+    var positionValue: CFTypeRef?
+    var sizeValue: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(
+        element,
+        kAXPositionAttribute as CFString,
+        &positionValue
+    ) == .success,
+    AXUIElementCopyAttributeValue(
+        element,
+        kAXSizeAttribute as CFString,
+        &sizeValue
+    ) == .success,
+    let positionValue,
+    let sizeValue,
+    CFGetTypeID(positionValue) == AXValueGetTypeID(),
+    CFGetTypeID(sizeValue) == AXValueGetTypeID() else { return nil }
+    var point = CGPoint.zero
+    var size = CGSize.zero
+    guard AXValueGetValue(
+        unsafeBitCast(positionValue, to: AXValue.self),
+        .cgPoint,
+        &point
+    ),
+    AXValueGetValue(
+        unsafeBitCast(sizeValue, to: AXValue.self),
+        .cgSize,
+        &size
+    ) else { return nil }
+    return CGRect(origin: point, size: size)
 }
 
 private func topmostWindow(at point: CGPoint) -> PointerWindowContext? {

@@ -26,6 +26,8 @@ final class ActiveSurfaceFrameMonitor: NSObject, SCStreamOutput, SCStreamDelegat
     private var generation: UInt64 = 0
     private var frameSequence: UInt64 = 0
     private var selectedSurface: ResolvedReadSurface?
+    private var rawInteractionSurface: ResolvedReadSurface?
+    private var surfaceSelectionReason: String?
     private var interactionPoint: CGPoint?
     private var previousFingerprint: VisualFrameFingerprint?
     private var baselineFingerprint: VisualFrameFingerprint?
@@ -48,13 +50,19 @@ final class ActiveSurfaceFrameMonitor: NSObject, SCStreamOutput, SCStreamDelegat
         }
     }
 
-    func select(surface: ResolvedReadSurface, point: CGPoint) {
-        if selectedSurface?.key != surface.key
-            || selectedSurface?.matches(surface) != true {
+    func select(
+        surface: ResolvedReadSurface,
+        point: CGPoint,
+        rawInteractionSurface: ResolvedReadSurface,
+        selectionReason: String
+    ) {
+        if selectedSurface.map({ !sameVisualCaptureSurface($0, surface) }) ?? true {
             generation += 1
             settlementTimer?.invalidate()
             settlementTimer = nil
             selectedSurface = surface
+            self.rawInteractionSurface = rawInteractionSurface
+            surfaceSelectionReason = selectionReason
             interactionPoint = point
             previousFingerprint = nil
             baselineFingerprint = nil
@@ -67,6 +75,8 @@ final class ActiveSurfaceFrameMonitor: NSObject, SCStreamOutput, SCStreamDelegat
             return
         }
         interactionPoint = point
+        self.rawInteractionSurface = rawInteractionSurface
+        surfaceSelectionReason = selectionReason
     }
 
     func linkWriteSurface(
@@ -165,7 +175,7 @@ final class ActiveSurfaceFrameMonitor: NSObject, SCStreamOutput, SCStreamDelegat
         let prepare = { [weak self] in
             guard let self,
                   self.generation == requestedGeneration,
-                  self.selectedSurface?.matches(surface) == true else { return }
+                  self.selectedSurface.map({ sameVisualCaptureSurface($0, surface) }) == true else { return }
             self.prepareStream(for: surface, generation: requestedGeneration)
         }
         if let previousStream {
@@ -189,7 +199,7 @@ final class ActiveSurfaceFrameMonitor: NSObject, SCStreamOutput, SCStreamDelegat
             DispatchQueue.main.async {
                 guard let self,
                       self.generation == requestedGeneration,
-                      self.selectedSurface?.matches(surface) == true else { return }
+                      self.selectedSurface.map({ sameVisualCaptureSurface($0, surface) }) == true else { return }
                 guard let content,
                       let display = content.displays.first(where: {
                           $0.displayID == surface.displayID
@@ -539,6 +549,8 @@ final class ActiveSurfaceFrameMonitor: NSObject, SCStreamOutput, SCStreamDelegat
                 framePixelWidth: frame?.pixelWidth,
                 framePixelHeight: frame?.pixelHeight,
                 surface: frame?.surface.record ?? selectedSurface?.record,
+                rawInteractionSurface: rawInteractionSurface?.record,
+                surfaceSelectionReason: surfaceSelectionReason,
                 x: frame.map { Double($0.point.x) },
                 y: frame.map { Double($0.point.y) },
                 firstChangedAt: firstChangedAt,
@@ -648,6 +660,8 @@ private struct RawVisualMonitorDiagnostic: Encodable {
     let framePixelWidth: Int?
     let framePixelHeight: Int?
     let surface: ReadSurfaceRecord?
+    let rawInteractionSurface: ReadSurfaceRecord?
+    let surfaceSelectionReason: String?
     let x: Double?
     let y: Double?
     let firstChangedAt: String?
@@ -662,6 +676,20 @@ private struct RawVisualMonitorDiagnostic: Encodable {
     let overlappedWriteAttemptIDs: [String]
     let discardedFrameCount: Int
     let captureError: String?
+}
+
+private func sameVisualCaptureSurface(
+    _ left: ResolvedReadSurface,
+    _ right: ResolvedReadSurface
+) -> Bool {
+    guard left.displayID == right.displayID,
+          left.processIdentifier == right.processIdentifier,
+          left.windowID == right.windowID else { return false }
+    let tolerance = 24.0
+    return abs(left.windowBounds.minX - right.windowBounds.minX) <= tolerance
+        && abs(left.windowBounds.minY - right.windowBounds.minY) <= tolerance
+        && abs(left.windowBounds.width - right.windowBounds.width) <= tolerance
+        && abs(left.windowBounds.height - right.windowBounds.height) <= tolerance
 }
 
 private func makeVisualFrameFingerprint(
