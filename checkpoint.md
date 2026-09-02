@@ -224,6 +224,17 @@ latency projection, not proof that a live router knew the destination then.
   causally available mid-composition; the normalized self-authorship fix kept
   `ensure you keep memory usage within reason` as one episode. All closed-
   episode and packing audits passed.
+- A later immutable clone through `2026-09-02T18:20:34.197Z` covers roughly
+  95 minutes: 3,027 raw records and 857 replayable AX-pane observations with
+  zero unresolved OCR results. Canonical replay produced 629 semantic READs,
+  87 micro-WRITEs, 68 closed episodes, and 42 loss-bearing closed-composition
+  targets; every source micro-WRITE was absorbed and none remain in model-
+  facing history. Semantic, causal, episode, and packed artifacts were replayed
+  independently and were byte-identical at every model-relevant boundary.
+  The full 42-example 32K pack is retained for manual review. Point-in-time
+  primitive construction now accepts an explicit immutable `--raw-session`
+  and verifies its digest against causal lineage, so a same-session live
+  journal can continue safely beside the audit snapshot.
 - `phase1-ordinary-work-2026-09-02-1` remains live. It is the first
   ordinary-work session capable of semantic v14 replay; no v14 interpretation
   is performed online, and the complete session must still be finalized after

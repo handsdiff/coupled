@@ -691,10 +691,17 @@ def load_selection(path: Path, corpus_id: str) -> tuple[list[Neighborhood], dict
 
 
 def discover_raw_sessions(
-    project: Path, session_ids: set[str]
+    project: Path,
+    session_ids: set[str],
+    explicit_sessions: list[Path] | None = None,
 ) -> dict[str, tuple[Path, str]]:
     result: dict[str, tuple[Path, str]] = {}
-    for manifest_path in (project / "coupled-data").glob("*/session.json"):
+    manifest_paths = (
+        [directory / "session.json" for directory in explicit_sessions]
+        if explicit_sessions
+        else list((project / "coupled-data").glob("*/session.json"))
+    )
+    for manifest_path in manifest_paths:
         try:
             manifest = load_json(manifest_path)
         except (OSError, json.JSONDecodeError, ReviewError):
@@ -702,7 +709,7 @@ def discover_raw_sessions(
         session_id = manifest.get("sessionID")
         raw_path = manifest_path.parent / "raw.jsonl"
         if session_id in session_ids and raw_path.is_file():
-            relative = str(raw_path.relative_to(project))
+            relative = display_path(raw_path, project)
             candidate = (raw_path, relative)
             previous = result.get(session_id)
             if previous is not None and sha256(previous[0]) != sha256(raw_path):
@@ -784,6 +791,7 @@ def discover_semantic_sessions(
             "reductionPath": str(semantic_path.parent.joinpath("reduction.json").relative_to(project)),
             "reductionSHA256": reduction_digest,
             "reducerVersion": dataset.get("source", {}).get("reducerVersion"),
+            "rawSHA256": source_digests.get("raw.jsonl"),
         }
     return events_by_session, sources
 
@@ -2175,6 +2183,16 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--corpus", required=True, type=Path)
     parser.add_argument(
+        "--raw-session",
+        action="append",
+        type=Path,
+        default=[],
+        help=(
+            "explicit immutable raw session directory; repeat for multi-session "
+            "corpora to avoid ambiguous discovery beside a live journal"
+        ),
+    )
+    parser.add_argument(
         "--packed",
         type=Path,
         help=(
@@ -2351,11 +2369,22 @@ def main() -> int:
         for record_id in event.get("sourceRecordIDs", [])
     }
     session_ids = {event["sessionID"] for event in selected_events}
-    raw_sessions = discover_raw_sessions(project, session_ids)
+    raw_sessions = discover_raw_sessions(
+        project,
+        session_ids,
+        [path.expanduser().resolve() for path in arguments.raw_session],
+    )
     raw_records, raw_sources = load_raw_records(raw_sessions, needed_ids)
     semantic_events, semantic_sources = discover_semantic_sessions(
         project, manifest, session_ids
     )
+    for session_id in sorted(session_ids):
+        expected_raw_sha = semantic_sources[session_id].get("rawSHA256")
+        actual_raw_sha = raw_sources[session_id]["sha256"]
+        if not isinstance(expected_raw_sha, str) or expected_raw_sha != actual_raw_sha:
+            raise ReviewError(
+                f"raw journal does not match causal lineage for {session_id}"
+            )
     candidates = []
     skipped_onset_probes = []
     for neighborhood in neighborhoods:

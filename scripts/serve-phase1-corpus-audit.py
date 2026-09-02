@@ -222,11 +222,11 @@ class AuditStore:
         micro_path = Path(str(source.get("path", ""))).resolve()
         micro_manifest = load_json(micro_path / "corpus.json")
         causal_candidates = list(
-            (self.project / "coupled-data").glob("*-causal-v1[56]*-final/dataset.json")
+            (self.project / "coupled-data").glob("*-causal-v1[56]*/dataset.json")
         )
         causal_by_digest = artifact_path_by_digest(causal_candidates)
         semantic_candidates = list(
-            (self.project / "coupled-data").glob("*-semantic-v13*-final/events.jsonl")
+            (self.project / "coupled-data").glob("*-semantic-v1[34]*/events.jsonl")
         )
         semantic_by_digest = artifact_path_by_digest(semantic_candidates)
         result: dict[str, dict[str, Any]] = {}

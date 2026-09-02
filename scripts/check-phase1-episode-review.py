@@ -7,6 +7,7 @@ import datetime as dt
 import importlib.util
 import json
 import sys
+import tempfile
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -250,6 +251,30 @@ def check_deterministic_serialization(builder: ModuleType) -> None:
     assert builder.canonical_bytes({"b": 2, "a": 1}) == builder.canonical_bytes(
         {"a": 1, "b": 2}
     )
+
+
+def check_explicit_point_in_time_raw_session(builder: ModuleType) -> None:
+    with tempfile.TemporaryDirectory(prefix="phase1-episode-raw-session-") as value:
+        project = Path(value)
+        live = project / "coupled-data" / "live"
+        snapshot = project / "coupled-data" / "snapshot"
+        for directory, content in ((live, "live\n"), (snapshot, "snapshot\n")):
+            directory.mkdir(parents=True)
+            (directory / "session.json").write_text(
+                json.dumps({"sessionID": "session"}) + "\n",
+                encoding="utf-8",
+            )
+            (directory / "raw.jsonl").write_text(content, encoding="utf-8")
+        selected = builder.discover_raw_sessions(
+            project, {"session"}, [snapshot]
+        )
+        assert selected["session"][0] == snapshot / "raw.jsonl"
+        try:
+            builder.discover_raw_sessions(project, {"session"})
+        except builder.ReviewError as error:
+            assert "multiple different raw journals" in str(error)
+        else:
+            raise AssertionError("automatic discovery accepted ambiguous live/snapshot journals")
 
 
 def check_prompt_onset_requires_empty_or_causal_partition(builder: ModuleType) -> None:
@@ -563,6 +588,7 @@ def main() -> int:
     check_reducer_selected_terminal_is_authoritative(builder)
     check_continuity_is_exact_gate(builder)
     check_deterministic_serialization(builder)
+    check_explicit_point_in_time_raw_session(builder)
     check_prompt_onset_requires_empty_or_causal_partition(builder)
     check_development_selection(builder)
     check_development_proposals(builder)
