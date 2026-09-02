@@ -82,6 +82,11 @@ private struct SessionManifest: Encodable {
 
 private struct ResolvedCollectorConfiguration: Encodable {
     let readDelaySeconds: Double
+    let visualFrameIntervalSeconds: Double
+    let visualFingerprintWidth: Int
+    let visualFingerprintHeight: Int
+    let visualDifferencePixelThreshold: UInt8
+    let visualDifferenceFractionThreshold: Double
     let writeDelaySeconds: Double
     let postPasteCheckpointDelaySeconds: Double
     let postInputCheckpointDelaySeconds: Double
@@ -103,6 +108,11 @@ private struct ResolvedCollectorConfiguration: Encodable {
 
     init(_ configuration: Configuration) {
         readDelaySeconds = configuration.readDelay
+        visualFrameIntervalSeconds = configuration.visualFrameInterval
+        visualFingerprintWidth = configuration.visualFingerprintWidth
+        visualFingerprintHeight = configuration.visualFingerprintHeight
+        visualDifferencePixelThreshold = configuration.visualDifferencePixelThreshold
+        visualDifferenceFractionThreshold = configuration.visualDifferenceFractionThreshold
         writeDelaySeconds = configuration.writeDelay
         postPasteCheckpointDelaySeconds = configuration.postPasteCheckpointDelay
         postInputCheckpointDelaySeconds = configuration.postInputCheckpointDelay
@@ -148,6 +158,7 @@ private struct SchemaManifest: Encodable {
     let settledCharacterWrite = 1
     let readCandidate = 1
     let rawScreenOCR = 7
+    let rawVisualMonitorDiagnostic = 1
     let derivedScreenRead = 7
     let rawReadCandidateSuppression = 2
     let rawActiveTapWrite = 15

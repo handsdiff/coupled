@@ -25,6 +25,13 @@ final class ReadCandidateCollector {
     private var latestMutatingInputBySurface: [ReadMutationSurfaceKey: ReadMutationBoundary] = [:]
     private var reportedCaptureError = false
     private let accessibilitySurfaceProbe = ReadAccessibilitySurfaceProbe()
+    private lazy var visualFrameMonitor: ActiveSurfaceFrameMonitor? = {
+        guard captureScreenText, let rawWriter else { return nil }
+        return ActiveSurfaceFrameMonitor(
+            configuration: configuration,
+            rawWriter: rawWriter
+        )
+    }()
 
     init(
         configuration: Configuration,
@@ -54,6 +61,7 @@ final class ReadCandidateCollector {
         guard installEventTap() else { throw ReadCandidateCollectorError.eventTapUnavailable }
         if captureScreenText {
             installApplicationActivationObserver()
+            visualFrameMonitor?.start()
         }
 
         if captureScreenText {
@@ -100,6 +108,7 @@ final class ReadCandidateCollector {
             processIdentifier: input.processIdentifier,
             windowID: focusedWindowID
         )] = boundary
+        visualFrameMonitor?.writeBegan(boundary)
 
         let supersededKeys = pendingByContext.keys.filter {
             sameReadSurface(
@@ -114,6 +123,10 @@ final class ReadCandidateCollector {
             guard let pending = pendingByContext.removeValue(forKey: key) else { continue }
             persistSupersededCandidate(pending, boundary: boundary)
         }
+    }
+
+    func observeWriteCompletion(_ completion: CompletedWriteCapture) {
+        visualFrameMonitor?.writeCompleted(completion)
     }
 
     private func installEventTap() -> Bool {
@@ -175,6 +188,7 @@ final class ReadCandidateCollector {
         )
         guard let pointerWindow,
               let surface = eligibleSurface(window: pointerWindow, at: point) else { return }
+        visualFrameMonitor?.select(surface: surface, point: point)
         let key = surface.key
         let observedAt = nowTimestamp()
 
@@ -637,6 +651,7 @@ final class ReadCandidateCollector {
         let point = pointerPoint.flatMap { window.bounds.contains($0) ? $0 : nil }
             ?? CGPoint(x: window.bounds.midX, y: window.bounds.midY)
         guard let surface = eligibleSurface(window: window, at: point) else { return }
+        visualFrameMonitor?.select(surface: surface, point: point)
         beginSurfaceTransitionInterval(
             surface,
             point: point,
@@ -673,6 +688,7 @@ final class ReadCandidateCollector {
         trigger: String = "surface_transition_detected",
         replacementReason: String = "read_candidate_replaced_by_surface_transition"
     ) {
+        visualFrameMonitor?.select(surface: surface, point: point)
         let key = surface.key
         collapsePendingCandidates(
             except: key,
@@ -793,7 +809,7 @@ final class ReadCandidateCollector {
     }
 }
 
-private struct ReadCandidateKey: Hashable {
+struct ReadCandidateKey: Hashable {
     let processIdentifier: Int32
     let windowID: UInt32?
     let displayID: UInt32
@@ -804,7 +820,7 @@ private struct ReadMutationSurfaceKey: Hashable {
     let windowID: UInt32?
 }
 
-private struct ReadMutationBoundary {
+struct ReadMutationBoundary {
     let attemptID: String
     let observedAt: String
     let eventTimestampNanoseconds: UInt64
@@ -812,7 +828,7 @@ private struct ReadMutationBoundary {
     let windowID: UInt32?
 }
 
-private func sameReadSurface(
+func sameReadSurface(
     processIdentifier: Int32,
     windowID: UInt32?,
     as boundary: ReadMutationBoundary
@@ -891,7 +907,7 @@ private struct PendingReadCandidate {
     }
 }
 
-private struct ResolvedReadSurface {
+struct ResolvedReadSurface {
     let resolvedAt: String
     let displayID: UInt32
     let displayBounds: RectValue
@@ -933,7 +949,7 @@ private struct ResolvedReadSurface {
     }
 }
 
-private struct ReadSurfaceRecord: Encodable {
+struct ReadSurfaceRecord: Encodable {
     let resolvedAt: String
     let displayID: UInt32
     let displayBounds: RectValue

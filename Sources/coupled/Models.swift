@@ -50,6 +50,14 @@ struct MutatingWriteInput {
     let processIdentifier: Int32
 }
 
+struct CompletedWriteCapture {
+    let attemptID: String
+    let observedAt: String
+    let processIdentifier: Int32?
+    let boundaryReason: String
+    let endedWithUnmodifiedReturn: Bool
+}
+
 func displayContext(at point: CGPoint) -> DisplayContext? {
     var displayID = CGDirectDisplayID()
     var count: UInt32 = 0

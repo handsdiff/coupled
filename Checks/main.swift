@@ -2965,6 +2965,44 @@ expect(
     "schema-7 fallback is explicit and does not claim AX pane identity"
 )
 
+let quietVisualFrame = VisualFrameFingerprint(
+    width: 10,
+    height: 10,
+    samples: Array(repeating: 0, count: 100)
+)
+var onePixelChangedSamples = quietVisualFrame.samples
+onePixelChangedSamples[50] = 255
+let onePixelChangedFrame = VisualFrameFingerprint(
+    width: 10,
+    height: 10,
+    samples: onePixelChangedSamples
+)
+expect(
+    visualDifference(
+        from: quietVisualFrame,
+        to: onePixelChangedFrame,
+        pixelThreshold: 20,
+        fractionThreshold: 0.02
+    )?.isMaterial == false,
+    "isolated visual noise does not create a material screen change"
+)
+var textLikeChangedSamples = quietVisualFrame.samples
+for index in 40..<50 { textLikeChangedSamples[index] = 180 }
+let textLikeChangedFrame = VisualFrameFingerprint(
+    width: 10,
+    height: 10,
+    samples: textLikeChangedSamples
+)
+expect(
+    visualDifference(
+        from: quietVisualFrame,
+        to: textLikeChangedFrame,
+        pixelThreshold: 20,
+        fractionThreshold: 0.02
+    )?.isMaterial == true,
+    "distributed text-like visual changes cross the materiality gate"
+)
+
 try! FileManager.default.removeItem(at: fixtureRoot)
 
 print("CoupledCore checks passed")

@@ -6,6 +6,11 @@ struct Configuration {
     var command = "collect"
     var outputDirectory: String
     var readDelay: TimeInterval = 1.0
+    let visualFrameInterval: TimeInterval = 0.25
+    let visualFingerprintWidth = 96
+    let visualFingerprintHeight = 54
+    let visualDifferencePixelThreshold: UInt8 = 20
+    let visualDifferenceFractionThreshold = 0.002
     var writeDelay: TimeInterval = 3.0
     var viewportSideCropFraction = 0.0
     var viewportTopCropFraction = 0.0

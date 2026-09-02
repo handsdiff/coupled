@@ -153,6 +153,9 @@ do {
             eventWriter: eventWriter,
             mutatingInputObserver: { [weak reads] input in
                 reads?.supersedePendingReads(with: input)
+            },
+            writeCompletionObserver: { [weak reads] completion in
+                reads?.observeWriteCompletion(completion)
             }
         )
         try writes.start()

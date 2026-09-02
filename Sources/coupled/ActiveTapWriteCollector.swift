@@ -12,6 +12,7 @@ final class ActiveTapWriteCollector {
     private let rawWriter: JSONLWriter
     private let eventWriter: JSONLWriter
     private let mutatingInputObserver: ((MutatingWriteInput) -> Void)?
+    private let writeCompletionObserver: ((CompletedWriteCapture) -> Void)?
     private let systemWideElement = AXUIElementCreateSystemWide()
 
     private var eventTap: CFMachPort?
@@ -29,12 +30,14 @@ final class ActiveTapWriteCollector {
         configuration: Configuration,
         rawWriter: JSONLWriter,
         eventWriter: JSONLWriter,
-        mutatingInputObserver: ((MutatingWriteInput) -> Void)? = nil
+        mutatingInputObserver: ((MutatingWriteInput) -> Void)? = nil,
+        writeCompletionObserver: ((CompletedWriteCapture) -> Void)? = nil
     ) {
         self.configuration = configuration
         self.rawWriter = rawWriter
         self.eventWriter = eventWriter
         self.mutatingInputObserver = mutatingInputObserver
+        self.writeCompletionObserver = writeCompletionObserver
     }
 
     func start() throws {
@@ -469,6 +472,14 @@ final class ActiveTapWriteCollector {
         }
         let tapTimeoutCountAtCompletion = tapTimeoutCount
         let terminalDecisionAt = nowTimestamp()
+        writeCompletionObserver?(CompletedWriteCapture(
+            attemptID: pending.attemptID,
+            observedAt: terminalDecisionAt,
+            processIdentifier: pending.target?.app.processIdentifier,
+            boundaryReason: boundaryReason,
+            endedWithUnmodifiedReturn: pending.returnCheckpoints.last?
+                .eventTimestampNanoseconds == pending.lastEventTimestampNanoseconds
+        ))
 
         let work: () -> Void = { [weak self] in
             guard let self else { return }
