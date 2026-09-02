@@ -23,8 +23,8 @@ from pathlib import Path
 from typing import Any
 
 
-EPISODE_VERSION = "phase1-raw-episode-v8"
-CONVERSION_VERSION = "phase1-raw-episode-causal-v8"
+EPISODE_VERSION = "phase1-raw-episode-v9"
+CONVERSION_VERSION = "phase1-raw-episode-causal-v9"
 DESTINATION_MEMBERSHIP_COMPARISON_VERSION = (
     "phase1-write-destination-membership-activation-v1"
 )
@@ -120,7 +120,7 @@ def same_episode_destination(
     right_key = normalized_destination_key(right)
     if left_key is None or right_key is None:
         raise ValueError(
-            "phase1-raw-episode-v8 requires normalized logicalDestinationKey "
+            "phase1-raw-episode-v9 requires normalized logicalDestinationKey "
             "on every WRITE primitive"
         )
     return left_key == right_key
@@ -1562,7 +1562,7 @@ def assemble(
         )
     ):
         raise ValueError(
-            "phase1-raw-episode-v8 requires a phase1-causal-v15+ corpus with "
+            "phase1-raw-episode-v9 requires a phase1-causal-v15+ corpus with "
             "an explicit WRITE-destination configuration"
         )
     primitive_manifest = load_json(primitives_path / "episode-review.json")
@@ -1636,7 +1636,9 @@ def assemble(
                 current_completion = minimal_edit(before, current_after)["content"]
             assessments, novel = read_assessments(
                 events, session_id, timestamp(current.first["beganAt"]), lower, upper,
-                current_completion, left.get("application"),
+                current_completion,
+                (left.get("modelFacingDestination") or {}).get("application")
+                    or left.get("application"),
             )
             raw_same_destination = (
                 stable_destination(left) == stable_destination(right)

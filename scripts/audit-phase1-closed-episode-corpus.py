@@ -76,6 +76,7 @@ def main() -> int:
             "phase1-raw-episode-v5",
             "phase1-raw-episode-v6",
             "phase1-raw-episode-v7", "phase1-raw-episode-v8",
+            "phase1-raw-episode-v9",
         }:
             raise ValueError("audit requires a supported raw episode version")
         if conversion_version not in {
@@ -86,6 +87,7 @@ def main() -> int:
             "phase1-raw-episode-causal-v6",
             "phase1-raw-episode-causal-v7",
             "phase1-raw-episode-causal-v8",
+            "phase1-raw-episode-causal-v9",
         }:
             raise ValueError("audit requires a supported raw causal version")
         architecture = manifest.get("rawEpisodeArchitecture") or {}
@@ -144,6 +146,7 @@ def main() -> int:
         "phase1-raw-episode-v5",
         "phase1-raw-episode-v6",
         "phase1-raw-episode-v7", "phase1-raw-episode-v8",
+        "phase1-raw-episode-v9",
     }:
         raw_candidates = load_jsonl(root / "raw-episode-candidates.jsonl")
         for candidate in raw_candidates:

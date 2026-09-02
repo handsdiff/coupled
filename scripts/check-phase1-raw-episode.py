@@ -35,6 +35,31 @@ def main() -> int:
         "first\n\u200b\n-\n\u200b \nsecond"
     ) == "first\n\nsecond"
 
+    # READ history carries normalized model-facing application identity while
+    # the raw WRITE member retains the platform app name. A pane observation
+    # containing the composition already authored so far must not become a
+    # novel inbound READ merely because Code normalized to Visual Studio Code.
+    authored_read = {
+        "sessionID": "session-1",
+        "kind": "read",
+        "availableAt": "2026-01-01T00:00:04.000Z",
+        "sourceEventID": "read-1",
+        "serialized": json.dumps({
+            "kind": "read",
+            "source": {"application": "Visual Studio Code"},
+            "content": "status output\nensure you keep memory usage",
+        }, sort_keys=True),
+    }
+    assessments, novel = reducer.read_assessments(
+        [authored_read], "session-1",
+        reducer.timestamp("2026-01-01T00:00:00.000Z"),
+        reducer.timestamp("2026-01-01T00:00:03.000Z"),
+        reducer.timestamp("2026-01-01T00:00:05.000Z"),
+        "ensure you keep memory usage ", "Visual Studio Code",
+    )
+    assert novel == []
+    assert assessments[0]["status"] == "self_derived_active_composition_read"
+
     # Prefix-greedy minimal diffing rotates an insertion when the inserted
     # text and unchanged suffix share a boundary character: inserting
     # ``live `` before ``latest`` appears canonically as ``ive l``. The

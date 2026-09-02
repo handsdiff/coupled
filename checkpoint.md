@@ -38,10 +38,10 @@ causal-v16 READ-source projection described below is the validated baseline.
 | --- | --- |
 | Raw READ / WRITE | schema 7 / schema 15 |
 | READ surface | `ax-pane-read-v2` |
-| Semantic reduction | `phase1-semantic-v13` |
+| Semantic reduction | `phase1-semantic-v14` |
 | Causal micro-events | `phase1-causal-v16` |
-| Episode construction | `phase1-raw-episode-v8` |
-| Episode projection | `phase1-raw-episode-causal-v8` |
+| Episode construction | `phase1-raw-episode-v9` |
+| Episode projection | `phase1-raw-episode-causal-v9` |
 | Packing | `phase1-token-pack-v7` |
 | Human/model timing | `phase1-human-timing-v2` |
 
@@ -59,18 +59,20 @@ raw session + screenshots
 `raw.jsonl`, `session.json`, and retained screenshots are authoritative.
 `events.preview.jsonl` and the live viewer are debugging aids only.
 
-An unfrozen visual-READ candidate is implemented behind
-`phase1-semantic-v14`. The bounded SCStream monitor now promotes only a settled
+Semantic v14 adds visual-change READ evidence to the v13 pointer/activity path.
+The bounded SCStream monitor promotes only a settled
 visual-change frame or a causally safe frame immediately preceding a WRITE. It
 persists that exact frame before running OCR, and the reducer verifies the
 screenshot digest plus frame→OCR raw lineage. Full-window OCR remains raw
 evidence: v14 emits a model-facing READ only after `ax-pane-read-v2` re-OCRs
 the same image around a separately retained semantic content anchor. Frames
 whose change interval overlaps an active WRITE remain suppressed raw evidence.
-Exact near-simultaneous pointer/visual pane observations are emitted once.
-This does not replace semantic v13 until a focused end-to-end canary confirms
-the stored images, pane OCR, causal exclusions, and duplicate behavior on real
-apps.
+Exact near-simultaneous pointer/visual pane observations are emitted once. An
+uninterrupted run of autonomous visual changes on the same surface emits only
+its final visible viewport; every intermediate frame remains immutable raw
+evidence. A WRITE or ordinary user-triggered READ ends the run. The semantic
+projection therefore does not synthesize a full response from transient text
+that was never visible at once.
 
 The focused `phase1-visual-read-promotion-canary-1` is complete and immutable.
 It retained 28 promoted frames: 14 causally eligible frames each produced one
@@ -85,9 +87,9 @@ semantic content anchor and emitted Gemini response text rather than toolbar
 text. The canary also exposed stale
 window-title metadata when Chromium reused a CGWindowID across a tab change;
 the monitor now refreshes that window's title and bounds at each completed
-frame. The full build and regression suite pass after that correction. V14
-remains a candidate until the metadata correction is observed in a packaged
-live build and the resulting corpus is manually audited.
+frame. The correction and v14 behavior were subsequently observed in a
+packaged ordinary-work build and replayed through closed episodes and 32K
+packing.
 
 ## Active data contract
 
@@ -121,12 +123,15 @@ Pre-schema-7 READ serialization remains unchanged. Shell-versus-agent WRITE
 identity remains `unknown` unless direct evidence or an explicit manifest-pinned
 local mapping proves it.
 
-Episode v8 groups faithful micro-WRITEs into closed compositions. Duplicate or
+Episode v9 groups faithful micro-WRITEs into closed compositions. Duplicate or
 unchanged READs do not split an episode; a novel causal READ, outside WRITE,
 submission, changed composition region, destination change, or unresolved state
 discontinuity can. Volatile raw AX identities are audit evidence, not sufficient
-boundaries by themselves. Every micro-WRITE receives an explicit disposition;
-production construction has no manual adjudication input.
+boundaries by themselves. Self-authored pane text is compared using normalized
+model-facing application identity, so `Code` versus `Visual Studio Code` cannot
+turn an outgoing partial composition into novel inbound evidence. Every
+micro-WRITE receives an explicit disposition; production construction has no
+manual adjudication input.
 
 Loss eligibility is narrower than event validity:
 
@@ -206,10 +211,23 @@ latency projection, not proof that a live router knew the destination then.
   corpus would duplicate many gigabytes of cumulative model-input text and is
   unnecessary for semantic validation. A later packing/experiment step must
   consume both shards in chronological order with an explicit coverage gap.
-- `phase1-ordinary-work-2026-09-02-1` is currently collecting with the packaged
-  visual-frame build. It is the first ordinary-work session capable of semantic
-  v14 replay; no v14 interpretation is performed online, and the session must
-  be finalized and audited after collection stops.
+- A point-in-time clone of the first 58 minutes of
+  `phase1-ordinary-work-2026-09-02-1` contained 2,178 raw records and 605
+  replayable pane observations. Relative to unconsolidated v14, final-viewport
+  consolidation reduced semantic READs from 583 to 468 and visual READs from
+  318 to 203. The 31 closed loss-bearing episodes, their memberships,
+  conditioning states, targets, queries, and masks remained identical. At 32K,
+  dropped context-event instances fell from 4,532 to 3,570 and discarded input
+  tokens from 902,002 to 712,356. Seventy-five ChatGPT visual READs remained,
+  including responses captured without pointer activity. Relative to v13, two
+  prior closed targets split where genuinely new assistant output became
+  causally available mid-composition; the normalized self-authorship fix kept
+  `ensure you keep memory usage within reason` as one episode. All closed-
+  episode and packing audits passed.
+- `phase1-ordinary-work-2026-09-02-1` remains live. It is the first
+  ordinary-work session capable of semantic v14 replay; no v14 interpretation
+  is performed online, and the complete session must still be finalized after
+  collection stops.
 - `phase1-visual-read-promotion-canary-1` was stopped cleanly and reduced
   separately as a candidate-v14 validation trace; it does not alter the frozen
   semantic-v13 corpus.
@@ -220,6 +238,9 @@ latency projection, not proof that a live router knew the destination then.
 
 - READ capture is an interaction-surface proxy, not attention measurement.
 - Dynamic interfaces can change without a tracked activity trigger.
+- Final-viewport visual consolidation intentionally does not assert that text
+  which passively scrolled away was read; those earlier frames remain available
+  for later reducer or attention-model ablations.
 - Screen-coordinate screenshots can include overlapping windows.
 - Precise READ pane labels, WRITE resource/field identity, and integrated-
   terminal mode remain nullable when AX evidence does not prove them.

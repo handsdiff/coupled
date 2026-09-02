@@ -351,8 +351,20 @@ public struct Phase1SemanticReducer {
                 dispositions: []
             )
         dispositions.append(contentsOf: coincidentReadResult.dispositions)
+        let dynamicVisualResult = configuration.reducerVersion
+            == "phase1-semantic-v14"
+            ? consolidateDynamicVisualReads(
+                candidates: coincidentReadResult.events,
+                writeBoundaries: writeOverlapBoundaries,
+                sessionID: sessionID
+            )
+            : ReducerOverlapResult(
+                events: coincidentReadResult.events,
+                dispositions: []
+            )
+        dispositions.append(contentsOf: dynamicVisualResult.dispositions)
         let overlapResult = applySemanticReadOverlap(
-            candidates: coincidentReadResult.events,
+            candidates: dynamicVisualResult.events,
             writeBoundaries: writeOverlapBoundaries,
             sessionID: sessionID,
             paneAwareSurfaceIdentity: configuration.reducerVersion
@@ -428,7 +440,7 @@ public struct Phase1SemanticReducer {
                 ? "process + window + display + stable selected AX pane; a pane change resets adjacent overlap"
                 : "process + window + display",
             "visualReadRule": configuration.reducerVersion == "phase1-semantic-v14"
-                ? "hash-verified visual frame -> OCR lineage; active-WRITE-overlapped frames never become READs; exact coincident pointer/visual observations are emitted once"
+                ? "hash-verified visual frame -> OCR lineage; active-WRITE-overlapped frames never become READs; exact coincident pointer/visual observations are emitted once; uninterrupted progressive states on one dynamic surface emit only their final causally available viewport"
                 : "not enabled",
             "previewAuthority": false,
         ]
@@ -1766,6 +1778,198 @@ private func removeCoincidentDuplicateReads(
         },
         dispositions: dispositions
     )
+}
+
+/// A dynamic surface can expose several progressively newer OCR snapshots for
+/// one autonomous update, such as a streaming assistant response. Those raw
+/// observations are valuable evidence, but treating every partial state as an
+/// independent READ overweights one response and evicts older causal history.
+///
+/// This rule is deliberately narrower than viewport overlap. It applies only
+/// for consecutive visual-frame observations on the same captured surface and
+/// compatible pane, and crosses no user-triggered READ or WRITE onset. The
+/// final snapshot is therefore the state available at the end of the chain;
+/// every intermediate frame remains available in the raw evidence.
+private func consolidateDynamicVisualReads(
+    candidates: [ReducerCandidate],
+    writeBoundaries: [ReducerWriteBoundary],
+    sessionID: String
+) -> ReducerOverlapResult {
+    enum TimelineItem {
+        case candidate(Int)
+        case writeBoundary(ReducerWriteBoundary)
+    }
+    func ordering(_ item: TimelineItem) -> (String, Int, Int) {
+        switch item {
+        case .candidate(let index):
+            let candidate = candidates[index]
+            return (
+                candidate.overlapBoundaryAt,
+                candidate.kind == "write" ? 0 : 1,
+                candidate.rawLine
+            )
+        case .writeBoundary(let boundary):
+            return (boundary.beganAt, 0, boundary.rawLine)
+        }
+    }
+    let timeline = (
+        candidates.indices.map(TimelineItem.candidate)
+            + writeBoundaries.map(TimelineItem.writeBoundary)
+    ).sorted { lhs, rhs in
+        let left = ordering(lhs)
+        let right = ordering(rhs)
+        if left.0 != right.0 { return left.0 < right.0 }
+        if left.1 != right.1 { return left.1 < right.1 }
+        return left.2 < right.2
+    }
+
+    var updated = candidates
+    var excluded = Set<Int>()
+    var dispositions = [ReducerDisposition]()
+    var chain = [Int]()
+
+    func observationID(_ candidate: ReducerCandidate) -> String {
+        if let reduction = candidate.event["reduction"] as? [String: Any],
+           let selected = nonEmptyString(reduction["selectedObservationID"]) {
+            return selected
+        }
+        return stringValue(candidate.raw["recordID"]) ?? "unknown"
+    }
+    func flushChain() {
+        defer {
+            chain.removeAll(keepingCapacity: true)
+        }
+        guard chain.count > 1,
+              let keptIndex = chain.last else { return }
+        let kept = updated[keptIndex]
+        let memberIDs = chain.map { observationID(updated[$0]) }
+        let details: [String: Any] = [
+            "policy": "uninterrupted_progressive_dynamic_surface_last_viewport_v1",
+            "memberCount": chain.count,
+            "memberObservationIDs": memberIDs,
+            "firstCapturedAt": updated[chain[0]].overlapBoundaryAt,
+            "lastCapturedAt": kept.overlapBoundaryAt,
+            "keptObservationID": observationID(kept),
+        ]
+        for index in chain.dropLast() {
+            excluded.insert(index)
+            let candidate = updated[index]
+            dispositions.append(ReducerDisposition(
+                line: candidate.rawLine,
+                object: reducerUnresolved(
+                    sessionID: sessionID,
+                    raw: candidate.raw,
+                    line: candidate.rawLine,
+                    kind: "read",
+                    rule: "dynamic_visual_state_consolidation_v1",
+                    reason: "superseded_dynamic_surface_state",
+                    details: details,
+                    sourceRecordIDs: candidate.event["sourceRecordIDs"] as? [String]
+                )
+            ))
+        }
+        var keptCandidate = kept
+        var reduction = keptCandidate.event["reduction"] as? [String: Any] ?? [:]
+        reduction["dynamicVisualConsolidation"] = details
+        keptCandidate.event["reduction"] = reduction
+        updated[keptIndex] = keptCandidate
+    }
+
+    for item in timeline {
+        switch item {
+        case .writeBoundary:
+            flushChain()
+        case .candidate(let index):
+            let candidate = updated[index]
+            guard candidate.kind == "read" else {
+                flushChain()
+                continue
+            }
+            // A pointer/activity-triggered READ is an independent observation,
+            // not another frame in an autonomous visual update. Keep it and
+            // end any visual chain on either side.
+            guard isVisualReadCandidate(candidate) else {
+                flushChain()
+                continue
+            }
+            guard let priorIndex = chain.last else {
+                chain = [index]
+                continue
+            }
+            if dynamicVisualStatesAreCompatible(updated[priorIndex], candidate) {
+                chain.append(index)
+            } else {
+                flushChain()
+                chain = [index]
+            }
+        }
+    }
+    flushChain()
+    return ReducerOverlapResult(
+        events: updated.indices.compactMap {
+            excluded.contains($0) ? nil : updated[$0]
+        },
+        dispositions: dispositions
+    )
+}
+
+private func isVisualReadCandidate(_ candidate: ReducerCandidate) -> Bool {
+    stringValue(candidate.event["provenance"]) == "visual_change_screen_ocr"
+}
+
+private func dynamicVisualStatesAreCompatible(
+    _ left: ReducerCandidate,
+    _ right: ReducerCandidate
+) -> Bool {
+    guard left.kind == "read", right.kind == "read" else { return false }
+    for key in [
+        "processIdentifier", "windowID", "displayID", "bundleIdentifier",
+        "windowTitle",
+    ] where reducerComparableString(left.raw[key])
+        != reducerComparableString(right.raw[key]) {
+        return false
+    }
+
+    let samePane = readOverlapPaneIdentity(left.raw)
+        == readOverlapPaneIdentity(right.raw)
+    let paneOverlap = reducerRectangleOverlapOverSmallerArea(
+        left.raw["captureBounds"] as? [String: Any],
+        right.raw["captureBounds"] as? [String: Any]
+    )
+    return samePane || paneOverlap >= 0.70
+}
+
+private func reducerComparableString(_ value: Any?) -> String {
+    if let value = value as? String { return value }
+    if let value = intValue(value) { return String(value) }
+    return ""
+}
+
+private func reducerRectangleOverlapOverSmallerArea(
+    _ left: [String: Any]?,
+    _ right: [String: Any]?
+) -> Double {
+    guard let left, let right,
+          let leftX = doubleValue(left["x"]),
+          let leftY = doubleValue(left["y"]),
+          let leftWidth = doubleValue(left["width"]),
+          let leftHeight = doubleValue(left["height"]),
+          let rightX = doubleValue(right["x"]),
+          let rightY = doubleValue(right["y"]),
+          let rightWidth = doubleValue(right["width"]),
+          let rightHeight = doubleValue(right["height"]),
+          leftWidth > 0, leftHeight > 0, rightWidth > 0, rightHeight > 0
+    else { return 0 }
+    let intersectionWidth = max(
+        0, min(leftX + leftWidth, rightX + rightWidth) - max(leftX, rightX)
+    )
+    let intersectionHeight = max(
+        0, min(leftY + leftHeight, rightY + rightHeight) - max(leftY, rightY)
+    )
+    let smallerArea = min(leftWidth * leftHeight, rightWidth * rightHeight)
+    return smallerArea > 0
+        ? (intersectionWidth * intersectionHeight) / smallerArea
+        : 0
 }
 
 /// Overlap is an interpretation of the semantic event timeline, not the order

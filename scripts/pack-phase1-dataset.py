@@ -115,6 +115,7 @@ def require_compiled_dataset(
         "phase1-raw-episode-causal-v6",
         "phase1-raw-episode-causal-v7",
         "phase1-raw-episode-causal-v8",
+        "phase1-raw-episode-causal-v9",
     }:
         raise ValueError(
             "packer requires a supported causal or episode-causal conversion"
@@ -709,6 +710,7 @@ def main() -> int:
                     "phase1-raw-episode-causal-v6",
                     "phase1-raw-episode-causal-v7",
                     "phase1-raw-episode-causal-v8",
+                    "phase1-raw-episode-causal-v9",
                 }:
                     # v2 deliberately removes micro-WRITEs from model-facing
                     # events. Their IDs remain immutable audit lineage on the

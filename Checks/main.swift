@@ -1175,7 +1175,8 @@ func visualFrameFixture(
     return result
 }
 func visualOCRFixture(
-    id: String, frameID: String, sequence: Int, capturedAt: String
+    id: String, frameID: String, sequence: Int, capturedAt: String,
+    content: String = "same visible words"
 ) -> [String: Any] {
     [
         "schemaVersion": 1, "recordType": "visual_ocr_observation",
@@ -1188,8 +1189,9 @@ func visualOCRFixture(
         "capturedAt": capturedAt, "surfaceResolvedAt": capturedAt,
         "firstActivityAt": capturedAt, "lastActivityAt": capturedAt,
         "readDelaySeconds": 1, "triggerTypes": ["visual_change_settled"],
-        "eventCount": 1, "content": "same visible words",
-        "recognizedLineCount": 1, "contentWasTruncated": false,
+        "eventCount": 1, "content": content,
+        "recognizedLineCount": content.split(separator: "\n").count,
+        "contentWasTruncated": false,
         "screenshotRelativePath": "screenshots/visual-frame.png",
         "screenshotSHA256": visualScreenshotSHA,
         "screenshotPixelWidth": 1000, "screenshotPixelHeight": 800,
@@ -1228,18 +1230,40 @@ let coincidentPointerRead: [String: Any] = [
     "bundleIdentifier": "fixture.app", "processIdentifier": 42,
     "triggerSurface": visualSurface,
 ]
+let progressiveFrame = visualFrameFixture(
+    id: "visual-frame-progressive", sequence: 2,
+    capturedAt: "2026-01-01T00:00:01.500Z"
+)
+let progressiveOCR = visualOCRFixture(
+    id: "visual-ocr-progressive", frameID: "visual-frame-progressive",
+    sequence: 2, capturedAt: "2026-01-01T00:00:01.500Z",
+    content: "same visible words\ncompleted response"
+)
+let scrolledFrame = visualFrameFixture(
+    id: "visual-frame-scrolled", sequence: 3,
+    capturedAt: "2026-01-01T00:00:01.800Z"
+)
+let scrolledOCR = visualOCRFixture(
+    id: "visual-ocr-scrolled", frameID: "visual-frame-scrolled",
+    sequence: 3, capturedAt: "2026-01-01T00:00:01.800Z",
+    content: "completed response\nfinal answer"
+)
 let suppressedFrame = visualFrameFixture(
-    id: "visual-frame-write-overlap", sequence: 2,
+    id: "visual-frame-write-overlap", sequence: 4,
     capturedAt: "2026-01-01T00:00:02.000Z",
     suppression: "visual_change_overlapped_active_write",
     overlaps: ["attempt-1"]
 )
 let suppressedOCR = visualOCRFixture(
     id: "visual-ocr-write-overlap", frameID: "visual-frame-write-overlap",
-    sequence: 2, capturedAt: "2026-01-01T00:00:02.000Z"
+    sequence: 4, capturedAt: "2026-01-01T00:00:02.000Z"
 )
 writeFixtureJSONL(
-    [visualFrame, visualOCR, coincidentPointerRead, suppressedFrame, suppressedOCR],
+    [
+        visualFrame, visualOCR, coincidentPointerRead,
+        progressiveFrame, progressiveOCR, scrolledFrame, scrolledOCR,
+        suppressedFrame, suppressedOCR,
+    ],
     to: visualReadInput.appendingPathComponent("raw.jsonl")
 )
 try! FileManager.default.createDirectory(
@@ -1266,7 +1290,9 @@ let visualEvidenceSelection: [String: Any] = [
 let visualEvidenceRows: [[String: Any]] = [
     ("visual-ocr-1", 2, "same visible words"),
     ("pointer-read-1", 3, "same visible words"),
-    ("visual-ocr-write-overlap", 5, "same visible words"),
+    ("visual-ocr-progressive", 5, "same visible words\ncompleted response"),
+    ("visual-ocr-scrolled", 7, "completed response\nfinal answer"),
+    ("visual-ocr-write-overlap", 9, "same visible words"),
 ].map { recordID, rawLine, content in
     let evidenceID = "fixture-surface-\(recordID)"
     return [
@@ -1278,7 +1304,11 @@ let visualEvidenceRows: [[String: Any]] = [
             ? "2026-01-01T00:00:01.000Z"
             : rawLine == 3
                 ? "2026-01-01T00:00:01.200Z"
-                : "2026-01-01T00:00:02.000Z",
+                : rawLine == 5
+                    ? "2026-01-01T00:00:01.500Z"
+                    : rawLine == 7
+                        ? "2026-01-01T00:00:01.800Z"
+                        : "2026-01-01T00:00:02.000Z",
         "screenshotSHA256": rawLine == 3 ? NSNull() : visualScreenshotSHA,
         "regionOfInterest": visualEvidenceRegion,
         "surfaceSelection": visualEvidenceSelection,
@@ -1307,9 +1337,9 @@ try! jsonData([
         ],
     ],
     "counts": [
-        "rawRecords": 5, "screenObservations": 1,
-        "visualObservations": 2, "readObservations": 3,
-        "evidence": 3, "unresolved": 0,
+        "rawRecords": 9, "screenObservations": 1,
+        "visualObservations": 4, "readObservations": 5,
+        "evidence": 5, "unresolved": 0,
     ],
     "artifacts": [
         "digestsSHA256": [
@@ -1338,16 +1368,20 @@ expect(
         && visualReadEvents[0]["provenance"] as? String
             == "visual_change_screen_ocr"
         && visualReadEvents[0]["sourceRecordIDs"] as? [String]
-            == ["visual-frame-1", "visual-ocr-1"],
-    "v14 emits one READ with immutable visual frame-to-OCR lineage"
+            == ["visual-frame-scrolled", "visual-ocr-scrolled"]
+        && visualReadEvents[0]["content"] as? String
+            == "completed response\nfinal answer",
+    "v14 emits only the final viewport while preserving earlier raw evidence"
 )
 expect(
     visualReadUnresolved.contains {
         $0["reason"] as? String == "exact_coincident_pointer_visual_duplicate"
     } && visualReadUnresolved.contains {
         $0["reason"] as? String == "visual_frame_suppressed_or_write_overlapped"
+    } && visualReadUnresolved.contains {
+        $0["reason"] as? String == "superseded_dynamic_surface_state"
     },
-    "v14 rejects exact duplicate and active-WRITE-overlapped visual observations"
+    "v14 rejects exact duplicates, superseded prefixes, and active-WRITE-overlapped visual observations"
 )
 try! Data("tampered visual frame bytes".utf8).write(to: visualScreenshotURL)
 _ = try! Phase1SemanticReducer(configuration: .init(
