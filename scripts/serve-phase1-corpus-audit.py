@@ -226,7 +226,7 @@ class AuditStore:
         )
         causal_by_digest = artifact_path_by_digest(causal_candidates)
         semantic_candidates = list(
-            (self.project / "coupled-data").glob("*-semantic-v1[34]*/events.jsonl")
+            (self.project / "coupled-data").glob("*-semantic-v1[345]*/events.jsonl")
         )
         semantic_by_digest = artifact_path_by_digest(semantic_candidates)
         result: dict[str, dict[str, Any]] = {}

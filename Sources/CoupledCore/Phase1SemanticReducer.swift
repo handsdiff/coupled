@@ -125,7 +125,7 @@ public struct Phase1SemanticReducer {
             }
             switch object["recordType"] as? String {
             case "visual_frame_observation":
-                guard configuration.reducerVersion == "phase1-semantic-v14" else {
+                guard reducerUsesVisualReadEvidence(configuration.reducerVersion) else {
                     continue
                 }
                 let recordID = stringValue(object["recordID"]) ?? ""
@@ -181,7 +181,7 @@ public struct Phase1SemanticReducer {
                     ))
                 }
             case "visual_ocr_observation":
-                guard configuration.reducerVersion == "phase1-semantic-v14" else {
+                guard reducerUsesVisualReadEvidence(configuration.reducerVersion) else {
                     continue
                 }
                 switch validateVisualReadEvidence(
@@ -339,6 +339,9 @@ public struct Phase1SemanticReducer {
             candidates: staleReadResult.events, sessionID: sessionID
         )
         dispositions.append(contentsOf: authorshipReadResult.dispositions)
+        // v15 folds exact pointer/visual duplicates into its one globally
+        // adjacent causal-state rule. The older per-surface cache would allow
+        // X -> Y -> X suppression before global adjacency is established.
         let coincidentReadResult = configuration.reducerVersion
             == "phase1-semantic-v14"
             ? removeCoincidentDuplicateReads(
@@ -351,8 +354,9 @@ public struct Phase1SemanticReducer {
                 dispositions: []
             )
         dispositions.append(contentsOf: coincidentReadResult.dispositions)
-        let dynamicVisualResult = configuration.reducerVersion
-            == "phase1-semantic-v14"
+        let dynamicVisualResult = reducerUsesVisualReadEvidence(
+            configuration.reducerVersion
+        )
             ? consolidateDynamicVisualReads(
                 candidates: coincidentReadResult.events,
                 writeBoundaries: writeOverlapBoundaries,
@@ -369,7 +373,9 @@ public struct Phase1SemanticReducer {
             sessionID: sessionID,
             paneAwareSurfaceIdentity: configuration.reducerVersion
                 == "phase1-semantic-v13"
-                || configuration.reducerVersion == "phase1-semantic-v14"
+                || reducerUsesVisualReadEvidence(configuration.reducerVersion),
+            adjacentCausalDelta: configuration.reducerVersion
+                == "phase1-semantic-v15"
         )
         dispositions.append(contentsOf: overlapResult.dispositions)
         var events = overlapResult.events.sorted { $0.rawLine < $1.rawLine }.map(\.event)
@@ -435,17 +441,22 @@ public struct Phase1SemanticReducer {
             "promptClosureRule": "a settled WRITE gains a submission boundary only from a linked raw post-action observation whose terminal hash and pre-action state match, whose action is unmodified Return or has a semantic submission term anywhere on the bounded clicked AX ancestor chain, and whose same-surface field clears, restores its placeholder, or disappears",
             "readOverlapOrdering": "READ capturedAt with finalized WRITE beganAt boundaries; raw append order ignored",
             "readOverlapSurfaceIdentity": configuration.reducerVersion
-                == "phase1-semantic-v13"
-                || configuration.reducerVersion == "phase1-semantic-v14"
+                == "phase1-semantic-v15"
+                ? "globally adjacent causal READs with the same app/window, strongly overlapping capture geometry, and compatible AX pane role; AX depth and object identity are supporting evidence only"
+                : configuration.reducerVersion == "phase1-semantic-v13"
+                    || configuration.reducerVersion == "phase1-semantic-v14"
                 ? "process + window + display + stable selected AX pane; a pane change resets adjacent overlap"
                 : "process + window + display",
-            "visualReadRule": configuration.reducerVersion == "phase1-semantic-v14"
+            "visualReadRule": reducerUsesVisualReadEvidence(configuration.reducerVersion)
                 ? "hash-verified visual frame -> OCR lineage; active-WRITE-overlapped frames never become READs; exact coincident pointer/visual observations are emitted once; uninterrupted progressive states on one dynamic surface emit only their final causally available viewport"
                 : "not enabled",
             "previewAuthority": false,
         ]
         if let readSurfaceEvidence {
             reduction["readSurfaceRule"] = "hash-verified \(readSurfaceEvidence.ruleVersion) evidence before causal overlap; unresolved evidence falls back to collector OCR"
+        }
+        if configuration.reducerVersion == "phase1-semantic-v15" {
+            reduction["adjacentReadDeltaRule"] = "only globally adjacent causal READ states on a proven compatible surface may align; any WRITE, other surface, browser-title change, geometry change, or uncertain order-preserving alignment resets to the complete current READ"
         }
         try reducerWriteJSON(reduction, to: output.appendingPathComponent("reduction.json"))
         return Phase1SemanticReducerResult(
@@ -502,6 +513,10 @@ private struct ReducerFailure: Error {
     let details: [String: Any]
 }
 
+private func reducerUsesVisualReadEvidence(_ version: String) -> Bool {
+    version == "phase1-semantic-v14" || version == "phase1-semantic-v15"
+}
+
 private func loadReadSurfaceEvidence(
     configuration: Phase1SemanticReducerConfiguration,
     sessionURL: URL,
@@ -521,7 +536,7 @@ private func loadReadSurfaceEvidence(
             ? "ax-pane-read-v2"
             : "pointer-local-read-v1"
         expectedReadRecordTypes = ["screen_ocr_observation"]
-    case "phase1-semantic-v14":
+    case "phase1-semantic-v14", "phase1-semantic-v15":
         expectedRuleVersion = rawScreenOCRSchema >= 7
             ? "ax-pane-read-v2"
             : "pointer-local-read-v1"
@@ -531,7 +546,7 @@ private func loadReadSurfaceEvidence(
     default:
         guard configuration.readSurfaceEvidenceDirectory == nil else {
             throw Phase1SemanticReducerError.invalidManifest(
-                "--read-surface-evidence requires phase1-semantic-v11 through phase1-semantic-v14"
+                "--read-surface-evidence requires phase1-semantic-v11 through phase1-semantic-v15"
             )
         }
         return nil
@@ -1980,7 +1995,8 @@ private func applySemanticReadOverlap(
     candidates: [ReducerCandidate],
     writeBoundaries: [ReducerWriteBoundary],
     sessionID: String,
-    paneAwareSurfaceIdentity: Bool
+    paneAwareSurfaceIdentity: Bool,
+    adjacentCausalDelta: Bool
 ) -> ReducerOverlapResult {
     enum TimelineItem {
         case candidate(Int)
@@ -2010,16 +2026,97 @@ private func applySemanticReadOverlap(
         return left.2 < right.2
     }
     var deduplicator = AdjacentViewportDeduplicator()
+    var previousCausalRead: ReducerCandidate?
     var accepted = [ReducerCandidate]()
     var dispositions = [ReducerDisposition]()
     for item in timeline {
         guard case .candidate(let index) = item else {
             deduplicator.reset()
+            previousCausalRead = nil
             continue
         }
         var candidate = candidates[index]
         if candidate.kind == "write" {
             deduplicator.reset()
+            previousCausalRead = nil
+            accepted.append(candidate)
+            continue
+        }
+        if adjacentCausalDelta {
+            let completeCurrent = candidate
+            defer { previousCausalRead = completeCurrent }
+            guard let previous = previousCausalRead,
+                  let surface = adjacentReadSurfaceCompatibility(
+                    previous.raw,
+                    candidate.raw
+                  ) else {
+                accepted.append(candidate)
+                continue
+            }
+            let previousContent = stringValue(previous.raw["content"]) ?? ""
+            let currentContent = stringValue(candidate.raw["content"]) ?? ""
+            guard let delta = adjacentCausalReadDelta(
+                previous: previousContent,
+                current: currentContent
+            ) else {
+                if var reduction = candidate.event["reduction"] as? [String: Any] {
+                    reduction["adjacentReadDelta"] = [
+                        "ruleVersion": "adjacent-causal-read-delta-v1",
+                        "decision": "retain_complete_current",
+                        "reason": "order_preserving_alignment_unproven",
+                        "priorEventID": stringValue(previous.event["eventID"]) ?? "",
+                        "orderingField": "capturedAt",
+                        "orderingTimestamp": candidate.overlapBoundaryAt,
+                        "surface": surface,
+                    ]
+                    candidate.event["reduction"] = reduction
+                }
+                accepted.append(candidate)
+                continue
+            }
+            let details: [String: Any] = [
+                "ruleVersion": "adjacent-causal-read-delta-v1",
+                "decision": delta.emittedContent.isEmpty
+                    ? "suppress_no_new_content"
+                    : "emit_new_content",
+                "alignment": delta.alignment,
+                "overlapCharacterCount": delta.overlapCharacterCount,
+                "currentCharacterCount": delta.currentCharacterCount,
+                "emittedCharacterCount": delta.emittedContent.count,
+                "priorEventID": stringValue(previous.event["eventID"]) ?? "",
+                "orderingField": "capturedAt",
+                "orderingTimestamp": candidate.overlapBoundaryAt,
+                "surface": surface,
+            ]
+            guard !delta.emittedContent.isEmpty else {
+                dispositions.append(ReducerDisposition(
+                    line: candidate.rawLine,
+                    object: reducerUnresolved(
+                        sessionID: sessionID, raw: candidate.raw,
+                        line: candidate.rawLine, kind: "read",
+                        rule: "semantic_time_adjacent_causal_read_delta_v1",
+                        reason: "adjacent_causal_read_no_new_content",
+                        details: details,
+                        sourceRecordIDs: candidate.event["sourceRecordIDs"]
+                            as? [String]
+                    )
+                ))
+                continue
+            }
+            candidate.event["content"] = delta.emittedContent
+            let emittedLines = delta.emittedContent.split(
+                separator: "\n", omittingEmptySubsequences: true
+            ).count
+            candidate.event["emittedLineCount"] = emittedLines
+            candidate.event["overlapRemovedLineCount"] = max(
+                (intValue(candidate.raw["recognizedLineCount"]) ?? emittedLines)
+                    - emittedLines,
+                0
+            )
+            if var reduction = candidate.event["reduction"] as? [String: Any] {
+                reduction["adjacentReadDelta"] = details
+                candidate.event["reduction"] = reduction
+            }
             accepted.append(candidate)
             continue
         }
@@ -2065,6 +2162,83 @@ private func applySemanticReadOverlap(
         accepted.append(candidate)
     }
     return ReducerOverlapResult(events: accepted, dispositions: dispositions)
+}
+
+/// Establishes whether two globally adjacent READ observations can safely be
+/// treated as successive states of one visual surface. AX objects and their
+/// depths are deliberately excluded from the hard identity: Electron often
+/// recreates those while the same pane remains visible.
+private func adjacentReadSurfaceCompatibility(
+    _ previous: [String: Any],
+    _ current: [String: Any]
+) -> [String: Any]? {
+    for key in [
+        "processIdentifier", "windowID", "displayID", "bundleIdentifier",
+        "windowTitle",
+    ] where reducerComparableString(previous[key])
+        != reducerComparableString(current[key]) {
+        return nil
+    }
+    guard !reducerComparableString(current["processIdentifier"]).isEmpty,
+          !reducerComparableString(current["windowID"]).isEmpty,
+          !reducerComparableString(current["bundleIdentifier"]).isEmpty
+    else { return nil }
+
+    let geometryOverlap = reducerRectangleOverlapOverSmallerArea(
+        previous["captureBounds"] as? [String: Any],
+        current["captureBounds"] as? [String: Any]
+    )
+    guard geometryOverlap >= 0.90 else { return nil }
+    let priorPane = adjacentReadPaneEvidence(previous)
+    let currentPane = adjacentReadPaneEvidence(current)
+    guard let priorRole = priorPane.role,
+          let currentRole = currentPane.role,
+          adjacentReadRolesAreCompatible(priorRole, currentRole) else {
+        return nil
+    }
+    return [
+        "geometryOverlapOverSmallerArea": geometryOverlap,
+        "previousPaneRole": priorPane.role ?? NSNull(),
+        "currentPaneRole": currentPane.role ?? NSNull(),
+        "previousPaneLabel": priorPane.label ?? NSNull(),
+        "currentPaneLabel": currentPane.label ?? NSNull(),
+        "previousAXDepth": priorPane.depth ?? NSNull(),
+        "currentAXDepth": currentPane.depth ?? NSNull(),
+        "axDepthUsedAsIdentity": false,
+    ]
+}
+
+private func adjacentReadPaneEvidence(
+    _ raw: [String: Any]
+) -> (role: String?, label: String?, depth: Any?) {
+    guard let readSurface = raw["readSurface"] as? [String: Any],
+          let selection = readSurface["surfaceSelection"] as? [String: Any]
+    else { return (nil, nil, nil) }
+    let depth = intValue(selection["selectedDepth"])
+    let selectedNode = depth.flatMap { selectedDepth in
+        (raw["accessibilitySurface"] as? [String: Any])
+            .flatMap { $0["ancestors"] as? [[String: Any]] }
+            .flatMap { ancestors in
+                ancestors.first { intValue($0["depth"]) == selectedDepth }
+            }
+    }
+    let role = nonEmptyString(selection["selectedRole"])
+        ?? nonEmptyString(selectedNode?["role"])
+    let label = nonEmptyString(selection["selectedLabel"])
+        ?? nonEmptyString(selection["selectedTitle"])
+        ?? nonEmptyString(selection["selectedDescription"])
+        ?? nonEmptyString(selectedNode?["title"])
+        ?? nonEmptyString(selectedNode?["elementDescription"])
+        ?? nonEmptyString(selectedNode?["identifier"])
+    return (role, label, depth)
+}
+
+private func adjacentReadRolesAreCompatible(_ left: String, _ right: String) -> Bool {
+    if left == right { return true }
+    let containerRoles: Set<String> = [
+        "AXGroup", "AXLayoutArea", "AXScrollArea", "AXWebArea",
+    ]
+    return containerRoles.contains(left) && containerRoles.contains(right)
 }
 
 /// Returns a deterministic logical identity for the AX pane selected by the

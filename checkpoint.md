@@ -74,6 +74,15 @@ evidence. A WRITE or ordinary user-triggered READ ends the run. The semantic
 projection therefore does not synthesize a full response from transient text
 that was never visible at once.
 
+Semantic v15 is currently a shadow candidate, not the active baseline. It keeps
+v14's raw-evidence, visual-frame, active-WRITE, and final-viewport rules inside
+one reducer pass, then replaces line-set overlap with an order-preserving delta
+between globally adjacent causal READ states. A WRITE, another surface, changed
+window title, materially changed pane geometry, incompatible pane role, or
+uncertain alignment retains the complete current READ. AX object identity and
+ancestor depth are audit evidence rather than hard pane identity. This candidate
+must pass side-by-side human review before the default changes from v14.
+
 The focused `phase1-visual-read-promotion-canary-1` is complete and immutable.
 It retained 28 promoted frames: 14 causally eligible frames each produced one
 full-window raw OCR observation, while 14 frames whose visual-change interval
@@ -235,6 +244,17 @@ latency projection, not proof that a live router knew the destination then.
   primitive construction now accepts an explicit immutable `--raw-session`
   and verifies its digest against causal lineage, so a same-session live
   journal can continue safely beside the audit snapshot.
+- Shadow semantic-v15 replay of that same immutable clone is deterministic and
+  leaves all 87 semantic WRITEs byte-identical apart from shifted sequence
+  numbers. It retains 622 READs: 238 receive an order-preserving content delta,
+  eight adjacent states contain no new content and are suppressed, 72 uncertain
+  alignments conservatively retain the full current READ, and one causally
+  useful pointer-interrupted visual state is restored. Downstream reconstruction
+  produces 67 closed episodes and 41 loss-bearing targets. The only target
+  membership change combines two adjacent Obsidian fragments into the single
+  question `pane extraction -> event demarcation -> causality -> event
+  consolidation -> conditioning -> tokenization + packing?`; this remains
+  shadow evidence pending manual review.
 - `phase1-ordinary-work-2026-09-02-1` remains live. It is the first
   ordinary-work session capable of semantic v14 replay; no v14 interpretation
   is performed online, and the complete session must still be finalized after
@@ -264,9 +284,11 @@ Missing evidence stays unknown; these limits do not authorize guesses.
 
 ## Next step
 
-1. Let the September 2 ordinary-work session exercise the packaged visual-frame
-   collector, then finalize it through pane evidence and candidate semantic v14.
-2. Audit its promoted visual READs before freezing v14, then combine compatible
+1. Review the immutable September 2 v14→v15 READ-delta comparison and the full
+   41-target shadow corpus. Promote v15 only if the emitted deltas and sole
+   episode-membership change are faithful.
+2. Let the continuing September 2 ordinary-work session finish, then finalize
+   it through pane evidence and the approved semantic reducer. Combine compatible
    episode shards chronologically at packing time without duplicating full
    cumulative contexts.
 3. Manually audit READ surfaces, WRITE destinations, episode boundaries,

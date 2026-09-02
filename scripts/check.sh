@@ -22,6 +22,7 @@ swiftc \
   "$project_dir/Sources/CoupledCore/WriteAuthorship.swift" \
   "$project_dir/Sources/CoupledCore/Phase1TargetLoader.swift" \
   "$project_dir/Sources/CoupledCore/AdjacentViewportDeduplicator.swift" \
+  "$project_dir/Sources/CoupledCore/AdjacentCausalReadDelta.swift" \
   "$project_dir/Sources/CoupledCore/ViewportCrop.swift" \
   "$project_dir/Sources/CoupledCore/LiveEventLogFormatter.swift" \
   "$project_dir/Sources/CoupledCore/VisualChange.swift" \
@@ -119,6 +120,7 @@ python3 -m py_compile \
   "$project_dir/scripts/check-phase1-read-surface-v2.py" \
   "$project_dir/scripts/build-phase1-read-surface-v2-review.py" \
   "$project_dir/scripts/serve-phase1-read-surface-v2-review.py" \
+  "$project_dir/scripts/serve-phase1-read-delta-review.py" \
   "$project_dir/scripts/prepare-phase1-write-identity-review.py" \
   "$project_dir/scripts/serve-phase1-write-identity-review.py" \
   "$project_dir/scripts/build-phase1-read-surface-evidence.py" \

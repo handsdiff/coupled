@@ -146,6 +146,35 @@ expect(
     "reread after leaving a viewport"
 )
 expect(
+    adjacentCausalReadDelta(previous: "ABCD", current: "CDEF")?.emittedContent
+        == "EF",
+    "adjacent causal READ delta retains only the newly visible ordered suffix"
+)
+expect(
+    adjacentCausalReadDelta(
+        previous: "first line\npartial response",
+        current: "first line\npartial response completed"
+    )?.emittedContent == "completed",
+    "adjacent causal READ delta emits a streaming completion"
+)
+expect(
+    adjacentCausalReadDelta(
+        previous: "alpha\nbeta",
+        current: "alpha beta gamma"
+    )?.emittedContent == "gamma",
+    "adjacent causal READ delta tolerates OCR line wrapping"
+)
+expect(
+    adjacentCausalReadDelta(previous: "same state", current: "same state")?
+        .emittedContent == "",
+    "adjacent causal READ delta suppresses an exact repeated state"
+)
+expect(
+    adjacentCausalReadDelta(previous: "unrelated alpha", current: "different omega")
+        == nil,
+    "adjacent causal READ delta conservatively retains an unaligned current state"
+)
+expect(
     isChromiumAuxiliarySurface(
         bundleIdentifier: "com.google.Chrome", width: 1455, height: 158
     )
@@ -1415,6 +1444,12 @@ let motivatingReductionV12 = fixtureRoot.appendingPathComponent(
 let motivatingReductionV13 = fixtureRoot.appendingPathComponent(
     "motivating-reduction-v13"
 )
+let motivatingSurfaceEvidenceV15 = fixtureRoot.appendingPathComponent(
+    "motivating-read-surface-evidence-v15"
+)
+let motivatingReductionV15 = fixtureRoot.appendingPathComponent(
+    "motivating-reduction-v15"
+)
 let motivatingMismatchedV12 = fixtureRoot.appendingPathComponent(
     "motivating-mismatched-v12"
 )
@@ -1429,7 +1464,8 @@ try! jsonData([
 
 func rawScreenFixture(
     id: String, capturedAt: String, content: String,
-    triggerAt: String? = nil
+    triggerAt: String? = nil,
+    windowTitle: String = "Fixture"
 ) -> [String: Any] {
     let activityAt = triggerAt ?? capturedAt
     return [
@@ -1448,12 +1484,12 @@ func rawScreenFixture(
         "captureBounds": ["x": 100, "y": 80, "width": 800, "height": 440],
         "x": 500, "y": 400, "displayID": 1,
         "displayBounds": ["x": 0, "y": 0, "width": 1000, "height": 800],
-        "windowID": 7, "windowTitle": "Fixture", "appName": "Fixture",
+        "windowID": 7, "windowTitle": windowTitle, "appName": "Fixture",
         "bundleIdentifier": "fixture.app", "processIdentifier": 42,
         "triggerSurface": [
             "resolvedAt": activityAt, "displayID": 1,
             "displayBounds": ["x": 0, "y": 0, "width": 1000, "height": 800],
-            "windowID": 7, "windowTitle": "Fixture",
+            "windowID": 7, "windowTitle": windowTitle,
             "windowBounds": ["x": 0, "y": 0, "width": 1000, "height": 800],
             "appName": "Fixture", "bundleIdentifier": "fixture.app",
             "processIdentifier": 42,
@@ -2066,6 +2102,18 @@ writeFixtureJSONL([
         content: "shared pane text"
     ),
     rawScreenFixture(
+        id: "same-pane-return", capturedAt: "2026-01-01T00:00:00.500Z",
+        content: "shared pane text"
+    ),
+    rawScreenFixture(
+        id: "browser-title-before", capturedAt: "2026-01-01T00:00:00.600Z",
+        content: "same browser pixels"
+    ),
+    rawScreenFixture(
+        id: "browser-title-after", capturedAt: "2026-01-01T00:00:00.700Z",
+        content: "same browser pixels", windowTitle: "Other Fixture"
+    ),
+    rawScreenFixture(
         id: "read-before-write", capturedAt: "2026-01-01T00:00:01.000Z",
         content: "alpha\nbeta"
     ),
@@ -2110,6 +2158,9 @@ let surfaceContentByRecordID = [
     "same-pane-overlap-two": "same beta\nsame gamma",
     "different-pane-one": "shared pane text",
     "different-pane-two": "shared pane text",
+    "same-pane-return": "shared pane text",
+    "browser-title-before": "same browser pixels",
+    "browser-title-after": "same browser pixels",
     "read-before-write": "surface alpha\nsurface beta",
     "read-after-write-began": "surface beta\nsurface gamma",
     "read-containing-active-write": "page text\nthere was a paper about encr",
@@ -2219,7 +2270,8 @@ let motivatingV2SurfaceRows: [[String: Any]] = motivatingSurfaceRows.map { row i
     let recordID = value["sourceRecordID"] as? String
     let paneRegion: [String: Any]
     switch recordID {
-    case "same-pane-overlap-one", "same-pane-overlap-two", "different-pane-one":
+    case "same-pane-overlap-one", "same-pane-overlap-two", "different-pane-one",
+         "same-pane-return":
         paneRegion = ["x": 0.05, "y": 0.1, "width": 0.55, "height": 0.8]
     case "different-pane-two":
         paneRegion = ["x": 0.62, "y": 0.1, "width": 0.33, "height": 0.8]
@@ -2300,6 +2352,76 @@ _ = try! Phase1SemanticReducer(configuration: .init(
     sourceDirectory: motivatingInput,
     outputDirectory: motivatingReductionV13
 )
+try! FileManager.default.createDirectory(
+    at: motivatingSurfaceEvidenceV15, withIntermediateDirectories: true
+)
+let motivatingV15SurfaceRows: [[String: Any]] = motivatingV2SurfaceRows.map {
+    row in
+    var value = row
+    if value["sourceRecordID"] as? String == "same-pane-overlap-two",
+       var selection = value["surfaceSelection"] as? [String: Any] {
+        selection["selectedDepth"] = 8
+        value["surfaceSelection"] = selection
+    }
+    return value
+}
+let motivatingV15JobsURL = motivatingSurfaceEvidenceV15.appendingPathComponent(
+    "jobs.jsonl"
+)
+let motivatingV15SurfacesURL = motivatingSurfaceEvidenceV15.appendingPathComponent(
+    "read-surfaces.jsonl"
+)
+let motivatingV15UnresolvedURL = motivatingSurfaceEvidenceV15.appendingPathComponent(
+    "unresolved.jsonl"
+)
+writeFixtureJSONL([], to: motivatingV15JobsURL)
+writeFixtureJSONL(motivatingV15SurfaceRows, to: motivatingV15SurfacesURL)
+writeFixtureJSONL([], to: motivatingV15UnresolvedURL)
+try! jsonData([
+    "schemaVersion": 1,
+    "ruleVersion": "ax-pane-read-v2",
+    "sessionID": "motivating-session",
+    "ruleSelection": [
+        "includedRecordTypes": [
+            "screen_ocr_observation", "visual_ocr_observation",
+        ],
+    ],
+    "source": [
+        "digestsSHA256": [
+            "session.json": fixtureSHA256(
+                motivatingInput.appendingPathComponent("session.json")
+            ),
+            "raw.jsonl": fixtureSHA256(
+                motivatingInput.appendingPathComponent("raw.jsonl")
+            ),
+        ],
+    ],
+    "counts": [
+        "rawRecords": motivatingRawRows.count,
+        "screenObservations": motivatingV15SurfaceRows.count,
+        "jobs": 0,
+        "evidence": motivatingV15SurfaceRows.count,
+        "unresolved": 0,
+    ],
+    "artifacts": [
+        "digestsSHA256": [
+            "jobs.jsonl": fixtureSHA256(motivatingV15JobsURL),
+            "read-surfaces.jsonl": fixtureSHA256(motivatingV15SurfacesURL),
+            "unresolved.jsonl": fixtureSHA256(motivatingV15UnresolvedURL),
+        ],
+    ],
+], pretty: true).write(
+    to: motivatingSurfaceEvidenceV15.appendingPathComponent(
+        "read-surface-evidence.json"
+    )
+)
+_ = try! Phase1SemanticReducer(configuration: .init(
+    reducerVersion: "phase1-semantic-v15",
+    readSurfaceEvidenceDirectory: motivatingSurfaceEvidenceV15
+)).reduce(
+    sourceDirectory: motivatingInput,
+    outputDirectory: motivatingReductionV15
+)
 let motivatingEvents = readFixtureJSONL(
     motivatingReduction.appendingPathComponent("events.jsonl")
 )
@@ -2311,6 +2433,9 @@ let motivatingV12Events = readFixtureJSONL(
 )
 let motivatingV13Events = readFixtureJSONL(
     motivatingReductionV13.appendingPathComponent("events.jsonl")
+)
+let motivatingV15Events = readFixtureJSONL(
+    motivatingReductionV15.appendingPathComponent("events.jsonl")
 )
 expect(
     motivatingV11Events.first {
@@ -2340,6 +2465,30 @@ expect(
         ($0["sourceRecordIDs"] as? [String]) == ["same-pane-overlap-two"]
     }?["content"] as? String == "same gamma",
     "semantic v13 still removes exact adjacent overlap inside one AX pane"
+)
+expect(
+    motivatingV15Events.first {
+        ($0["sourceRecordIDs"] as? [String]) == ["same-pane-overlap-two"]
+    }?["content"] as? String == "same gamma",
+    "semantic v15 aligns adjacent pane states even when AX depth changes"
+)
+expect(
+    motivatingV15Events.first {
+        ($0["sourceRecordIDs"] as? [String]) == ["same-pane-return"]
+    }?["content"] as? String == "shared pane text",
+    "semantic v15 does not delta X against an earlier X across intervening pane Y"
+)
+expect(
+    motivatingV15Events.first {
+        ($0["sourceRecordIDs"] as? [String]) == ["read-after-write-began"]
+    }?["content"] as? String == "surface beta\nsurface gamma",
+    "semantic v15 resets adjacent READ state at a causal WRITE boundary"
+)
+expect(
+    motivatingV15Events.first {
+        ($0["sourceRecordIDs"] as? [String]) == ["browser-title-after"]
+    }?["content"] as? String == "same browser pixels",
+    "semantic v15 resets adjacent READ state when the captured window title changes"
 )
 expect(
     motivatingV12Events.filter {

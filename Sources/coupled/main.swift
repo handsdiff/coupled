@@ -41,7 +41,7 @@ REDUCE / COMPILE OPTIONS
   --source PATH                Raw session used by a finalized reduction (compile)
   --output PATH                Fresh directory for compiled dataset files
   --reducer-version NAME       Semantic reducer name (default: phase1-semantic-v14)
-  --read-surface-evidence PATH Hash-bound READ surface evidence (required by semantic v11-v14)
+  --read-surface-evidence PATH Hash-bound READ surface evidence (required by semantic v11-v15)
   --conversion-version NAME    Frozen conversion name (default: phase1-causal-v16)
   --terminal-agent-title TITLE=AGENT
                                Map a reviewed terminal title to an agent; may be repeated
