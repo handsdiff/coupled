@@ -94,21 +94,32 @@ final class ReadCandidateCollector {
     }
 
     func supersedePendingReads(with input: MutatingWriteInput) {
-        let focusedWindowID = topmostWindow(
+        let independentlyResolvedWindowID = topmostWindow(
             ownedBy: input.processIdentifier
         )?.windowID
+        let linkage = visualFrameMonitor?.linkWriteSurface(
+            processIdentifier: input.processIdentifier,
+            independentlyResolvedWindowID: independentlyResolvedWindowID
+        ) ?? linkVisualSurfaceToWrite(
+            monitoredProcessIdentifier: nil,
+            monitoredWindowID: nil,
+            independentlyResolvedWindowID: independentlyResolvedWindowID,
+            writeProcessIdentifier: input.processIdentifier,
+            frontmostProcessIdentifier: NSWorkspace.shared.frontmostApplication?
+                .processIdentifier
+        )
         let boundary = ReadMutationBoundary(
             attemptID: input.attemptID,
             observedAt: input.observedAt,
             eventTimestampNanoseconds: input.eventTimestampNanoseconds,
             processIdentifier: input.processIdentifier,
-            windowID: focusedWindowID
+            windowID: linkage.authoritativeWindowID
         )
         latestMutatingInputBySurface[ReadMutationSurfaceKey(
             processIdentifier: input.processIdentifier,
-            windowID: focusedWindowID
+            windowID: linkage.authoritativeWindowID
         )] = boundary
-        visualFrameMonitor?.writeBegan(boundary)
+        visualFrameMonitor?.writeBegan(boundary, linkage: linkage)
 
         let supersededKeys = pendingByContext.keys.filter {
             sameReadSurface(

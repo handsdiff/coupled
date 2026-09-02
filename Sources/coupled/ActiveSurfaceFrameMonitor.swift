@@ -61,17 +61,43 @@ final class ActiveSurfaceFrameMonitor {
         interactionPoint = point
     }
 
+    func linkWriteSurface(
+        processIdentifier: Int32,
+        independentlyResolvedWindowID: UInt32?
+    ) -> VisualWriteSurfaceLinkage {
+        linkVisualSurfaceToWrite(
+            monitoredProcessIdentifier: selectedSurface?.processIdentifier,
+            monitoredWindowID: selectedSurface?.windowID,
+            independentlyResolvedWindowID: independentlyResolvedWindowID,
+            writeProcessIdentifier: processIdentifier,
+            frontmostProcessIdentifier: NSWorkspace.shared.frontmostApplication?
+                .processIdentifier
+        )
+    }
+
     /// Called synchronously from the active event tap before the mutation is
     /// returned to the application. Only an already-completed frame can be
     /// considered causally safe here.
-    func writeBegan(_ boundary: ReadMutationBoundary) {
+    func writeBegan(
+        _ boundary: ReadMutationBoundary,
+        linkage: VisualWriteSurfaceLinkage
+    ) {
         if activeWrite?.attemptID == boundary.attemptID { return }
         guard let surface = selectedSurface,
-              sameReadSurface(
-                processIdentifier: surface.processIdentifier,
-                windowID: surface.windowID,
-                as: boundary
-              ) else { return }
+              linkage.usesMonitoredSurface,
+              surface.processIdentifier == boundary.processIdentifier,
+              surface.windowID == linkage.authoritativeWindowID else {
+            persistDiagnostic(
+                event: "pre_write_surface_unlinked_shadow",
+                frame: nil,
+                difference: nil,
+                boundary: boundary,
+                linkage: linkage,
+                firstChangedAt: pendingChange?.firstChangedAt,
+                lastChangedAt: pendingChange?.lastChangedAt
+            )
+            return
+        }
 
         let safeFrame = latestFrame.flatMap {
             $0.capturedAt < boundary.observedAt ? $0 : nil
@@ -91,6 +117,7 @@ final class ActiveSurfaceFrameMonitor {
             frame: safeFrame,
             difference: difference,
             boundary: boundary,
+            linkage: linkage,
             firstChangedAt: pendingChange?.firstChangedAt,
             lastChangedAt: pendingChange?.lastChangedAt
         )
@@ -111,6 +138,7 @@ final class ActiveSurfaceFrameMonitor {
             frame: latestFrame,
             difference: nil,
             boundary: activeWrite,
+            linkage: nil,
             firstChangedAt: pendingChange?.firstChangedAt,
             lastChangedAt: pendingChange?.lastChangedAt
         )
@@ -173,6 +201,7 @@ final class ActiveSurfaceFrameMonitor {
                 frame: frame,
                 difference: nil,
                 boundary: nil,
+                linkage: nil,
                 firstChangedAt: nil,
                 lastChangedAt: nil
             )
@@ -245,6 +274,7 @@ final class ActiveSurfaceFrameMonitor {
             frame: frame,
             difference: difference,
             boundary: activeWrite,
+            linkage: nil,
             firstChangedAt: pendingChange.firstChangedAt,
             lastChangedAt: pendingChange.lastChangedAt,
             materialFrameCount: pendingChange.materialFrameCount,
@@ -259,6 +289,7 @@ final class ActiveSurfaceFrameMonitor {
         frame: ShadowVisualFrame?,
         difference: VisualDifference?,
         boundary: ReadMutationBoundary?,
+        linkage: VisualWriteSurfaceLinkage?,
         firstChangedAt: String?,
         lastChangedAt: String?,
         materialFrameCount: Int = 0,
@@ -273,7 +304,7 @@ final class ActiveSurfaceFrameMonitor {
                 frameSequence: frame?.sequence,
                 captureRequestedAt: frame?.requestedAt,
                 capturedAt: frame?.capturedAt,
-                surface: frame?.surface.record,
+                surface: frame?.surface.record ?? selectedSurface?.record,
                 x: frame.map { Double($0.point.x) },
                 y: frame.map { Double($0.point.y) },
                 firstChangedAt: firstChangedAt,
@@ -283,6 +314,7 @@ final class ActiveSurfaceFrameMonitor {
                 difference: difference.map(VisualDifferenceRecord.init),
                 activeWriteAttemptID: boundary?.attemptID,
                 activeWriteBeganAt: boundary?.observedAt,
+                writeSurfaceLinkage: linkage.map(VisualWriteSurfaceLinkageRecord.init),
                 overlappedWriteAttemptIDs: overlappedWriteAttemptIDs,
                 skippedCaptureCount: skippedCaptureCount
             ))
@@ -330,8 +362,24 @@ private struct VisualDifferenceRecord: Encodable {
     }
 }
 
+private struct VisualWriteSurfaceLinkageRecord: Encodable {
+    let authoritativeWindowID: UInt32?
+    let monitoredWindowID: UInt32?
+    let independentlyResolvedWindowID: UInt32?
+    let disposition: String
+    let usesMonitoredSurface: Bool
+
+    init(_ linkage: VisualWriteSurfaceLinkage) {
+        authoritativeWindowID = linkage.authoritativeWindowID
+        monitoredWindowID = linkage.monitoredWindowID
+        independentlyResolvedWindowID = linkage.independentlyResolvedWindowID
+        disposition = linkage.disposition
+        usesMonitoredSurface = linkage.usesMonitoredSurface
+    }
+}
+
 private struct RawVisualMonitorDiagnostic: Encodable {
-    let schemaVersion = 1
+    let schemaVersion = 2
     let recordType = "visual_monitor_diagnostic"
     let recordID: String
     let observedAt: String
@@ -349,6 +397,7 @@ private struct RawVisualMonitorDiagnostic: Encodable {
     let difference: VisualDifferenceRecord?
     let activeWriteAttemptID: String?
     let activeWriteBeganAt: String?
+    let writeSurfaceLinkage: VisualWriteSurfaceLinkageRecord?
     let overlappedWriteAttemptIDs: [String]
     let skippedCaptureCount: Int
 }

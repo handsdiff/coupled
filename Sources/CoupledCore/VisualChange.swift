@@ -42,6 +42,76 @@ public struct VisualDifference: Equatable, Sendable {
     }
 }
 
+public struct VisualWriteSurfaceLinkage: Equatable, Sendable {
+    public let authoritativeWindowID: UInt32?
+    public let monitoredWindowID: UInt32?
+    public let independentlyResolvedWindowID: UInt32?
+    public let disposition: String
+    public let usesMonitoredSurface: Bool
+
+    public init(
+        authoritativeWindowID: UInt32?,
+        monitoredWindowID: UInt32?,
+        independentlyResolvedWindowID: UInt32?,
+        disposition: String,
+        usesMonitoredSurface: Bool
+    ) {
+        self.authoritativeWindowID = authoritativeWindowID
+        self.monitoredWindowID = monitoredWindowID
+        self.independentlyResolvedWindowID = independentlyResolvedWindowID
+        self.disposition = disposition
+        self.usesMonitoredSurface = usesMonitoredSurface
+    }
+}
+
+/// Chooses the already-observed visual surface for a WRITE whenever it still
+/// belongs to the focused, frontmost process. A second Core Graphics lookup is
+/// retained only as audit evidence and as a fallback when no monitored surface
+/// can be trusted.
+public func linkVisualSurfaceToWrite(
+    monitoredProcessIdentifier: Int32?,
+    monitoredWindowID: UInt32?,
+    independentlyResolvedWindowID: UInt32?,
+    writeProcessIdentifier: Int32,
+    frontmostProcessIdentifier: Int32?
+) -> VisualWriteSurfaceLinkage {
+    let monitoredProcessMatches = monitoredProcessIdentifier == writeProcessIdentifier
+    let frontmostProcessMatches = frontmostProcessIdentifier == writeProcessIdentifier
+    if monitoredProcessMatches, frontmostProcessMatches, let monitoredWindowID {
+        let disposition: String
+        if independentlyResolvedWindowID == monitoredWindowID {
+            disposition = "monitored_surface_matches_independent_lookup"
+        } else if independentlyResolvedWindowID == nil {
+            disposition = "monitored_surface_used_independent_lookup_missing"
+        } else {
+            disposition = "monitored_surface_used_independent_lookup_disagreed"
+        }
+        return VisualWriteSurfaceLinkage(
+            authoritativeWindowID: monitoredWindowID,
+            monitoredWindowID: monitoredWindowID,
+            independentlyResolvedWindowID: independentlyResolvedWindowID,
+            disposition: disposition,
+            usesMonitoredSurface: true
+        )
+    }
+
+    let disposition: String
+    if monitoredProcessIdentifier == nil || monitoredWindowID == nil {
+        disposition = "independent_fallback_monitor_unavailable"
+    } else if !monitoredProcessMatches {
+        disposition = "independent_fallback_monitor_process_mismatch"
+    } else {
+        disposition = "independent_fallback_frontmost_process_mismatch"
+    }
+    return VisualWriteSurfaceLinkage(
+        authoritativeWindowID: independentlyResolvedWindowID,
+        monitoredWindowID: monitoredWindowID,
+        independentlyResolvedWindowID: independentlyResolvedWindowID,
+        disposition: disposition,
+        usesMonitoredSurface: false
+    )
+}
+
 /// Compares small grayscale frame fingerprints. The per-sample threshold
 /// suppresses antialiasing and caret noise; the fractional gate prevents one
 /// isolated pixel from becoming a READ boundary.

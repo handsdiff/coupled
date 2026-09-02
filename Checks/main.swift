@@ -3003,6 +3003,50 @@ expect(
     "distributed text-like visual changes cross the materiality gate"
 )
 
+let matchingVisualWriteSurface = linkVisualSurfaceToWrite(
+    monitoredProcessIdentifier: 17,
+    monitoredWindowID: 101,
+    independentlyResolvedWindowID: 101,
+    writeProcessIdentifier: 17,
+    frontmostProcessIdentifier: 17
+)
+expect(
+    matchingVisualWriteSurface.authoritativeWindowID == 101
+        && matchingVisualWriteSurface.usesMonitoredSurface
+        && matchingVisualWriteSurface.disposition
+            == "monitored_surface_matches_independent_lookup",
+    "matching visual and WRITE lookups retain the monitored surface"
+)
+let disagreeingVisualWriteSurface = linkVisualSurfaceToWrite(
+    monitoredProcessIdentifier: 17,
+    monitoredWindowID: 101,
+    independentlyResolvedWindowID: 999,
+    writeProcessIdentifier: 17,
+    frontmostProcessIdentifier: 17
+)
+expect(
+    disagreeingVisualWriteSurface.authoritativeWindowID == 101
+        && disagreeingVisualWriteSurface.independentlyResolvedWindowID == 999
+        && disagreeingVisualWriteSurface.usesMonitoredSurface
+        && disagreeingVisualWriteSurface.disposition
+            == "monitored_surface_used_independent_lookup_disagreed",
+    "an auxiliary WRITE lookup cannot replace the active monitored surface"
+)
+let staleVisualWriteSurface = linkVisualSurfaceToWrite(
+    monitoredProcessIdentifier: 17,
+    monitoredWindowID: 101,
+    independentlyResolvedWindowID: 205,
+    writeProcessIdentifier: 17,
+    frontmostProcessIdentifier: 44
+)
+expect(
+    staleVisualWriteSurface.authoritativeWindowID == 205
+        && !staleVisualWriteSurface.usesMonitoredSurface
+        && staleVisualWriteSurface.disposition
+            == "independent_fallback_frontmost_process_mismatch",
+    "a stale monitored process falls back instead of attaching its frame"
+)
+
 try! FileManager.default.removeItem(at: fixtureRoot)
 
 print("CoupledCore checks passed")
