@@ -1102,6 +1102,268 @@ expect(
     "causal compiler consumes a hash-verified finalized reduction"
 )
 
+// Visual READ promotion: the semantic event is derived only from an immutable
+// frame -> OCR chain, exact pointer/visual duplicates are emitted once, and a
+// WRITE-overlapped frame cannot become a READ even if an OCR record references it.
+let visualReadInput = fixtureRoot.appendingPathComponent("visual-read-input")
+let visualReadReduction = fixtureRoot.appendingPathComponent("visual-read-reduction")
+let visualReadTamperedReduction = fixtureRoot.appendingPathComponent(
+    "visual-read-tampered-reduction"
+)
+let visualReadSurfaceEvidence = fixtureRoot.appendingPathComponent(
+    "visual-read-surface-evidence"
+)
+let visualScreenshots = visualReadInput.appendingPathComponent("screenshots")
+try! FileManager.default.createDirectory(
+    at: visualScreenshots, withIntermediateDirectories: true
+)
+try! jsonData([
+    "sessionID": "visual-read-session",
+    "schemas": [
+        "timingSemanticsVersion": 2, "rawScreenOCR": 7,
+        "rawVisualFrame": 1, "rawVisualOCR": 1,
+    ],
+], pretty: true).write(to: visualReadInput.appendingPathComponent("session.json"))
+let visualScreenshotURL = visualScreenshots.appendingPathComponent("visual-frame.png")
+try! Data("stable visual frame bytes".utf8).write(to: visualScreenshotURL)
+let visualScreenshotSHA = fixtureSHA256(visualScreenshotURL)
+let visualBounds: [String: Any] = [
+    "x": 0, "y": 0, "width": 1000, "height": 800,
+]
+let visualSurface: [String: Any] = [
+    "resolvedAt": "2026-01-01T00:00:00.900Z",
+    "displayID": 1, "displayBounds": visualBounds,
+    "windowID": 7, "windowTitle": "Fixture",
+    "windowBounds": visualBounds, "appName": "Fixture",
+    "bundleIdentifier": "fixture.app", "processIdentifier": 42,
+]
+let visualAccessibilitySurface: [String: Any] = [
+    "schemaVersion": 1, "source": "accessibility_element_at_position",
+    "requestedAt": "2026-01-01T00:00:00.900Z",
+    "capturedAt": "2026-01-01T00:00:00.901Z",
+    "durationMilliseconds": 1, "pointerX": 500, "pointerY": 400,
+    "expectedProcessIdentifier": 42, "hitProcessIdentifier": 42,
+    "maximumAncestorCount": 12, "termination": "root_reached",
+    "errors": [],
+    "ancestors": [[
+        "depth": 0, "elementHash": 1, "processIdentifier": 42,
+        "role": "AXTextArea", "elementDescription": "Content",
+        "frame": ["x": 100, "y": 100, "width": 800, "height": 600],
+        "errors": [],
+    ]],
+]
+func visualFrameFixture(
+    id: String, sequence: Int, capturedAt: String,
+    suppression: String? = nil, overlaps: [String] = []
+) -> [String: Any] {
+    var result: [String: Any] = [
+        "schemaVersion": 1, "recordType": "visual_frame_observation",
+        "recordID": id, "sessionID": "visual-read-session",
+        "observedAt": capturedAt, "evidenceReason": "visual_change_settled",
+        "settledAt": capturedAt, "frameSequence": sequence,
+        "capturedAt": capturedAt, "framePixelWidth": 1000,
+        "framePixelHeight": 800, "surface": visualSurface,
+        "x": 500, "y": 400, "firstChangedAt": capturedAt,
+        "lastChangedAt": capturedAt, "materialFrameCount": 1,
+        "overlappedWriteAttemptIDs": overlaps,
+        "screenshotRelativePath": "screenshots/visual-frame.png",
+        "screenshotSHA256": visualScreenshotSHA,
+        "screenshotPixelWidth": 1000, "screenshotPixelHeight": 800,
+        "accessibilitySurface": visualAccessibilitySurface,
+    ]
+    if let suppression { result["derivedSuppressionReason"] = suppression }
+    return result
+}
+func visualOCRFixture(
+    id: String, frameID: String, sequence: Int, capturedAt: String
+) -> [String: Any] {
+    [
+        "schemaVersion": 1, "recordType": "visual_ocr_observation",
+        "recordID": id, "sessionID": "visual-read-session",
+        "observedAt": capturedAt, "sourceFrameRecordID": frameID,
+        "sourceFrameSequence": sequence,
+        "sourceFrameCapturedAt": capturedAt,
+        "sourceFrameScreenshotSHA256": visualScreenshotSHA,
+        "evidenceReason": "visual_change_settled", "settledAt": capturedAt,
+        "capturedAt": capturedAt, "surfaceResolvedAt": capturedAt,
+        "firstActivityAt": capturedAt, "lastActivityAt": capturedAt,
+        "readDelaySeconds": 1, "triggerTypes": ["visual_change_settled"],
+        "eventCount": 1, "content": "same visible words",
+        "recognizedLineCount": 1, "contentWasTruncated": false,
+        "screenshotRelativePath": "screenshots/visual-frame.png",
+        "screenshotSHA256": visualScreenshotSHA,
+        "screenshotPixelWidth": 1000, "screenshotPixelHeight": 800,
+        "captureScope": "canonical_full_window", "windowBounds": visualBounds,
+        "captureBounds": visualBounds, "x": 500, "y": 400,
+        "displayID": 1, "displayBounds": visualBounds,
+        "windowID": 7, "windowTitle": "Fixture", "appName": "Fixture",
+        "bundleIdentifier": "fixture.app", "processIdentifier": 42,
+        "triggerSurface": visualSurface,
+        "accessibilitySurface": visualAccessibilitySurface,
+    ]
+}
+let visualFrame = visualFrameFixture(
+    id: "visual-frame-1", sequence: 1,
+    capturedAt: "2026-01-01T00:00:01.000Z"
+)
+let visualOCR = visualOCRFixture(
+    id: "visual-ocr-1", frameID: "visual-frame-1", sequence: 1,
+    capturedAt: "2026-01-01T00:00:01.000Z"
+)
+let coincidentPointerRead: [String: Any] = [
+    "schemaVersion": 7, "recordType": "screen_ocr_observation",
+    "recordID": "pointer-read-1", "sessionID": "visual-read-session",
+    "observedAt": "2026-01-01T00:00:01.200Z",
+    "settledAt": "2026-01-01T00:00:01.200Z",
+    "capturedAt": "2026-01-01T00:00:01.200Z",
+    "surfaceResolvedAt": "2026-01-01T00:00:01.200Z",
+    "firstActivityAt": "2026-01-01T00:00:00.200Z",
+    "lastActivityAt": "2026-01-01T00:00:00.200Z",
+    "readDelaySeconds": 1, "triggerTypes": ["pointer_moved"],
+    "eventCount": 1, "content": "same visible words",
+    "recognizedLineCount": 1, "contentWasTruncated": false,
+    "windowBounds": visualBounds, "captureBounds": visualBounds,
+    "x": 500, "y": 400, "displayID": 1, "displayBounds": visualBounds,
+    "windowID": 7, "windowTitle": "Fixture", "appName": "Fixture",
+    "bundleIdentifier": "fixture.app", "processIdentifier": 42,
+    "triggerSurface": visualSurface,
+]
+let suppressedFrame = visualFrameFixture(
+    id: "visual-frame-write-overlap", sequence: 2,
+    capturedAt: "2026-01-01T00:00:02.000Z",
+    suppression: "visual_change_overlapped_active_write",
+    overlaps: ["attempt-1"]
+)
+let suppressedOCR = visualOCRFixture(
+    id: "visual-ocr-write-overlap", frameID: "visual-frame-write-overlap",
+    sequence: 2, capturedAt: "2026-01-01T00:00:02.000Z"
+)
+writeFixtureJSONL(
+    [visualFrame, visualOCR, coincidentPointerRead, suppressedFrame, suppressedOCR],
+    to: visualReadInput.appendingPathComponent("raw.jsonl")
+)
+try! FileManager.default.createDirectory(
+    at: visualReadSurfaceEvidence, withIntermediateDirectories: true
+)
+let visualRawURL = visualReadInput.appendingPathComponent("raw.jsonl")
+let visualEvidenceJobsURL = visualReadSurfaceEvidence.appendingPathComponent("jobs.jsonl")
+let visualEvidenceRowsURL = visualReadSurfaceEvidence.appendingPathComponent(
+    "read-surfaces.jsonl"
+)
+let visualEvidenceUnresolvedURL = visualReadSurfaceEvidence.appendingPathComponent(
+    "unresolved.jsonl"
+)
+writeFixtureJSONL([], to: visualEvidenceJobsURL)
+let visualEvidenceRegion: [String: Any] = [
+    "x": 0.1, "y": 0.125, "width": 0.8, "height": 0.75,
+]
+let visualEvidenceSelection: [String: Any] = [
+    "ruleVersion": "ax-pane-read-v2", "method": "ax_semantic_container",
+    "confidence": "high", "reason": "semantic_text_area",
+    "selectedDepth": 0, "selectedRole": "AXTextArea",
+    "isV1Fallback": false, "regionOfInterest": visualEvidenceRegion,
+]
+let visualEvidenceRows: [[String: Any]] = [
+    ("visual-ocr-1", 2, "same visible words"),
+    ("pointer-read-1", 3, "same visible words"),
+    ("visual-ocr-write-overlap", 5, "same visible words"),
+].map { recordID, rawLine, content in
+    let evidenceID = "fixture-surface-\(recordID)"
+    return [
+        "schemaVersion": 1, "ruleVersion": "ax-pane-read-v2",
+        "evidenceID": evidenceID, "jobID": evidenceID,
+        "sessionID": "visual-read-session", "sourceRecordID": recordID,
+        "sourceRawLine": rawLine,
+        "capturedAt": rawLine == 2
+            ? "2026-01-01T00:00:01.000Z"
+            : rawLine == 3
+                ? "2026-01-01T00:00:01.200Z"
+                : "2026-01-01T00:00:02.000Z",
+        "screenshotSHA256": rawLine == 3 ? NSNull() : visualScreenshotSHA,
+        "regionOfInterest": visualEvidenceRegion,
+        "surfaceSelection": visualEvidenceSelection,
+        "content": content,
+        "contentSHA256": SHA256.hash(data: Data(content.utf8))
+            .map { String(format: "%02x", $0) }.joined(),
+        "recognizedLineCount": 1,
+    ]
+}
+writeFixtureJSONL(visualEvidenceRows, to: visualEvidenceRowsURL)
+writeFixtureJSONL([], to: visualEvidenceUnresolvedURL)
+try! jsonData([
+    "schemaVersion": 1, "ruleVersion": "ax-pane-read-v2",
+    "sessionID": "visual-read-session",
+    "ruleSelection": [
+        "includedRecordTypes": [
+            "screen_ocr_observation", "visual_ocr_observation",
+        ],
+    ],
+    "source": [
+        "digestsSHA256": [
+            "session.json": fixtureSHA256(
+                visualReadInput.appendingPathComponent("session.json")
+            ),
+            "raw.jsonl": fixtureSHA256(visualRawURL),
+        ],
+    ],
+    "counts": [
+        "rawRecords": 5, "screenObservations": 1,
+        "visualObservations": 2, "readObservations": 3,
+        "evidence": 3, "unresolved": 0,
+    ],
+    "artifacts": [
+        "digestsSHA256": [
+            "jobs.jsonl": fixtureSHA256(visualEvidenceJobsURL),
+            "read-surfaces.jsonl": fixtureSHA256(visualEvidenceRowsURL),
+            "unresolved.jsonl": fixtureSHA256(visualEvidenceUnresolvedURL),
+        ],
+    ],
+], pretty: true).write(
+    to: visualReadSurfaceEvidence.appendingPathComponent(
+        "read-surface-evidence.json"
+    )
+)
+_ = try! Phase1SemanticReducer(configuration: .init(
+    reducerVersion: "phase1-semantic-v14",
+    readSurfaceEvidenceDirectory: visualReadSurfaceEvidence
+)).reduce(sourceDirectory: visualReadInput, outputDirectory: visualReadReduction)
+let visualReadEvents = readFixtureJSONL(
+    visualReadReduction.appendingPathComponent("events.jsonl")
+)
+let visualReadUnresolved = readFixtureJSONL(
+    visualReadReduction.appendingPathComponent("unresolved.jsonl")
+)
+expect(
+    visualReadEvents.count == 1
+        && visualReadEvents[0]["provenance"] as? String
+            == "visual_change_screen_ocr"
+        && visualReadEvents[0]["sourceRecordIDs"] as? [String]
+            == ["visual-frame-1", "visual-ocr-1"],
+    "v14 emits one READ with immutable visual frame-to-OCR lineage"
+)
+expect(
+    visualReadUnresolved.contains {
+        $0["reason"] as? String == "exact_coincident_pointer_visual_duplicate"
+    } && visualReadUnresolved.contains {
+        $0["reason"] as? String == "visual_frame_suppressed_or_write_overlapped"
+    },
+    "v14 rejects exact duplicate and active-WRITE-overlapped visual observations"
+)
+try! Data("tampered visual frame bytes".utf8).write(to: visualScreenshotURL)
+_ = try! Phase1SemanticReducer(configuration: .init(
+    reducerVersion: "phase1-semantic-v14",
+    readSurfaceEvidenceDirectory: visualReadSurfaceEvidence
+)).reduce(
+    sourceDirectory: visualReadInput,
+    outputDirectory: visualReadTamperedReduction
+)
+expect(
+    readFixtureJSONL(
+        visualReadTamperedReduction.appendingPathComponent("unresolved.jsonl")
+    ).contains { $0["reason"] as? String == "visual_frame_screenshot_digest_mismatch" },
+    "v14 rejects a visual frame whose retained screenshot digest was tampered"
+)
+
 let motivatingInput = fixtureRoot.appendingPathComponent("motivating-input")
 let motivatingReduction = fixtureRoot.appendingPathComponent("motivating-reduction")
 let motivatingSurfaceEvidence = fixtureRoot.appendingPathComponent(

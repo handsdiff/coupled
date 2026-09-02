@@ -100,6 +100,11 @@ public struct Phase1SemanticReducer {
         let rawByID = Dictionary(uniqueKeysWithValues: raw.compactMap { record in
             stringValue(record.object["recordID"]).map { ($0, record) }
         })
+        let referencedVisualFrameIDs = Set(raw.compactMap {
+            stringValue($0.object["recordType"]) == "visual_ocr_observation"
+                ? nonEmptyString($0.object["sourceFrameRecordID"])
+                : nil
+        })
         let promptClosures = validatedPromptClosures(
             raw,
             rawByID: rawByID,
@@ -119,6 +124,30 @@ public struct Phase1SemanticReducer {
                 continue
             }
             switch object["recordType"] as? String {
+            case "visual_frame_observation":
+                guard configuration.reducerVersion == "phase1-semantic-v14" else {
+                    continue
+                }
+                let recordID = stringValue(object["recordID"]) ?? ""
+                if let suppression = nonEmptyString(object["derivedSuppressionReason"]) {
+                    dispositions.append(ReducerDisposition(
+                        line: record.line,
+                        object: reducerUnresolved(
+                            sessionID: sessionID, raw: object, line: record.line,
+                            kind: "read", rule: "visual_frame_selection_v1",
+                            reason: suppression
+                        )
+                    ))
+                } else if !referencedVisualFrameIDs.contains(recordID) {
+                    dispositions.append(ReducerDisposition(
+                        line: record.line,
+                        object: reducerUnresolved(
+                            sessionID: sessionID, raw: object, line: record.line,
+                            kind: "read", rule: "visual_frame_selection_v1",
+                            reason: "visual_frame_ocr_missing"
+                        )
+                    ))
+                }
             case "screen_ocr_observation":
                 let effectiveObject = effectiveReadObject(
                     object,
@@ -150,6 +179,88 @@ public struct Phase1SemanticReducer {
                         rawLine: record.line, kind: "read",
                         overlapBoundaryAt: capturedAt, raw: effectiveObject, event: event
                     ))
+                }
+            case "visual_ocr_observation":
+                guard configuration.reducerVersion == "phase1-semantic-v14" else {
+                    continue
+                }
+                switch validateVisualReadEvidence(
+                    record,
+                    rawByID: rawByID,
+                    sessionID: sessionID,
+                    sourceDirectory: source
+                ) {
+                case .failure(let failure):
+                    dispositions.append(ReducerDisposition(
+                        line: record.line,
+                        object: reducerUnresolved(
+                            sessionID: sessionID, raw: object, line: record.line,
+                            kind: "read", rule: failure.rule,
+                            reason: failure.reason, details: failure.details
+                        )
+                    ))
+                case .success(let visual):
+                    let visualRecordID = stringValue(visual.object["recordID"]) ?? ""
+                    guard let surfaceEvidence = readSurfaceEvidence?
+                        .bySourceRecordID[visualRecordID] else {
+                        dispositions.append(ReducerDisposition(
+                            line: record.line,
+                            object: reducerUnresolved(
+                                sessionID: sessionID, raw: visual.object,
+                                line: record.line, kind: "read",
+                                rule: "visual_active_pane_v1",
+                                reason: readSurfaceEvidence?
+                                    .unresolvedReasonBySourceRecordID[visualRecordID]
+                                    ?? "visual_active_pane_evidence_missing",
+                                sourceRecordIDs: visual.lineage
+                            )
+                        ))
+                        continue
+                    }
+                    let effectiveVisual = effectiveReadObject(
+                        visual.object,
+                        evidence: surfaceEvidence,
+                        unresolvedReason: nil,
+                        ruleVersion: readSurfaceEvidence?.ruleVersion
+                    )
+                    switch reduceRead(
+                        effectiveVisual,
+                        sessionID: sessionID,
+                        lineage: visual.lineage,
+                        provenance: "visual_change_screen_ocr",
+                        rule: "visual_frame_ocr_v1"
+                    ) {
+                    case .failure(let failure):
+                        dispositions.append(ReducerDisposition(
+                            line: record.line,
+                            object: reducerUnresolved(
+                                sessionID: sessionID, raw: visual.object,
+                                line: record.line, kind: "read",
+                                rule: failure.rule, reason: failure.reason,
+                                details: failure.details,
+                                sourceRecordIDs: visual.lineage
+                            )
+                        ))
+                    case .success(let event):
+                        guard let capturedAt = stringValue(effectiveVisual["capturedAt"]) else {
+                            dispositions.append(ReducerDisposition(
+                                line: record.line,
+                                object: reducerUnresolved(
+                                    sessionID: sessionID, raw: visual.object,
+                                    line: record.line, kind: "read",
+                                    rule: "visual_frame_ocr_v1",
+                                    reason: "read_missing_captured_at",
+                                    sourceRecordIDs: visual.lineage
+                                )
+                            ))
+                            continue
+                        }
+                        candidates.append(ReducerCandidate(
+                            rawLine: record.line, kind: "read",
+                            overlapBoundaryAt: capturedAt,
+                            raw: effectiveVisual, event: event
+                        ))
+                    }
                 }
             case "active_tap_write_attempt":
                 if navigationChains.consumedRecordIDs.contains(
@@ -228,12 +339,25 @@ public struct Phase1SemanticReducer {
             candidates: staleReadResult.events, sessionID: sessionID
         )
         dispositions.append(contentsOf: authorshipReadResult.dispositions)
+        let coincidentReadResult = configuration.reducerVersion
+            == "phase1-semantic-v14"
+            ? removeCoincidentDuplicateReads(
+                candidates: authorshipReadResult.events,
+                writeBoundaries: writeOverlapBoundaries,
+                sessionID: sessionID
+            )
+            : ReducerOverlapResult(
+                events: authorshipReadResult.events,
+                dispositions: []
+            )
+        dispositions.append(contentsOf: coincidentReadResult.dispositions)
         let overlapResult = applySemanticReadOverlap(
-            candidates: authorshipReadResult.events,
+            candidates: coincidentReadResult.events,
             writeBoundaries: writeOverlapBoundaries,
             sessionID: sessionID,
             paneAwareSurfaceIdentity: configuration.reducerVersion
                 == "phase1-semantic-v13"
+                || configuration.reducerVersion == "phase1-semantic-v14"
         )
         dispositions.append(contentsOf: overlapResult.dispositions)
         var events = overlapResult.events.sorted { $0.rawLine < $1.rawLine }.map(\.event)
@@ -300,8 +424,12 @@ public struct Phase1SemanticReducer {
             "readOverlapOrdering": "READ capturedAt with finalized WRITE beganAt boundaries; raw append order ignored",
             "readOverlapSurfaceIdentity": configuration.reducerVersion
                 == "phase1-semantic-v13"
+                || configuration.reducerVersion == "phase1-semantic-v14"
                 ? "process + window + display + stable selected AX pane; a pane change resets adjacent overlap"
                 : "process + window + display",
+            "visualReadRule": configuration.reducerVersion == "phase1-semantic-v14"
+                ? "hash-verified visual frame -> OCR lineage; active-WRITE-overlapped frames never become READs; exact coincident pointer/visual observations are emitted once"
+                : "not enabled",
             "previewAuthority": false,
         ]
         if let readSurfaceEvidence {
@@ -352,6 +480,10 @@ private struct ReducerOverlapResult {
     let events: [ReducerCandidate]
     let dispositions: [ReducerDisposition]
 }
+private struct ReducerVisualReadEvidence {
+    let object: [String: Any]
+    let lineage: [String]
+}
 private struct ReducerFailure: Error {
     let rule: String
     let reason: String
@@ -367,17 +499,27 @@ private func loadReadSurfaceEvidence(
     raw: [ReducerLine]
 ) throws -> ReducerReadSurfaceEvidence? {
     let expectedRuleVersion: String
+    let expectedReadRecordTypes: Set<String>
     switch configuration.reducerVersion {
     case "phase1-semantic-v11":
         expectedRuleVersion = "pointer-local-read-v1"
+        expectedReadRecordTypes = ["screen_ocr_observation"]
     case "phase1-semantic-v12", "phase1-semantic-v13":
         expectedRuleVersion = rawScreenOCRSchema >= 7
             ? "ax-pane-read-v2"
             : "pointer-local-read-v1"
+        expectedReadRecordTypes = ["screen_ocr_observation"]
+    case "phase1-semantic-v14":
+        expectedRuleVersion = rawScreenOCRSchema >= 7
+            ? "ax-pane-read-v2"
+            : "pointer-local-read-v1"
+        expectedReadRecordTypes = [
+            "screen_ocr_observation", "visual_ocr_observation",
+        ]
     default:
         guard configuration.readSurfaceEvidenceDirectory == nil else {
             throw Phase1SemanticReducerError.invalidManifest(
-                "--read-surface-evidence requires phase1-semantic-v11, phase1-semantic-v12, or phase1-semantic-v13"
+                "--read-surface-evidence requires phase1-semantic-v11 through phase1-semantic-v14"
             )
         }
         return nil
@@ -424,11 +566,22 @@ private func loadReadSurfaceEvidence(
             "read-surface evidence identity or digest differs from the raw session"
         )
     }
-
-    let rawScreenRecords = raw.filter {
-        stringValue($0.object["recordType"]) == "screen_ocr_observation"
+    let manifestedRecordTypes = (manifest["ruleSelection"] as? [String: Any])
+        .map { stringArray($0["includedRecordTypes"]) } ?? []
+    guard Set(manifestedRecordTypes.isEmpty
+        ? ["screen_ocr_observation"]
+        : manifestedRecordTypes) == expectedReadRecordTypes else {
+        throw Phase1SemanticReducerError.invalidManifest(
+            "read-surface evidence does not cover the reducer's expected READ record types"
+        )
     }
-    let rawScreenByID = Dictionary(uniqueKeysWithValues: rawScreenRecords.compactMap {
+
+    let rawReadRecords = raw.filter {
+        stringValue($0.object["recordType"]).map {
+            expectedReadRecordTypes.contains($0)
+        } == true
+    }
+    let rawReadByID = Dictionary(uniqueKeysWithValues: rawReadRecords.compactMap {
         line in stringValue(line.object["recordID"]).map { ($0, line) }
     })
     var evidenceBySourceID = [String: [String: Any]]()
@@ -438,7 +591,7 @@ private func loadReadSurfaceEvidence(
               stringValue(object["ruleVersion"]) == expectedRuleVersion,
               stringValue(object["sessionID"]) == sessionID,
               let sourceID = nonEmptyString(object["sourceRecordID"]),
-              let sourceRecord = rawScreenByID[sourceID],
+              let sourceRecord = rawReadByID[sourceID],
               intValue(object["sourceRawLine"]) == sourceRecord.line,
               stringValue(object["capturedAt"])
                 == stringValue(sourceRecord.object["capturedAt"]),
@@ -465,7 +618,7 @@ private func loadReadSurfaceEvidence(
               stringValue(row.object["ruleVersion"]) == expectedRuleVersion,
               stringValue(row.object["sessionID"]) == sessionID,
               let sourceID = nonEmptyString(row.object["sourceRecordID"]),
-              let sourceRecord = rawScreenByID[sourceID],
+              let sourceRecord = rawReadByID[sourceID],
               intValue(row.object["sourceRawLine"]) == sourceRecord.line,
               let reason = nonEmptyString(row.object["reason"]),
               evidenceBySourceID[sourceID] == nil,
@@ -477,10 +630,11 @@ private func loadReadSurfaceEvidence(
         unresolvedBySourceID[sourceID] = reason
     }
     let disposed = Set(evidenceBySourceID.keys).union(unresolvedBySourceID.keys)
-    guard disposed == Set(rawScreenByID.keys),
+    guard disposed == Set(rawReadByID.keys),
           let counts = manifest["counts"] as? [String: Any],
           intValue(counts["rawRecords"]) == raw.count,
-          intValue(counts["screenObservations"]) == rawScreenRecords.count,
+          (intValue(counts["readObservations"])
+            ?? intValue(counts["screenObservations"])) == rawReadRecords.count,
           intValue(counts["evidence"]) == evidenceBySourceID.count,
           intValue(counts["unresolved"]) == unresolvedBySourceID.count else {
         throw Phase1SemanticReducerError.invalidManifest(
@@ -1530,6 +1684,90 @@ private enum ReducerTimestampParser {
     }()
 }
 
+/// Pointer-triggered and visual-change sensors may preserve the same pixels as
+/// separate raw observations. Reconcile only exact, near-simultaneous content
+/// on the same captured window, and never cross an intervening WRITE boundary.
+/// Broader fuzzy overlap remains the responsibility of the existing viewport
+/// reducer below.
+private func removeCoincidentDuplicateReads(
+    candidates: [ReducerCandidate],
+    writeBoundaries: [ReducerWriteBoundary],
+    sessionID: String
+) -> ReducerOverlapResult {
+    struct PriorRead {
+        let capturedAt: String
+        let content: String
+    }
+    let orderedReadIndices = candidates.indices.filter {
+        candidates[$0].kind == "read"
+    }.sorted {
+        let left = candidates[$0]
+        let right = candidates[$1]
+        if left.overlapBoundaryAt != right.overlapBoundaryAt {
+            return left.overlapBoundaryAt < right.overlapBoundaryAt
+        }
+        return left.rawLine < right.rawLine
+    }
+    var latestBySurface = [String: PriorRead]()
+    var excluded = Set<Int>()
+    var dispositions = [ReducerDisposition]()
+    for index in orderedReadIndices {
+        let candidate = candidates[index]
+        let surface = [
+            String(intValue(candidate.raw["processIdentifier"]) ?? -1),
+            String(intValue(candidate.raw["windowID"]) ?? -1),
+            String(intValue(candidate.raw["displayID"]) ?? -1),
+        ].joined(separator: "|")
+        let content = normalizedReducerText(
+            stringValue(candidate.raw["content"]) ?? ""
+        )
+        defer {
+            latestBySurface[surface] = PriorRead(
+                capturedAt: candidate.overlapBoundaryAt,
+                content: content
+            )
+        }
+        guard !content.isEmpty,
+              let prior = latestBySurface[surface],
+              prior.content == content,
+              let priorDate = reducerTimestamp(prior.capturedAt),
+              let currentDate = reducerTimestamp(candidate.overlapBoundaryAt),
+              currentDate >= priorDate,
+              currentDate.timeIntervalSince(priorDate) <= 1.5 else {
+            continue
+        }
+        let crossedWrite = writeBoundaries.contains {
+            $0.beganAt > prior.capturedAt
+                && $0.beganAt <= candidate.overlapBoundaryAt
+        }
+        guard !crossedWrite else { continue }
+        excluded.insert(index)
+        dispositions.append(ReducerDisposition(
+            line: candidate.rawLine,
+            object: reducerUnresolved(
+                sessionID: sessionID,
+                raw: candidate.raw,
+                line: candidate.rawLine,
+                kind: "read",
+                rule: "coincident_read_reconciliation_v1",
+                reason: "exact_coincident_pointer_visual_duplicate",
+                details: [
+                    "priorCapturedAt": prior.capturedAt,
+                    "capturedAt": candidate.overlapBoundaryAt,
+                    "maximumIntervalSeconds": 1.5,
+                ],
+                sourceRecordIDs: candidate.event["sourceRecordIDs"] as? [String]
+            )
+        ))
+    }
+    return ReducerOverlapResult(
+        events: candidates.indices.compactMap {
+            excluded.contains($0) ? nil : candidates[$0]
+        },
+        dispositions: dispositions
+    )
+}
+
 /// Overlap is an interpretation of the semantic event timeline, not the order
 /// in which asynchronous OCR and delayed WRITE persistence happened to append.
 /// A finalized WRITE begins a new reading epoch at beganAt even though it only
@@ -1684,13 +1922,121 @@ private struct ReducerSelection {
     let reason: String
 }
 
-private func reduceRead(_ raw: [String: Any], sessionID: String)
+/// Verifies the immutable visual frame -> OCR chain before that OCR can become
+/// a semantic READ. The screenshot digest is checked against bytes in the raw
+/// session, and the frame must precede its OCR record in raw append order.
+private func validateVisualReadEvidence(
+    _ ocr: ReducerLine,
+    rawByID: [String: ReducerLine],
+    sessionID: String,
+    sourceDirectory: URL
+) -> Result<ReducerVisualReadEvidence, ReducerFailure> {
+    func fail(
+        _ reason: String,
+        details: [String: Any] = [:]
+    ) -> Result<ReducerVisualReadEvidence, ReducerFailure> {
+        .failure(ReducerFailure(
+            rule: "visual_frame_ocr_lineage_v1",
+            reason: reason,
+            details: details
+        ))
+    }
+    let raw = ocr.object
+    guard intValue(raw["schemaVersion"]) == 1,
+          let ocrID = nonEmptyString(raw["recordID"]),
+          let frameID = nonEmptyString(raw["sourceFrameRecordID"]),
+          let frame = rawByID[frameID],
+          frame.line < ocr.line,
+          stringValue(frame.object["recordType"]) == "visual_frame_observation",
+          intValue(frame.object["schemaVersion"]) == 1 else {
+        return fail("visual_source_frame_missing_or_out_of_order")
+    }
+    guard stringValue(frame.object["sessionID"]) == sessionID,
+          stringValue(raw["sessionID"]) == sessionID else {
+        return fail("visual_frame_session_identity_mismatch")
+    }
+    guard nonEmptyString(frame.object["derivedSuppressionReason"]) == nil,
+          stringArray(frame.object["overlappedWriteAttemptIDs"]).isEmpty else {
+        return fail("visual_frame_suppressed_or_write_overlapped")
+    }
+    guard let frameCapturedAt = nonEmptyString(frame.object["capturedAt"]),
+          frameCapturedAt == stringValue(raw["capturedAt"]),
+          frameCapturedAt == stringValue(raw["sourceFrameCapturedAt"]),
+          intValue(frame.object["frameSequence"])
+            == intValue(raw["sourceFrameSequence"]),
+          let frameSHA = nonEmptyString(frame.object["screenshotSHA256"]),
+          frameSHA == stringValue(raw["screenshotSHA256"]),
+          frameSHA == stringValue(raw["sourceFrameScreenshotSHA256"]),
+          let relativePath = nonEmptyString(frame.object["screenshotRelativePath"]),
+          relativePath == stringValue(raw["screenshotRelativePath"]),
+          intValue(frame.object["screenshotPixelWidth"])
+            == intValue(raw["screenshotPixelWidth"]),
+          intValue(frame.object["screenshotPixelHeight"])
+            == intValue(raw["screenshotPixelHeight"]) else {
+        return fail("visual_frame_ocr_identity_mismatch")
+    }
+    guard let surface = frame.object["surface"] as? [String: Any],
+          visualFrameSurfaceMatchesOCR(surface, raw) else {
+        return fail("visual_frame_ocr_surface_mismatch")
+    }
+    let screenshotURL = sourceDirectory.appendingPathComponent(relativePath)
+        .standardizedFileURL
+    let sourcePrefix = sourceDirectory.standardizedFileURL.path + "/"
+    guard screenshotURL.path.hasPrefix(sourcePrefix),
+          FileManager.default.fileExists(atPath: screenshotURL.path) else {
+        return fail("visual_frame_screenshot_missing")
+    }
+    do {
+        guard try reducerSHA256(screenshotURL) == frameSHA else {
+            return fail("visual_frame_screenshot_digest_mismatch")
+        }
+    } catch {
+        return fail("visual_frame_screenshot_unreadable")
+    }
+    var effective = raw
+    effective["sourceRecordIDs"] = [frameID, ocrID]
+    effective["visualFrameEvidence"] = [
+        "schemaVersion": 1,
+        "sourceFrameRecordID": frameID,
+        "sourceFrameSequence": raw["sourceFrameSequence"]!,
+        "evidenceReason": stringValue(frame.object["evidenceReason"]) ?? "unknown",
+        "screenshotSHA256": frameSHA,
+    ]
+    return .success(ReducerVisualReadEvidence(
+        object: effective,
+        lineage: [frameID, ocrID]
+    ))
+}
+
+private func visualFrameSurfaceMatchesOCR(
+    _ surface: [String: Any],
+    _ ocr: [String: Any]
+) -> Bool {
+    intValue(surface["displayID"]) == intValue(ocr["displayID"])
+        && intValue(surface["windowID"]) == intValue(ocr["windowID"])
+        && intValue(surface["processIdentifier"])
+            == intValue(ocr["processIdentifier"])
+        && stringValue(surface["windowTitle"]) == stringValue(ocr["windowTitle"])
+        && rectanglesApproximatelyEqual(
+            surface["windowBounds"] as? [String: Any],
+            ocr["windowBounds"] as? [String: Any]
+        )
+}
+
+private func reduceRead(
+    _ raw: [String: Any],
+    sessionID: String,
+    lineage: [String]? = nil,
+    provenance: String = "screen_ocr",
+    rule: String = "screen_ocr_v1"
+)
     -> Result<[String: Any], ReducerFailure>
 {
     func fail(_ reason: String) -> Result<[String: Any], ReducerFailure> {
-        .failure(ReducerFailure(rule: "screen_ocr_v1", reason: reason, details: [:]))
+        .failure(ReducerFailure(rule: rule, reason: reason, details: [:]))
     }
     guard let recordID = stringValue(raw["recordID"]) else { return fail("missing_record_id") }
+    let sourceRecordIDs = lineage ?? [recordID]
     if let post = raw["postCaptureSurface"] as? [String: Any],
        !sameCapturedReadSurface(raw, post) {
         return fail("surface_changed_during_capture")
@@ -1710,25 +2056,27 @@ private func reduceRead(_ raw: [String: Any], sessionID: String)
     guard raw["contentWasTruncated"] as? Bool != true else {
         return fail("ocr_content_truncated")
     }
-    let eventID = stableEventID(sessionID: sessionID, lineage: [recordID], ordinal: 0)
+    let eventID = stableEventID(sessionID: sessionID, lineage: sourceRecordIDs, ordinal: 0)
     var event = raw
     for key in [
         "recordType", "recordID", "schemaVersion", "derivedSuppressionReason",
         "supersedingWriteAttemptID", "screenshotRelativePath", "screenshotSHA256",
         "screenshotPixelWidth", "screenshotPixelHeight", "postCaptureSurface",
         "firstEventTimestampNanoseconds", "lastEventTimestampNanoseconds",
+        "sourceFrameRecordID", "sourceFrameSequence", "sourceFrameCapturedAt",
+        "sourceFrameScreenshotSHA256", "ocrEngine",
     ] { event.removeValue(forKey: key) }
     event["schemaVersion"] = 8
     event["kind"] = "read"
-    event["provenance"] = "screen_ocr"
+    event["provenance"] = provenance
     event["eventID"] = eventID
-    event["sourceRecordIDs"] = [recordID]
+    event["sourceRecordIDs"] = sourceRecordIDs
     event["reduction"] = [
         "schemaVersion": 1,
-        "rule": "screen_ocr_v1",
+        "rule": rule,
         "reason": "eligible_capture_time_observation",
         "selectedObservationID": recordID,
-        "rawLineage": [recordID],
+        "rawLineage": sourceRecordIDs,
         "outputOrdinal": 0,
     ]
     return .success(event)

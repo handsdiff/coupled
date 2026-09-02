@@ -150,6 +150,11 @@ def parse_arguments() -> argparse.Namespace:
         default="auto",
         help="surface rule; auto selects AX v2 for raw screen schema 7+",
     )
+    parser.add_argument(
+        "--include-visual-observations",
+        action="store_true",
+        help="also reconstruct pane OCR for raw visual_ocr_observation records (semantic v14)",
+    )
     return parser.parse_args()
 
 
@@ -191,20 +196,25 @@ def main() -> int:
         else v1_surface_region
     )
     raw_rows = load_jsonl(raw_path)
-    screen_rows = [row for row in raw_rows if row.get("recordType") == "screen_ocr_observation"]
-    screen_by_id = {
-        row["recordID"]: row for row in screen_rows
+    included_record_types = ["screen_ocr_observation"]
+    if arguments.include_visual_observations:
+        included_record_types.append("visual_ocr_observation")
+    read_rows = [
+        row for row in raw_rows if row.get("recordType") in included_record_types
+    ]
+    read_by_id = {
+        row["recordID"]: row for row in read_rows
         if isinstance(row.get("recordID"), str)
     }
 
     jobs: list[dict[str, Any]] = []
     unresolved: list[dict[str, Any]] = []
     for raw_line, record in enumerate(raw_rows, 1):
-        if record.get("recordType") != "screen_ocr_observation":
+        if record.get("recordType") not in included_record_types:
             continue
         record_id = record.get("recordID")
         if not isinstance(record_id, str) or not record_id:
-            raise EvidenceError(f"screen observation at raw line {raw_line} lacks recordID")
+            raise EvidenceError(f"READ observation at raw line {raw_line} lacks recordID")
         relative = record.get("screenshotRelativePath")
         if not isinstance(relative, str) or not relative:
             unresolved.append({
@@ -296,7 +306,7 @@ def main() -> int:
             "sessionID": session_id,
             "sourceRecordID": job["sourceRecordID"],
             "sourceRawLine": job["sourceRawLine"],
-            "capturedAt": screen_by_id[job["sourceRecordID"]].get("capturedAt"),
+            "capturedAt": read_by_id[job["sourceRecordID"]].get("capturedAt"),
             "screenshotRelativePath": job["screenshotRelativePath"],
             "screenshotSHA256": job["screenshotSHA256"],
             "surfaceSelection": job["surfaceSelection"],
@@ -319,6 +329,7 @@ def main() -> int:
         "ruleSelection": {
             "requested": arguments.rule_version,
             "rawScreenOCRSchema": raw_screen_schema,
+            "includedRecordTypes": included_record_types,
         },
         "sessionID": session_id,
         "source": {
@@ -338,7 +349,15 @@ def main() -> int:
         },
         "counts": {
             "rawRecords": len(raw_rows),
-            "screenObservations": len(screen_rows),
+            "screenObservations": sum(
+                row.get("recordType") == "screen_ocr_observation"
+                for row in read_rows
+            ),
+            "visualObservations": sum(
+                row.get("recordType") == "visual_ocr_observation"
+                for row in read_rows
+            ),
+            "readObservations": len(read_rows),
             "jobs": len(jobs),
             "evidence": len(evidence),
             "unresolved": len(unresolved),

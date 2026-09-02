@@ -76,7 +76,7 @@ final class ReadCandidateCollector {
             writeDiagnostic("normalized line overlap is removed between adjacent OCR viewports in the same app/window/display")
             writeDiagnostic("Chrome auxiliary surfaces are retained raw and suppressed from derived reads")
             writeDiagnostic("raw READ evidence includes a bounded metadata-only Accessibility ancestor chain at the interaction point")
-            writeDiagnostic("visual-change shadow uses one bounded 4 Hz ScreenCaptureKit stream; it does not emit READs or persist continuous frames")
+            writeDiagnostic("visual-change capture uses one bounded 4 Hz ScreenCaptureKit stream; only settled and causally safe pre-WRITE frames are retained and OCRed")
             if configuration.retainScreenshots {
                 writeDiagnostic("full-window PNG evidence: \(configuration.screenshotsDirectory)")
             }
@@ -1170,7 +1170,7 @@ private struct RawScreenReadRecord: Encodable {
     let accessibilitySurface: RawReadAccessibilitySurfaceProbe
 }
 
-private struct RecognizedScreenText {
+struct RecognizedScreenText {
     let content: String
     let lineCount: Int
     let wasTruncated: Bool
@@ -1183,7 +1183,7 @@ private struct RetainedScreenshot {
     let pixelHeight: Int
 }
 
-private func recognizeText(
+func recognizeText(
     in image: CGImage,
     regionOfInterest: CGRect,
     maxCharacters: Int

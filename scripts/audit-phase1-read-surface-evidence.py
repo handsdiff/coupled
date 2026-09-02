@@ -103,9 +103,21 @@ def main() -> int:
 
     raw_rows = load_jsonl(raw_path)
     raw_by_id = {row.get("recordID"): row for row in raw_rows if isinstance(row.get("recordID"), str)}
-    screen_ids = {
+    included_record_types = manifest.get("ruleSelection", {}).get(
+        "includedRecordTypes", ["screen_ocr_observation"]
+    )
+    require(
+        isinstance(included_record_types, list)
+        and included_record_types
+        and set(included_record_types).issubset(
+            {"screen_ocr_observation", "visual_ocr_observation"}
+        ),
+        "invalid included READ record types",
+    )
+    read_ids = {
         row["recordID"] for row in raw_rows
-        if row.get("recordType") == "screen_ocr_observation" and isinstance(row.get("recordID"), str)
+        if row.get("recordType") in included_record_types
+        and isinstance(row.get("recordID"), str)
     }
     jobs = load_jsonl(jobs_path)
     evidence = load_jsonl(evidence_path)
@@ -155,14 +167,28 @@ def main() -> int:
     disposition_ids = {row["sourceRecordID"] for row in evidence} | {
         row["sourceRecordID"] for row in unresolved
     }
-    require(disposition_ids == screen_ids, "screen observations lack exactly one evidence disposition")
+    require(disposition_ids == read_ids, "READ observations lack exactly one evidence disposition")
     require(
-        len(evidence) + len(unresolved) == len(screen_ids),
+        len(evidence) + len(unresolved) == len(read_ids),
         "evidence and unresolved dispositions overlap",
     )
     counts = manifest["counts"]
     require(counts["rawRecords"] == len(raw_rows), "raw count differs")
-    require(counts["screenObservations"] == len(screen_ids), "screen count differs")
+    require(counts.get("readObservations", counts["screenObservations"]) == len(read_ids), "READ count differs")
+    require(
+        counts["screenObservations"]
+        == sum(row.get("recordType") == "screen_ocr_observation" for row in raw_rows),
+        "screen count differs",
+    )
+    require(
+        counts.get("visualObservations", 0)
+        == sum(
+            row.get("recordType") == "visual_ocr_observation"
+            for row in raw_rows
+            if "visual_ocr_observation" in included_record_types
+        ),
+        "visual count differs",
+    )
     require(counts["jobs"] == len(jobs), "job count differs")
     require(counts["evidence"] == len(evidence), "evidence count differs")
     require(counts["unresolved"] == len(unresolved), "unresolved count differs")
@@ -170,7 +196,7 @@ def main() -> int:
         "artifact": str(artifact),
         "evidence": len(evidence),
         "jobs": len(jobs),
-        "screenObservations": len(screen_ids),
+        "readObservations": len(read_ids),
         "status": "pass",
         "unresolved": len(unresolved),
     }, indent=2, sort_keys=True))

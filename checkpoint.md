@@ -59,6 +59,19 @@ raw session + screenshots
 `raw.jsonl`, `session.json`, and retained screenshots are authoritative.
 `events.preview.jsonl` and the live viewer are debugging aids only.
 
+An unfrozen visual-READ candidate is implemented behind
+`phase1-semantic-v14`. The bounded SCStream monitor now promotes only a settled
+visual-change frame or a causally safe frame immediately preceding a WRITE. It
+persists that exact frame before running OCR, and the reducer verifies the
+screenshot digest plus frame→OCR raw lineage. Full-window OCR remains raw
+evidence: v14 emits a model-facing READ only after `ax-pane-read-v2` re-OCRs
+the same image around a separately retained semantic content anchor. Frames
+whose change interval overlaps an active WRITE remain suppressed raw evidence.
+Exact near-simultaneous pointer/visual pane observations are emitted once.
+This does not replace semantic v13 until a focused end-to-end canary confirms
+the stored images, pane OCR, causal exclusions, and duplicate behavior on real
+apps.
+
 ## Active data contract
 
 Collection covers Chrome, Arc, Codex/ChatGPT, Obsidian, and VS Code, including

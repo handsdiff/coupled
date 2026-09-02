@@ -146,6 +146,8 @@ private struct OCRManifest: Encodable {
     let usesLanguageCorrection = true
     let automaticallyDetectsLanguage = true
     let screenshotAPI = "SCScreenshotManager.captureImage"
+    let visualFrameAPI = "SCStream completed CVPixelBuffer"
+    let visualFrameOCRScope = "canonical_full_window"
     let retainedScreenshot: Bool
     let retainedScreenshotScope: String?
     let retainedScreenshotFormat: String?
@@ -165,6 +167,8 @@ private struct SchemaManifest: Encodable {
     let readCandidate = 1
     let rawScreenOCR = 7
     let rawVisualMonitorDiagnostic = 3
+    let rawVisualFrame = 1
+    let rawVisualOCR = 1
     let derivedScreenRead = 7
     let rawReadCandidateSuppression = 2
     let rawActiveTapWrite = 15

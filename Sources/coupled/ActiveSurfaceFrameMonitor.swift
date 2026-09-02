@@ -1,15 +1,17 @@
 import AppKit
+import CoreImage
 import CoreMedia
 import CoreVideo
 import CoupledCore
+import CryptoKit
 import Foundation
+import ImageIO
 import ScreenCaptureKit
 
 /// A bounded, raw-only shadow sensor for visual changes on the selected
-/// eligible surface. It stores only the latest completed frame's bounded
-/// fingerprint and metadata, and never runs OCR or persists continuous images.
-/// Promotion into authoritative READ evidence is deliberately separate from
-/// validating this sensor.
+/// eligible surface. Continuous frames remain bounded in memory. Only settled
+/// frames and causally safe pre-WRITE checkpoints are promoted into raw frame
+/// evidence; OCR is then derived from that exact retained frame.
 final class ActiveSurfaceFrameMonitor: NSObject, SCStreamOutput, SCStreamDelegate {
     private let configuration: Configuration
     private let rawWriter: JSONLWriter
@@ -17,6 +19,16 @@ final class ActiveSurfaceFrameMonitor: NSObject, SCStreamOutput, SCStreamDelegat
         label: "com.handsdiff.coupled.visual-frame-stream",
         qos: .utility
     )
+    private let frameEvidenceQueue = DispatchQueue(
+        label: "com.handsdiff.coupled.visual-frame-persistence",
+        qos: .userInitiated
+    )
+    private let ocrQueue = DispatchQueue(
+        label: "com.handsdiff.coupled.visual-frame-ocr",
+        qos: .userInitiated
+    )
+    private let imageContext = CIContext(options: [.cacheIntermediates: false])
+    private let accessibilitySurfaceProbe = ReadAccessibilitySurfaceProbe()
 
     private var started = false
     private var settlementTimer: Timer?
@@ -29,12 +41,16 @@ final class ActiveSurfaceFrameMonitor: NSObject, SCStreamOutput, SCStreamDelegat
     private var rawInteractionSurface: ResolvedReadSurface?
     private var surfaceSelectionReason: String?
     private var interactionPoint: CGPoint?
+    private var semanticContentPoint: CGPoint?
+    private var semanticContentPointReason: String?
     private var previousFingerprint: VisualFrameFingerprint?
     private var baselineFingerprint: VisualFrameFingerprint?
     private var latestFrame: ShadowVisualFrame?
     private var pendingChange: PendingShadowVisualChange?
     private var activeWrite: ReadMutationBoundary?
+    private var lastCompletedWrite: CompletedWriteCapture?
     private var discardedFrameCount = 0
+    private var highestPromotedFrameSequence: UInt64 = 0
 
     init(configuration: Configuration, rawWriter: JSONLWriter) {
         self.configuration = configuration
@@ -56,7 +72,10 @@ final class ActiveSurfaceFrameMonitor: NSObject, SCStreamOutput, SCStreamDelegat
         rawInteractionSurface: ResolvedReadSurface,
         selectionReason: String
     ) {
-        if selectedSurface.map({ !sameVisualCaptureSurface($0, surface) }) ?? true {
+        let surfaceChanged = selectedSurface.map {
+            !sameVisualCaptureSurface($0, surface)
+        } ?? true
+        if surfaceChanged {
             generation += 1
             settlementTimer?.invalidate()
             settlementTimer = nil
@@ -64,11 +83,26 @@ final class ActiveSurfaceFrameMonitor: NSObject, SCStreamOutput, SCStreamDelegat
             self.rawInteractionSurface = rawInteractionSurface
             surfaceSelectionReason = selectionReason
             interactionPoint = point
+            if isSemanticContentPoint(
+                point,
+                rawInteractionSurface: rawInteractionSurface,
+                selectedSurface: surface
+            ) {
+                semanticContentPoint = point
+                semanticContentPointReason = "direct_content_interaction"
+            } else {
+                semanticContentPoint = CGPoint(
+                    x: surface.windowBounds.midX,
+                    y: surface.windowBounds.midY
+                )
+                semanticContentPointReason = "canonical_surface_center_initialization"
+            }
             previousFingerprint = nil
             baselineFingerprint = nil
             latestFrame = nil
             pendingChange = nil
             activeWrite = nil
+            lastCompletedWrite = nil
             if started {
                 replaceStream(for: surface, generation: generation)
             }
@@ -77,6 +111,14 @@ final class ActiveSurfaceFrameMonitor: NSObject, SCStreamOutput, SCStreamDelegat
         interactionPoint = point
         self.rawInteractionSurface = rawInteractionSurface
         surfaceSelectionReason = selectionReason
+        if isSemanticContentPoint(
+            point,
+            rawInteractionSurface: rawInteractionSurface,
+            selectedSurface: surface
+        ) {
+            semanticContentPoint = point
+            semanticContentPointReason = "direct_content_interaction"
+        }
     }
 
     func linkWriteSurface(
@@ -139,6 +181,21 @@ final class ActiveSurfaceFrameMonitor: NSObject, SCStreamOutput, SCStreamDelegat
             firstChangedAt: pendingChange?.firstChangedAt,
             lastChangedAt: pendingChange?.lastChangedAt
         )
+        if difference?.isMaterial == true, let safeFrame {
+            promoteFrameEvidence(
+                safeFrame,
+                evidenceReason: "pre_write_visual_checkpoint",
+                settledAt: boundary.observedAt,
+                firstChangedAt: pendingChange?.firstChangedAt ?? safeFrame.capturedAt,
+                lastChangedAt: pendingChange?.lastChangedAt ?? safeFrame.capturedAt,
+                materialFrameCount: pendingChange?.materialFrameCount ?? 1,
+                maximumChangedFraction: pendingChange?.maximumChangedFraction
+                    ?? difference?.changedFraction,
+                difference: difference,
+                overlappedWriteAttemptIDs: pendingChange?
+                    .overlappedWriteAttemptIDs.sorted() ?? []
+            )
+        }
 
         settlementTimer?.invalidate()
         settlementTimer = nil
@@ -159,6 +216,39 @@ final class ActiveSurfaceFrameMonitor: NSObject, SCStreamOutput, SCStreamDelegat
             firstChangedAt: pendingChange?.firstChangedAt,
             lastChangedAt: pendingChange?.lastChangedAt
         )
+        // Split a visual change that began during this WRITE at the completion
+        // boundary. Its final in-WRITE frame remains raw suppressed evidence;
+        // later application output starts a fresh change interval and can
+        // settle into a READ instead of inheriting the WRITE overlap forever.
+        if let pendingChange {
+            settlementTimer?.invalidate()
+            settlementTimer = nil
+            self.pendingChange = nil
+            let frame = latestFrame ?? pendingChange.latestFrame
+            let difference = baselineFingerprint.flatMap {
+                visualDifference(
+                    from: $0,
+                    to: frame.fingerprint,
+                    pixelThreshold: configuration.visualDifferencePixelThreshold,
+                    fractionThreshold: configuration.visualDifferenceFractionThreshold
+                )
+            }
+            var overlaps = pendingChange.overlappedWriteAttemptIDs
+            overlaps.insert(completion.attemptID)
+            promoteFrameEvidence(
+                frame,
+                evidenceReason: "active_write_visual_change",
+                settledAt: nowTimestamp(),
+                firstChangedAt: pendingChange.firstChangedAt,
+                lastChangedAt: pendingChange.lastChangedAt,
+                materialFrameCount: pendingChange.materialFrameCount,
+                maximumChangedFraction: pendingChange.maximumChangedFraction,
+                difference: difference,
+                overlappedWriteAttemptIDs: overlaps.sorted()
+            )
+            baselineFingerprint = frame.fingerprint
+        }
+        lastCompletedWrite = completion
         activeWrite = nil
     }
 
@@ -406,7 +496,8 @@ final class ActiveSurfaceFrameMonitor: NSObject, SCStreamOutput, SCStreamDelegat
                 pixelHeight: pixelHeight,
                 surface: surface,
                 point: point,
-                fingerprint: fingerprint
+                fingerprint: fingerprint,
+                pixelBuffer: pixelBuffer
             ))
         }
     }
@@ -455,6 +546,7 @@ final class ActiveSurfaceFrameMonitor: NSObject, SCStreamOutput, SCStreamDelegat
         )
         self.previousFingerprint = frame.fingerprint
         guard let difference, difference.isMaterial else { return }
+        let overlappingWriteAttemptID = writeAttemptOverlapping(frame)
 
         if var pendingChange {
             pendingChange.latestFrame = frame
@@ -464,7 +556,7 @@ final class ActiveSurfaceFrameMonitor: NSObject, SCStreamOutput, SCStreamDelegat
                 difference.changedFraction
             )
             pendingChange.materialFrameCount += 1
-            if let attemptID = activeWrite?.attemptID {
+            if let attemptID = overlappingWriteAttemptID {
                 pendingChange.overlappedWriteAttemptIDs.insert(attemptID)
             }
             self.pendingChange = pendingChange
@@ -476,11 +568,19 @@ final class ActiveSurfaceFrameMonitor: NSObject, SCStreamOutput, SCStreamDelegat
                 maximumChangedFraction: difference.changedFraction,
                 materialFrameCount: 1,
                 overlappedWriteAttemptIDs: Set(
-                    [activeWrite?.attemptID].compactMap { $0 }
+                    [overlappingWriteAttemptID].compactMap { $0 }
                 )
             )
         }
         scheduleSettlement()
+    }
+
+    private func writeAttemptOverlapping(_ frame: ShadowVisualFrame) -> String? {
+        if let activeWrite { return activeWrite.attemptID }
+        guard let completion = lastCompletedWrite,
+              completion.processIdentifier == frame.surface.processIdentifier,
+              frame.capturedAt <= completion.observedAt else { return nil }
+        return completion.attemptID
     }
 
     private func scheduleSettlement() {
@@ -520,7 +620,233 @@ final class ActiveSurfaceFrameMonitor: NSObject, SCStreamOutput, SCStreamDelegat
             maximumChangedFraction: pendingChange.maximumChangedFraction,
             overlappedWriteAttemptIDs: pendingChange.overlappedWriteAttemptIDs.sorted()
         )
+        promoteFrameEvidence(
+            frame,
+            evidenceReason: "visual_change_settled",
+            settledAt: nowTimestamp(),
+            firstChangedAt: pendingChange.firstChangedAt,
+            lastChangedAt: pendingChange.lastChangedAt,
+            materialFrameCount: pendingChange.materialFrameCount,
+            maximumChangedFraction: pendingChange.maximumChangedFraction,
+            difference: difference,
+            overlappedWriteAttemptIDs: pendingChange.overlappedWriteAttemptIDs.sorted()
+        )
         baselineFingerprint = frame.fingerprint
+    }
+
+    /// The frame record is appended before its OCR record. The retained
+    /// CVPixelBuffer is the exact completed SCStream frame used for both the
+    /// screenshot digest and Vision request; a later screen recapture is never
+    /// substituted.
+    private func promoteFrameEvidence(
+        _ frame: ShadowVisualFrame,
+        evidenceReason: String,
+        settledAt: String,
+        firstChangedAt: String,
+        lastChangedAt: String,
+        materialFrameCount: Int,
+        maximumChangedFraction: Double?,
+        difference: VisualDifference?,
+        overlappedWriteAttemptIDs: [String]
+    ) {
+        guard frame.sequence > highestPromotedFrameSequence else { return }
+        highestPromotedFrameSequence = frame.sequence
+
+        let frameRecordID = UUID().uuidString
+        let suppressionReason: String? = !overlappedWriteAttemptIDs.isEmpty
+            ? "visual_change_overlapped_active_write"
+            : configuration.retainScreenshots ? nil : "screenshot_retention_disabled"
+        let configuration = configuration
+        let rawWriter = rawWriter
+        let imageContext = imageContext
+        let rawInteractionSurface = rawInteractionSurface?.record
+        let surfaceSelectionReason = surfaceSelectionReason
+        let metadata = VisualFrameEvidenceMetadata(frame)
+        let semanticPoint = semanticContentPoint ?? CGPoint(
+            x: frame.surface.windowBounds.midX,
+            y: frame.surface.windowBounds.midY
+        )
+        let semanticPointReason = semanticContentPointReason
+            ?? "canonical_surface_center_fallback"
+        let accessibilitySurface = accessibilitySurfaceProbe.capture(
+            at: semanticPoint,
+            expectedProcessIdentifier: frame.surface.processIdentifier
+        )
+        frameEvidenceQueue.async { [weak self] in
+            autoreleasepool {
+                let image = imageContext.createCGImage(
+                    CIImage(cvPixelBuffer: frame.pixelBuffer),
+                    from: CGRect(
+                        x: 0, y: 0,
+                        width: frame.pixelWidth,
+                        height: frame.pixelHeight
+                    )
+                )
+                guard let image else {
+                    DispatchQueue.main.async {
+                        self?.persistDiagnostic(
+                            event: "visual_frame_image_conversion_failed",
+                            frame: frame,
+                            difference: difference,
+                            boundary: self?.activeWrite,
+                            linkage: nil,
+                            firstChangedAt: firstChangedAt,
+                            lastChangedAt: lastChangedAt,
+                            captureError: "could not convert retained CVPixelBuffer"
+                        )
+                    }
+                    return
+                }
+                do {
+                    let screenshot = try persistVisualFramePNG(
+                        image,
+                        configuration: configuration,
+                        recordID: frameRecordID
+                    )
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self else { return }
+                        do {
+                            _ = try rawWriter.write(RawVisualFrameObservation(
+                                recordID: frameRecordID,
+                                observedAt: nowTimestamp(),
+                                evidenceReason: evidenceReason,
+                                settledAt: settledAt,
+                                frameSequence: metadata.sequence,
+                                capturedAt: metadata.capturedAt,
+                                displayTimeNanoseconds: metadata.displayTimeNanoseconds,
+                                framePixelWidth: metadata.pixelWidth,
+                                framePixelHeight: metadata.pixelHeight,
+                                surface: metadata.surface.record,
+                                rawInteractionSurface: rawInteractionSurface,
+                                surfaceSelectionReason: surfaceSelectionReason,
+                                rawInteractionX: Double(metadata.point.x),
+                                rawInteractionY: Double(metadata.point.y),
+                                x: Double(semanticPoint.x),
+                                y: Double(semanticPoint.y),
+                                semanticContentPointReason: semanticPointReason,
+                                firstChangedAt: firstChangedAt,
+                                lastChangedAt: lastChangedAt,
+                                materialFrameCount: materialFrameCount,
+                                maximumChangedFraction: maximumChangedFraction,
+                                difference: difference.map(VisualDifferenceRecord.init),
+                                overlappedWriteAttemptIDs: overlappedWriteAttemptIDs,
+                                derivedSuppressionReason: suppressionReason,
+                                screenshotRelativePath: screenshot?.relativePath,
+                                screenshotSHA256: screenshot?.sha256,
+                                screenshotPixelWidth: screenshot?.pixelWidth,
+                                screenshotPixelHeight: screenshot?.pixelHeight,
+                                accessibilitySurface: accessibilitySurface
+                            ))
+                        } catch {
+                            writeDiagnostic("could not persist raw visual frame: \(error)")
+                            return
+                        }
+                        guard suppressionReason == nil, let screenshot else { return }
+                        self.recognizePromotedFrame(
+                            frame: metadata,
+                            frameRecordID: frameRecordID,
+                            evidenceReason: evidenceReason,
+                            settledAt: settledAt,
+                            firstChangedAt: firstChangedAt,
+                            lastChangedAt: lastChangedAt,
+                            materialFrameCount: materialFrameCount,
+                            screenshot: screenshot,
+                            triggerSurface: rawInteractionSurface ?? metadata.surface.record,
+                            semanticPoint: semanticPoint,
+                            semanticContentPointReason: semanticPointReason,
+                            accessibilitySurface: accessibilitySurface
+                        )
+                    }
+                } catch {
+                    DispatchQueue.main.async {
+                        writeDiagnostic("could not persist raw visual frame PNG: \(error)")
+                    }
+                }
+            }
+        }
+    }
+
+    private func recognizePromotedFrame(
+        frame: VisualFrameEvidenceMetadata,
+        frameRecordID: String,
+        evidenceReason: String,
+        settledAt: String,
+        firstChangedAt: String,
+        lastChangedAt: String,
+        materialFrameCount: Int,
+        screenshot: RetainedVisualFrame,
+        triggerSurface: ReadSurfaceRecord,
+        semanticPoint: CGPoint,
+        semanticContentPointReason: String,
+        accessibilitySurface: RawReadAccessibilitySurfaceProbe
+    ) {
+        let configuration = configuration
+        let screenshotURL = URL(fileURLWithPath: configuration.outputDirectory)
+            .appendingPathComponent(screenshot.relativePath)
+        ocrQueue.async { [weak self] in
+            do {
+                guard let source = CGImageSourceCreateWithURL(
+                    screenshotURL as CFURL, nil
+                ), let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+                    throw VisualFrameEvidenceError.couldNotReadPNG(screenshotURL.path)
+                }
+                let recognized = try recognizeText(
+                    in: image,
+                    regionOfInterest: CGRect(x: 0, y: 0, width: 1, height: 1),
+                    maxCharacters: configuration.maxCharacters
+                )
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    do {
+                        _ = try self.rawWriter.write(RawVisualOCRObservation(
+                            recordID: UUID().uuidString,
+                            observedAt: nowTimestamp(),
+                            sourceFrameRecordID: frameRecordID,
+                            sourceFrameSequence: frame.sequence,
+                            sourceFrameCapturedAt: frame.capturedAt,
+                            sourceFrameScreenshotSHA256: screenshot.sha256,
+                            evidenceReason: evidenceReason,
+                            settledAt: settledAt,
+                            capturedAt: frame.capturedAt,
+                            surfaceResolvedAt: frame.surface.resolvedAt,
+                            firstActivityAt: firstChangedAt,
+                            lastActivityAt: lastChangedAt,
+                            readDelaySeconds: configuration.readDelay,
+                            triggerTypes: [evidenceReason],
+                            eventCount: materialFrameCount,
+                            content: recognized.content,
+                            recognizedLineCount: recognized.lineCount,
+                            contentWasTruncated: recognized.wasTruncated,
+                            screenshotRelativePath: screenshot.relativePath,
+                            screenshotSHA256: screenshot.sha256,
+                            screenshotPixelWidth: screenshot.pixelWidth,
+                            screenshotPixelHeight: screenshot.pixelHeight,
+                            captureScope: "canonical_full_window",
+                            windowBounds: rectValue(frame.surface.windowBounds),
+                            captureBounds: rectValue(frame.surface.windowBounds),
+                            x: Double(semanticPoint.x),
+                            y: Double(semanticPoint.y),
+                            semanticContentPointReason: semanticContentPointReason,
+                            displayID: frame.surface.displayID,
+                            displayBounds: frame.surface.displayBounds,
+                            windowID: frame.surface.windowID,
+                            windowTitle: frame.surface.windowTitle,
+                            appName: frame.surface.appName,
+                            bundleIdentifier: frame.surface.bundleIdentifier,
+                            processIdentifier: frame.surface.processIdentifier,
+                            triggerSurface: triggerSurface,
+                            accessibilitySurface: accessibilitySurface
+                        ))
+                    } catch {
+                        writeDiagnostic("could not persist visual OCR observation: \(error)")
+                    }
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    writeDiagnostic("visual frame text recognition failed: \(error)")
+                }
+            }
+        }
     }
 
     private func persistDiagnostic(
@@ -582,6 +908,27 @@ private struct ShadowVisualFrame {
     let surface: ResolvedReadSurface
     let point: CGPoint
     let fingerprint: VisualFrameFingerprint
+    let pixelBuffer: CVPixelBuffer
+}
+
+private struct VisualFrameEvidenceMetadata {
+    let sequence: UInt64
+    let capturedAt: String
+    let displayTimeNanoseconds: UInt64?
+    let pixelWidth: Int
+    let pixelHeight: Int
+    let surface: ResolvedReadSurface
+    let point: CGPoint
+
+    init(_ frame: ShadowVisualFrame) {
+        sequence = frame.sequence
+        capturedAt = frame.capturedAt
+        displayTimeNanoseconds = frame.displayTimeNanoseconds
+        pixelWidth = frame.pixelWidth
+        pixelHeight = frame.pixelHeight
+        surface = frame.surface
+        point = frame.point
+    }
 }
 
 @available(macOS 13.0, *)
@@ -676,6 +1023,149 @@ private struct RawVisualMonitorDiagnostic: Encodable {
     let overlappedWriteAttemptIDs: [String]
     let discardedFrameCount: Int
     let captureError: String?
+}
+
+private struct RawVisualFrameObservation: Encodable {
+    let schemaVersion = 1
+    let recordType = "visual_frame_observation"
+    let captureTransport = "scstream_display_source_rect"
+    let recordID: String
+    let observedAt: String
+    let evidenceReason: String
+    let settledAt: String
+    let frameSequence: UInt64
+    let capturedAt: String
+    let displayTimeNanoseconds: UInt64?
+    let framePixelWidth: Int
+    let framePixelHeight: Int
+    let surface: ReadSurfaceRecord
+    let rawInteractionSurface: ReadSurfaceRecord?
+    let surfaceSelectionReason: String?
+    let rawInteractionX: Double
+    let rawInteractionY: Double
+    let x: Double
+    let y: Double
+    let semanticContentPointReason: String
+    let firstChangedAt: String
+    let lastChangedAt: String
+    let materialFrameCount: Int
+    let maximumChangedFraction: Double?
+    let difference: VisualDifferenceRecord?
+    let overlappedWriteAttemptIDs: [String]
+    let derivedSuppressionReason: String?
+    let screenshotRelativePath: String?
+    let screenshotSHA256: String?
+    let screenshotPixelWidth: Int?
+    let screenshotPixelHeight: Int?
+    let accessibilitySurface: RawReadAccessibilitySurfaceProbe
+}
+
+private struct RawVisualOCRObservation: Encodable {
+    let schemaVersion = 1
+    let recordType = "visual_ocr_observation"
+    let ocrEngine = "apple_vision"
+    let recordID: String
+    let observedAt: String
+    let sourceFrameRecordID: String
+    let sourceFrameSequence: UInt64
+    let sourceFrameCapturedAt: String
+    let sourceFrameScreenshotSHA256: String
+    let evidenceReason: String
+    let settledAt: String
+    let capturedAt: String
+    let surfaceResolvedAt: String
+    let firstActivityAt: String
+    let lastActivityAt: String
+    let readDelaySeconds: Double
+    let triggerTypes: [String]
+    let eventCount: Int
+    let content: String
+    let recognizedLineCount: Int
+    let contentWasTruncated: Bool
+    let screenshotRelativePath: String
+    let screenshotSHA256: String
+    let screenshotPixelWidth: Int
+    let screenshotPixelHeight: Int
+    let captureScope: String
+    let windowBounds: RectValue
+    let captureBounds: RectValue
+    let x: Double
+    let y: Double
+    let semanticContentPointReason: String
+    let displayID: UInt32
+    let displayBounds: RectValue
+    let windowID: UInt32
+    let windowTitle: String?
+    let appName: String
+    let bundleIdentifier: String?
+    let processIdentifier: Int32
+    let triggerSurface: ReadSurfaceRecord
+    let accessibilitySurface: RawReadAccessibilitySurfaceProbe
+}
+
+private struct RetainedVisualFrame {
+    let relativePath: String
+    let sha256: String
+    let pixelWidth: Int
+    let pixelHeight: Int
+}
+
+private enum VisualFrameEvidenceError: Error {
+    case couldNotReadPNG(String)
+}
+
+private func persistVisualFramePNG(
+    _ image: CGImage,
+    configuration: Configuration,
+    recordID: String
+) throws -> RetainedVisualFrame? {
+    guard configuration.retainScreenshots else { return nil }
+    let directory = URL(fileURLWithPath: configuration.screenshotsDirectory)
+    try FileManager.default.createDirectory(
+        at: directory,
+        withIntermediateDirectories: true,
+        attributes: [.posixPermissions: NSNumber(value: 0o700)]
+    )
+    let relativePath = "screenshots/visual-\(recordID).png"
+    let url = URL(fileURLWithPath: configuration.outputDirectory)
+        .appendingPathComponent(relativePath)
+    let representation = NSBitmapImageRep(cgImage: image)
+    guard let data = representation.representation(using: .png, properties: [:]),
+          FileManager.default.createFile(
+            atPath: url.path,
+            contents: data,
+            attributes: [.posixPermissions: NSNumber(value: 0o600)]
+          ) else {
+        throw ReadCandidateCollectorError.screenshotPersistenceFailed(url.path)
+    }
+    return RetainedVisualFrame(
+        relativePath: relativePath,
+        sha256: SHA256.hash(data: data)
+            .map { String(format: "%02x", $0) }
+            .joined(),
+        pixelWidth: image.width,
+        pixelHeight: image.height
+    )
+}
+
+/// A toolbar/helper interaction may select the correct canonical window while
+/// being a poor semantic pane anchor. Preserve the most recent point in the
+/// selected top-level window's content area; initialize from its center when
+/// no such point is available yet.
+private func isSemanticContentPoint(
+    _ point: CGPoint,
+    rawInteractionSurface: ResolvedReadSurface,
+    selectedSurface: ResolvedReadSurface
+) -> Bool {
+    guard rawInteractionSurface.processIdentifier
+            == selectedSurface.processIdentifier,
+          rawInteractionSurface.windowID == selectedSurface.windowID,
+          selectedSurface.windowBounds.contains(point) else { return false }
+    let topInset = min(
+        120,
+        max(44, selectedSurface.windowBounds.height * 0.08)
+    )
+    return point.y >= selectedSurface.windowBounds.minY + topInset
 }
 
 private func sameVisualCaptureSurface(
