@@ -66,6 +66,7 @@ python3 -m py_compile \
   "$project_dir/scripts/inspect-phase1-episode-corpus.py" \
   "$project_dir/scripts/check-phase1-episode-review.py" \
   "$project_dir/scripts/serve-phase1-episode-design-review.py" \
+  "$project_dir/scripts/serve-phase1-corpus-audit.py" \
   "$project_dir/scripts/phase1-data-inspector.py" \
   "$project_dir/scripts/phase1_prediction_metrics.py" \
   "$project_dir/scripts/check-phase1-prediction-metrics.py" \
