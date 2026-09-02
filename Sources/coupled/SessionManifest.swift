@@ -87,6 +87,8 @@ private struct ResolvedCollectorConfiguration: Encodable {
     let visualFingerprintHeight: Int
     let visualDifferencePixelThreshold: UInt8
     let visualDifferenceFractionThreshold: Double
+    let visualCaptureTransport: String
+    let visualStreamQueueDepth: Int
     let writeDelaySeconds: Double
     let postPasteCheckpointDelaySeconds: Double
     let postInputCheckpointDelaySeconds: Double
@@ -113,6 +115,8 @@ private struct ResolvedCollectorConfiguration: Encodable {
         visualFingerprintHeight = configuration.visualFingerprintHeight
         visualDifferencePixelThreshold = configuration.visualDifferencePixelThreshold
         visualDifferenceFractionThreshold = configuration.visualDifferenceFractionThreshold
+        visualCaptureTransport = "scstream_display_source_rect"
+        visualStreamQueueDepth = configuration.visualStreamQueueDepth
         writeDelaySeconds = configuration.writeDelay
         postPasteCheckpointDelaySeconds = configuration.postPasteCheckpointDelay
         postInputCheckpointDelaySeconds = configuration.postInputCheckpointDelay
@@ -158,7 +162,7 @@ private struct SchemaManifest: Encodable {
     let settledCharacterWrite = 1
     let readCandidate = 1
     let rawScreenOCR = 7
-    let rawVisualMonitorDiagnostic = 2
+    let rawVisualMonitorDiagnostic = 3
     let derivedScreenRead = 7
     let rawReadCandidateSuppression = 2
     let rawActiveTapWrite = 15

@@ -73,6 +73,7 @@ final class ReadCandidateCollector {
             writeDiagnostic("normalized line overlap is removed between adjacent OCR viewports in the same app/window/display")
             writeDiagnostic("Chrome auxiliary surfaces are retained raw and suppressed from derived reads")
             writeDiagnostic("raw READ evidence includes a bounded metadata-only Accessibility ancestor chain at the interaction point")
+            writeDiagnostic("visual-change shadow uses one bounded 4 Hz ScreenCaptureKit stream; it does not emit READs or persist continuous frames")
             if configuration.retainScreenshots {
                 writeDiagnostic("full-window PNG evidence: \(configuration.screenshotsDirectory)")
             }

@@ -11,6 +11,7 @@ struct Configuration {
     let visualFingerprintHeight = 54
     let visualDifferencePixelThreshold: UInt8 = 20
     let visualDifferenceFractionThreshold = 0.002
+    let visualStreamQueueDepth = 3
     var writeDelay: TimeInterval = 3.0
     var viewportSideCropFraction = 0.0
     var viewportTopCropFraction = 0.0

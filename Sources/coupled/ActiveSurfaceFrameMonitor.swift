@@ -1,19 +1,28 @@
 import AppKit
+import CoreMedia
+import CoreVideo
 import CoupledCore
 import Foundation
 import ScreenCaptureKit
 
 /// A bounded, raw-only shadow sensor for visual changes on the selected
-/// eligible surface. It stores one completed frame in memory and never runs
-/// OCR or persists continuous images. Promotion into authoritative READ
-/// evidence is deliberately separate from validating this sensor.
-final class ActiveSurfaceFrameMonitor {
+/// eligible surface. It stores only the latest completed frame's bounded
+/// fingerprint and metadata, and never runs OCR or persists continuous images.
+/// Promotion into authoritative READ evidence is deliberately separate from
+/// validating this sensor.
+final class ActiveSurfaceFrameMonitor: NSObject, SCStreamOutput, SCStreamDelegate {
     private let configuration: Configuration
     private let rawWriter: JSONLWriter
+    private let streamOutputQueue = DispatchQueue(
+        label: "com.handsdiff.coupled.visual-frame-stream",
+        qos: .utility
+    )
 
-    private var timer: Timer?
+    private var started = false
     private var settlementTimer: Timer?
-    private var captureInFlight = false
+    private var stream: SCStream?
+    private var streamGeneration: UInt64?
+    private var streamReady = false
     private var generation: UInt64 = 0
     private var frameSequence: UInt64 = 0
     private var selectedSurface: ResolvedReadSurface?
@@ -23,23 +32,20 @@ final class ActiveSurfaceFrameMonitor {
     private var latestFrame: ShadowVisualFrame?
     private var pendingChange: PendingShadowVisualChange?
     private var activeWrite: ReadMutationBoundary?
-    private var skippedCaptureCount = 0
+    private var discardedFrameCount = 0
 
     init(configuration: Configuration, rawWriter: JSONLWriter) {
         self.configuration = configuration
         self.rawWriter = rawWriter
+        super.init()
     }
 
     func start() {
-        guard timer == nil else { return }
-        let timer = Timer(
-            timeInterval: configuration.visualFrameInterval,
-            repeats: true
-        ) { [weak self] _ in
-            self?.requestFrame()
+        guard !started else { return }
+        started = true
+        if let selectedSurface {
+            replaceStream(for: selectedSurface, generation: generation)
         }
-        self.timer = timer
-        RunLoop.main.add(timer, forMode: .common)
     }
 
     func select(surface: ResolvedReadSurface, point: CGPoint) {
@@ -55,7 +61,9 @@ final class ActiveSurfaceFrameMonitor {
             latestFrame = nil
             pendingChange = nil
             activeWrite = nil
-            requestFrame()
+            if started {
+                replaceStream(for: surface, generation: generation)
+            }
             return
         }
         interactionPoint = point
@@ -122,7 +130,6 @@ final class ActiveSurfaceFrameMonitor {
             lastChangedAt: pendingChange?.lastChangedAt
         )
 
-        generation += 1
         settlementTimer?.invalidate()
         settlementTimer = nil
         pendingChange = nil
@@ -145,49 +152,271 @@ final class ActiveSurfaceFrameMonitor {
         activeWrite = nil
     }
 
-    private func requestFrame() {
-        guard !configuration.isPaused(),
-              !captureInFlight,
-              let surface = selectedSurface,
-              let point = interactionPoint,
-              NSWorkspace.shared.frontmostApplication?.processIdentifier
-                == surface.processIdentifier else {
-            if captureInFlight { skippedCaptureCount += 1 }
+    private func replaceStream(
+        for surface: ResolvedReadSurface,
+        generation requestedGeneration: UInt64
+    ) {
+        guard #available(macOS 13.0, *) else { return }
+        let previousStream = stream
+        stream = nil
+        streamGeneration = nil
+        streamReady = false
+
+        let prepare = { [weak self] in
+            guard let self,
+                  self.generation == requestedGeneration,
+                  self.selectedSurface?.matches(surface) == true else { return }
+            self.prepareStream(for: surface, generation: requestedGeneration)
+        }
+        if let previousStream {
+            previousStream.stopCapture { _ in
+                DispatchQueue.main.async(execute: prepare)
+            }
+        } else {
+            prepare()
+        }
+    }
+
+    @available(macOS 13.0, *)
+    private func prepareStream(
+        for surface: ResolvedReadSurface,
+        generation requestedGeneration: UInt64
+    ) {
+        SCShareableContent.getExcludingDesktopWindows(
+            false,
+            onScreenWindowsOnly: true
+        ) { [weak self] content, error in
+            DispatchQueue.main.async {
+                guard let self,
+                      self.generation == requestedGeneration,
+                      self.selectedSurface?.matches(surface) == true else { return }
+                guard let content,
+                      let display = content.displays.first(where: {
+                          $0.displayID == surface.displayID
+                      }),
+                      let streamConfiguration = self.streamConfiguration(
+                          for: surface,
+                          display: display
+                      ) else {
+                    self.persistDiagnostic(
+                        event: "visual_stream_preparation_failed_shadow",
+                        frame: nil,
+                        difference: nil,
+                        boundary: self.activeWrite,
+                        linkage: nil,
+                        firstChangedAt: self.pendingChange?.firstChangedAt,
+                        lastChangedAt: self.pendingChange?.lastChangedAt,
+                        captureError: error?.localizedDescription
+                            ?? "display or capture geometry unavailable"
+                    )
+                    return
+                }
+
+                let filter = SCContentFilter(
+                    display: display,
+                    excludingApplications: [],
+                    exceptingWindows: []
+                )
+                let candidate = SCStream(
+                    filter: filter,
+                    configuration: streamConfiguration.configuration,
+                    delegate: self
+                )
+                do {
+                    try candidate.addStreamOutput(
+                        self,
+                        type: .screen,
+                        sampleHandlerQueue: self.streamOutputQueue
+                    )
+                } catch {
+                    self.persistDiagnostic(
+                        event: "visual_stream_output_failed_shadow",
+                        frame: nil,
+                        difference: nil,
+                        boundary: self.activeWrite,
+                        linkage: nil,
+                        firstChangedAt: self.pendingChange?.firstChangedAt,
+                        lastChangedAt: self.pendingChange?.lastChangedAt,
+                        captureError: error.localizedDescription
+                    )
+                    return
+                }
+
+                self.stream = candidate
+                self.streamGeneration = requestedGeneration
+                self.streamReady = true
+                candidate.startCapture { [weak self, weak candidate] error in
+                    DispatchQueue.main.async {
+                        guard let self, let candidate,
+                              self.stream === candidate,
+                              self.streamGeneration == requestedGeneration else {
+                            candidate?.stopCapture()
+                            return
+                        }
+                        guard error == nil else {
+                            self.stream = nil
+                            self.streamGeneration = nil
+                            self.persistDiagnostic(
+                                event: "visual_stream_start_failed_shadow",
+                                frame: nil,
+                                difference: nil,
+                                boundary: self.activeWrite,
+                                linkage: nil,
+                                firstChangedAt: self.pendingChange?.firstChangedAt,
+                                lastChangedAt: self.pendingChange?.lastChangedAt,
+                                captureError: error?.localizedDescription
+                            )
+                            return
+                        }
+                        self.persistDiagnostic(
+                            event: "visual_stream_started_shadow",
+                            frame: nil,
+                            difference: nil,
+                            boundary: self.activeWrite,
+                            linkage: nil,
+                            firstChangedAt: self.pendingChange?.firstChangedAt,
+                            lastChangedAt: self.pendingChange?.lastChangedAt,
+                            streamConfiguration: streamConfiguration.record
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    @available(macOS 13.0, *)
+    private func streamConfiguration(
+        for surface: ResolvedReadSurface,
+        display: SCDisplay
+    ) -> ShadowStreamConfiguration? {
+        let displayBounds = CGRect(
+            x: surface.displayBounds.x,
+            y: surface.displayBounds.y,
+            width: surface.displayBounds.width,
+            height: surface.displayBounds.height
+        )
+        let clippedBounds = surface.windowBounds.intersection(displayBounds)
+        guard !clippedBounds.isNull,
+              clippedBounds.width >= 2,
+              clippedBounds.height >= 2 else { return nil }
+        let sourceRect = clippedBounds.offsetBy(
+            dx: -displayBounds.minX,
+            dy: -displayBounds.minY
+        )
+        let horizontalScale = max(
+            1,
+            Double(CGDisplayPixelsWide(surface.displayID)) / displayBounds.width
+        )
+        let verticalScale = max(
+            1,
+            Double(CGDisplayPixelsHigh(surface.displayID)) / displayBounds.height
+        )
+        let outputWidth = max(2, Int((sourceRect.width * horizontalScale).rounded(.up)))
+        let outputHeight = max(2, Int((sourceRect.height * verticalScale).rounded(.up)))
+
+        let result = SCStreamConfiguration()
+        result.sourceRect = sourceRect
+        result.width = outputWidth
+        result.height = outputHeight
+        result.scalesToFit = true
+        result.minimumFrameInterval = CMTime(
+            seconds: configuration.visualFrameInterval,
+            preferredTimescale: 600
+        )
+        result.queueDepth = configuration.visualStreamQueueDepth
+        result.pixelFormat = kCVPixelFormatType_32BGRA
+        result.showsCursor = false
+        result.capturesAudio = false
+        return ShadowStreamConfiguration(
+            configuration: result,
+            record: VisualStreamConfigurationRecord(
+                displayID: surface.displayID,
+                sourceRect: rectValue(sourceRect),
+                outputPixelWidth: outputWidth,
+                outputPixelHeight: outputHeight,
+                frameIntervalSeconds: configuration.visualFrameInterval,
+                queueDepth: configuration.visualStreamQueueDepth,
+                pixelFormat: "32BGRA",
+                showsCursor: false
+            )
+        )
+    }
+
+    func stream(
+        _ stream: SCStream,
+        didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
+        of outputType: SCStreamOutputType
+    ) {
+        guard outputType == .screen,
+              sampleBuffer.isValid,
+              let attachmentsArray = CMSampleBufferGetSampleAttachmentsArray(
+                  sampleBuffer,
+                  createIfNecessary: false
+              ) as? [[SCStreamFrameInfo: Any]],
+              let attachments = attachmentsArray.first,
+              let statusRawValue = attachments[.status] as? Int,
+              SCFrameStatus(rawValue: statusRawValue) == .complete,
+              let pixelBuffer = sampleBuffer.imageBuffer,
+              let fingerprint = makeVisualFrameFingerprint(
+                  pixelBuffer,
+                  width: configuration.visualFingerprintWidth,
+                  height: configuration.visualFingerprintHeight
+              ) else {
+            DispatchQueue.main.async { [weak self] in
+                self?.discardedFrameCount += 1
+            }
             return
         }
-        guard #available(macOS 15.2, *) else { return }
 
-        captureInFlight = true
-        let requestGeneration = generation
-        let requestedAt = nowTimestamp()
-        let expectedSurface = surface
-        SCScreenshotManager.captureImage(in: surface.windowBounds) { [weak self] image, _ in
-            guard let self else { return }
-            let capturedAt = nowTimestamp()
-            DispatchQueue.main.async {
-                self.captureInFlight = false
-                guard requestGeneration == self.generation,
-                      let image,
-                      self.selectedSurface?.matches(expectedSurface) == true,
-                      NSWorkspace.shared.frontmostApplication?.processIdentifier
-                        == expectedSurface.processIdentifier,
-                      let fingerprint = makeVisualFrameFingerprint(
-                        image,
-                        width: self.configuration.visualFingerprintWidth,
-                        height: self.configuration.visualFingerprintHeight
-                      ) else { return }
-
-                self.frameSequence += 1
-                let frame = ShadowVisualFrame(
-                    sequence: self.frameSequence,
-                    requestedAt: requestedAt,
-                    capturedAt: capturedAt,
-                    surface: expectedSurface,
-                    point: point,
-                    fingerprint: fingerprint
-                )
-                self.accept(frame)
+        let receivedAt = nowTimestamp()
+        let displayTimeNanoseconds = attachments[.displayTime] as? UInt64
+        let pixelWidth = CVPixelBufferGetWidth(pixelBuffer)
+        let pixelHeight = CVPixelBufferGetHeight(pixelBuffer)
+        DispatchQueue.main.async { [weak self, weak stream] in
+            guard let self, let stream,
+                  self.stream === stream,
+                  self.streamReady,
+                  self.streamGeneration == self.generation,
+                  !self.configuration.isPaused(),
+                  let surface = self.selectedSurface,
+                  let point = self.interactionPoint,
+                  NSWorkspace.shared.frontmostApplication?.processIdentifier
+                    == surface.processIdentifier else {
+                self?.discardedFrameCount += 1
+                return
             }
+
+            self.frameSequence += 1
+            self.accept(ShadowVisualFrame(
+                sequence: self.frameSequence,
+                requestedAt: nil,
+                capturedAt: receivedAt,
+                displayTimeNanoseconds: displayTimeNanoseconds,
+                pixelWidth: pixelWidth,
+                pixelHeight: pixelHeight,
+                surface: surface,
+                point: point,
+                fingerprint: fingerprint
+            ))
+        }
+    }
+
+    func stream(_ stream: SCStream, didStopWithError error: Error) {
+        DispatchQueue.main.async { [weak self, weak stream] in
+            guard let self, let stream, self.stream === stream else { return }
+            self.stream = nil
+            self.streamGeneration = nil
+            self.streamReady = false
+            self.persistDiagnostic(
+                event: "visual_stream_stopped_with_error_shadow",
+                frame: nil,
+                difference: nil,
+                boundary: self.activeWrite,
+                linkage: nil,
+                firstChangedAt: self.pendingChange?.firstChangedAt,
+                lastChangedAt: self.pendingChange?.lastChangedAt,
+                captureError: error.localizedDescription
+            )
         }
     }
 
@@ -294,7 +523,9 @@ final class ActiveSurfaceFrameMonitor {
         lastChangedAt: String?,
         materialFrameCount: Int = 0,
         maximumChangedFraction: Double? = nil,
-        overlappedWriteAttemptIDs: [String] = []
+        overlappedWriteAttemptIDs: [String] = [],
+        captureError: String? = nil,
+        streamConfiguration: VisualStreamConfigurationRecord? = nil
     ) {
         do {
             _ = try rawWriter.write(RawVisualMonitorDiagnostic(
@@ -304,6 +535,9 @@ final class ActiveSurfaceFrameMonitor {
                 frameSequence: frame?.sequence,
                 captureRequestedAt: frame?.requestedAt,
                 capturedAt: frame?.capturedAt,
+                displayTimeNanoseconds: frame?.displayTimeNanoseconds,
+                framePixelWidth: frame?.pixelWidth,
+                framePixelHeight: frame?.pixelHeight,
                 surface: frame?.surface.record ?? selectedSurface?.record,
                 x: frame.map { Double($0.point.x) },
                 y: frame.map { Double($0.point.y) },
@@ -315,8 +549,10 @@ final class ActiveSurfaceFrameMonitor {
                 activeWriteAttemptID: boundary?.attemptID,
                 activeWriteBeganAt: boundary?.observedAt,
                 writeSurfaceLinkage: linkage.map(VisualWriteSurfaceLinkageRecord.init),
+                streamConfiguration: streamConfiguration,
                 overlappedWriteAttemptIDs: overlappedWriteAttemptIDs,
-                skippedCaptureCount: skippedCaptureCount
+                discardedFrameCount: discardedFrameCount,
+                captureError: captureError
             ))
         } catch {
             writeDiagnostic("could not persist visual monitor diagnostic: \(error)")
@@ -326,11 +562,20 @@ final class ActiveSurfaceFrameMonitor {
 
 private struct ShadowVisualFrame {
     let sequence: UInt64
-    let requestedAt: String
+    let requestedAt: String?
     let capturedAt: String
+    let displayTimeNanoseconds: UInt64?
+    let pixelWidth: Int
+    let pixelHeight: Int
     let surface: ResolvedReadSurface
     let point: CGPoint
     let fingerprint: VisualFrameFingerprint
+}
+
+@available(macOS 13.0, *)
+private struct ShadowStreamConfiguration {
+    let configuration: SCStreamConfiguration
+    let record: VisualStreamConfigurationRecord
 }
 
 private struct PendingShadowVisualChange {
@@ -378,15 +623,30 @@ private struct VisualWriteSurfaceLinkageRecord: Encodable {
     }
 }
 
+private struct VisualStreamConfigurationRecord: Encodable {
+    let displayID: UInt32
+    let sourceRect: RectValue
+    let outputPixelWidth: Int
+    let outputPixelHeight: Int
+    let frameIntervalSeconds: Double
+    let queueDepth: Int
+    let pixelFormat: String
+    let showsCursor: Bool
+}
+
 private struct RawVisualMonitorDiagnostic: Encodable {
-    let schemaVersion = 2
+    let schemaVersion = 3
     let recordType = "visual_monitor_diagnostic"
+    let captureTransport = "scstream_display_source_rect"
     let recordID: String
     let observedAt: String
     let event: String
     let frameSequence: UInt64?
     let captureRequestedAt: String?
     let capturedAt: String?
+    let displayTimeNanoseconds: UInt64?
+    let framePixelWidth: Int?
+    let framePixelHeight: Int?
     let surface: ReadSurfaceRecord?
     let x: Double?
     let y: Double?
@@ -398,26 +658,49 @@ private struct RawVisualMonitorDiagnostic: Encodable {
     let activeWriteAttemptID: String?
     let activeWriteBeganAt: String?
     let writeSurfaceLinkage: VisualWriteSurfaceLinkageRecord?
+    let streamConfiguration: VisualStreamConfigurationRecord?
     let overlappedWriteAttemptIDs: [String]
-    let skippedCaptureCount: Int
+    let discardedFrameCount: Int
+    let captureError: String?
 }
 
 private func makeVisualFrameFingerprint(
-    _ image: CGImage,
+    _ pixelBuffer: CVPixelBuffer,
     width: Int,
     height: Int
 ) -> VisualFrameFingerprint? {
+    guard CVPixelBufferGetPixelFormatType(pixelBuffer) == kCVPixelFormatType_32BGRA,
+          CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly) == kCVReturnSuccess,
+          let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer) else { return nil }
+    defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+
+    let sourceWidth = CVPixelBufferGetWidth(pixelBuffer)
+    let sourceHeight = CVPixelBufferGetHeight(pixelBuffer)
+    let bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
+    guard sourceWidth > 0, sourceHeight > 0, bytesPerRow >= sourceWidth * 4 else {
+        return nil
+    }
+    let bytes = baseAddress.assumingMemoryBound(to: UInt8.self)
     var samples = [UInt8](repeating: 0, count: width * height)
-    guard let context = CGContext(
-        data: &samples,
-        width: width,
-        height: height,
-        bitsPerComponent: 8,
-        bytesPerRow: width,
-        space: CGColorSpaceCreateDeviceGray(),
-        bitmapInfo: CGImageAlphaInfo.none.rawValue
-    ) else { return nil }
-    context.interpolationQuality = .low
-    context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+    for destinationY in 0..<height {
+        let sourceY = min(
+            sourceHeight - 1,
+            Int((Double(destinationY) + 0.5) * Double(sourceHeight) / Double(height))
+        )
+        let row = bytes.advanced(by: sourceY * bytesPerRow)
+        for destinationX in 0..<width {
+            let sourceX = min(
+                sourceWidth - 1,
+                Int((Double(destinationX) + 0.5) * Double(sourceWidth) / Double(width))
+            )
+            let pixel = row.advanced(by: sourceX * 4)
+            let blue = Int(pixel[0])
+            let green = Int(pixel[1])
+            let red = Int(pixel[2])
+            samples[destinationY * width + destinationX] = UInt8(
+                (29 * blue + 150 * green + 77 * red) >> 8
+            )
+        }
+    }
     return VisualFrameFingerprint(width: width, height: height, samples: samples)
 }
