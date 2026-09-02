@@ -90,6 +90,12 @@ def write_jsonl(path: Path, rows: Iterable[dict[str, Any]]) -> None:
 
 
 def contract(manifest: dict[str, Any]) -> dict[str, Any]:
+    read_source = manifest.get("readSource")
+    if isinstance(read_source, dict):
+        read_source = {
+            key: value for key, value in read_source.items()
+            if key != "counts"
+        }
     return {
         "conversionVersion": manifest.get("conversionVersion"),
         "serialization": manifest.get("serialization"),
@@ -98,6 +104,7 @@ def contract(manifest: dict[str, Any]) -> dict[str, Any]:
         "timing": manifest.get("timing"),
         "reducerVersion": manifest.get("source", {}).get("reducerVersion"),
         "writeDestination": manifest.get("writeDestination"),
+        "readSource": read_source,
     }
 
 
@@ -108,9 +115,9 @@ def load_session(path: Path) -> dict[str, Any]:
             raise ValueError(f"{path}: missing {name}")
     manifest = load_json(path / "dataset.json")
     if manifest.get("conversionVersion") not in {
-        "phase1-causal-v14", "phase1-causal-v15",
+        "phase1-causal-v14", "phase1-causal-v15", "phase1-causal-v16",
     }:
-        raise ValueError(f"{path}: corpus assembly requires phase1-causal-v14 or v15")
+        raise ValueError(f"{path}: corpus assembly requires phase1-causal-v14+")
     session_id = manifest.get("sessionID")
     if not isinstance(session_id, str) or not session_id:
         raise ValueError(f"{path}: missing sessionID")
@@ -497,6 +504,28 @@ def assemble(
                 ),
             },
         }
+        if isinstance(manifest.get("readSource"), dict):
+            category_counts: dict[str, int] = {}
+            schema7_count = 0
+            non_schema7_count = 0
+            for session in sessions:
+                counts = session["manifest"].get("readSource", {}).get(
+                    "counts", {}
+                )
+                schema7_count += int(counts.get("schema7", 0))
+                non_schema7_count += int(counts.get("nonSchema7", 0))
+                for category, count in counts.get("categories", {}).items():
+                    category_counts[category] = (
+                        category_counts.get(category, 0) + int(count)
+                    )
+            manifest["readSource"] = {
+                **manifest["readSource"],
+                "counts": {
+                    "categories": category_counts,
+                    "schema7": schema7_count,
+                    "nonSchema7": non_schema7_count,
+                },
+            }
         manifest["artifactDigestsSHA256"] = {
             name: sha256(temporary / name)
             for name in (
@@ -523,7 +552,7 @@ def audit(directory: Path) -> dict[str, Any]:
         manifest.get("artifactType") == "phase1_multi_session_corpus"
         and manifest.get("assemblerVersion") in {"phase1-corpus-v1", ASSEMBLER_VERSION}
         and manifest.get("conversionVersion") in {
-            "phase1-causal-v14", "phase1-causal-v15",
+            "phase1-causal-v14", "phase1-causal-v15", "phase1-causal-v16",
         }
     )
     raw_episode = any(

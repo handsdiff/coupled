@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "reviewID": "phase1-inkling-four-arm-v4-holistic-strict-v1",
+  "status": "subjective_reviewer_labels",
+  "authority": "diagnostic_only_not_training_or_metric_authority",
+  "reviewedAt": "2026-08-21",
+  "passBar": "The prediction expresses recognizably the same intended semantic move. Merely sharing the topic, answering the human target, or copying/repeating an already-visible write does not pass. Invalid, missing, and truncated generations count as failures.",
+  "scope": {
+    "firstOneBasedExampleOrdinal": 51,
+    "lastOneBasedExampleOrdinal": 224,
+    "examples": 174
+  },
+  "uncertaintyExamplesPerModel": 2,
+  "source": {
+    "corpusID": "episode_corpus_c06b6b98701b902d4f9f113a8c468179f4f6afb70c138129f1e172fc8b95d5e3",
+    "inklingScoresSHA256": "e31ea7efc02f511c714adeb1f5763f7f8fc9a3ad403c29ce304dea19f8ba4839"
+  },
+  "models": {
+    "frozen_inkling_small_reasoning_off": {
+      "displayLabel": "Frozen Inkling · reasoning off",
+      "passCount": 1,
+      "passOneBasedExampleOrdinals": [200]
+    },
+    "frozen_inkling_small_reasoning_on": {
+      "displayLabel": "Frozen Inkling · reasoning on",
+      "passCount": 4,
+      "passOneBasedExampleOrdinals": [148, 158, 160, 214]
+    },
+    "personalized_inkling_small_reasoning_off": {
+      "displayLabel": "Trained Inkling · reasoning off",
+      "passCount": 3,
+      "passOneBasedExampleOrdinals": [148, 201, 211]
+    },
+    "personalized_inkling_small_reasoning_on": {
+      "displayLabel": "Trained Inkling · reasoning on",
+      "passCount": 4,
+      "passOneBasedExampleOrdinals": [64, 65, 112, 158]
+    }
+  }
+}

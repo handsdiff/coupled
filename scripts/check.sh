@@ -25,6 +25,7 @@ swiftc \
   "$project_dir/Sources/CoupledCore/ViewportCrop.swift" \
   "$project_dir/Sources/CoupledCore/LiveEventLogFormatter.swift" \
   "$project_dir/Sources/CoupledCore/Phase1SemanticReducer.swift" \
+  "$project_dir/Sources/CoupledCore/Phase1ReadSource.swift" \
   "$project_dir/Sources/CoupledCore/Phase1WriteDestination.swift" \
   "$project_dir/Sources/CoupledCore/CausalDatasetCompiler.swift" \
   "$project_dir/Checks/main.swift" \

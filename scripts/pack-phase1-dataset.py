@@ -101,6 +101,7 @@ def require_compiled_dataset(
         "phase1-causal-v13",
         "phase1-causal-v14",
         "phase1-causal-v15",
+        "phase1-causal-v16",
         "phase1-episode-causal-v1",
         "phase1-episode-causal-v2",
         "phase1-episode-causal-v3",
@@ -118,8 +119,8 @@ def require_compiled_dataset(
         raise ValueError(
             "packer requires a supported causal or episode-causal conversion"
         )
-    if manifest.get("serialization", {}).get("contextVersion") not in {3, 4}:
-        raise ValueError("packer requires model-facing contextVersion 3 or 4")
+    if manifest.get("serialization", {}).get("contextVersion") not in {3, 4, 5}:
+        raise ValueError("packer requires model-facing contextVersion 3, 4, or 5")
     if manifest.get("serialization", {}).get("targetFormat") != "structured_authorship_segments":
         raise ValueError("packer requires structured authorship targets")
     if manifest.get("counts", {}).get("examples") != len(examples):
@@ -361,6 +362,7 @@ def pack_model_input(
     tokenizer: Any,
     token_budget: int,
     task_instruction: str,
+    context_token_cache: dict[str, tuple[str, list[int]]],
 ) -> dict[str, Any]:
     query = example.get("query")
     context_event_ids = example.get("contextBlockIDs", example.get("contextEventIDs"))
@@ -385,11 +387,21 @@ def pack_model_input(
         serialized = event.get("serialized")
         if not isinstance(serialized, str) or not isinstance(json.loads(serialized), dict):
             raise ValueError(f"compiled event {event_id} has invalid model serialization")
+        cached = context_token_cache.get(event_id)
+        if cached is None:
+            token_ids = encode_plain_text(tokenizer, serialized + "\n")
+            context_token_cache[event_id] = (serialized, token_ids)
+        else:
+            cached_serialized, token_ids = cached
+            if cached_serialized != serialized:
+                raise ValueError(
+                    f"context event {event_id} changed serialization during packing"
+                )
         blocks.append(
             {
                 "eventID": event_id,
                 "serialized": serialized,
-                "tokenIDs": encode_plain_text(tokenizer, serialized + "\n"),
+                "tokenIDs": token_ids,
             }
         )
     expected_context = "\n".join(block["serialized"] for block in blocks)
@@ -664,6 +676,7 @@ def main() -> int:
         total_dropped_context_events = 0
         total_partially_retained_context_events = 0
         resolved_paste_payloads_preserved_in_history = 0
+        context_token_cache: dict[str, tuple[str, list[int]]] = {}
         for example in examples:
             segments = example.get("target", {}).get("segments")
             if not isinstance(segments, list):
@@ -727,7 +740,7 @@ def main() -> int:
                     )
             packed_input = pack_model_input(
                 example, events_by_id, reloaded_plain, arguments.input_token_budget,
-                arguments.task_instruction,
+                arguments.task_instruction, context_token_cache,
             )
             input_ids = packed_input["inputIDs"]
             query_ids = packed_input["queryIDs"]

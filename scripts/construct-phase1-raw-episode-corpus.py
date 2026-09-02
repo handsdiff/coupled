@@ -1552,7 +1552,9 @@ def assemble(
     manifest = load_json(corpus / "corpus.json")
     write_destination = manifest.get("writeDestination")
     if not (
-        manifest.get("conversionVersion") == "phase1-causal-v15"
+        manifest.get("conversionVersion") in {
+            "phase1-causal-v15", "phase1-causal-v16",
+        }
         and isinstance(write_destination, dict)
         and isinstance(
             write_destination.get("configuredTerminalAgentProgramMappings"),
@@ -1560,7 +1562,7 @@ def assemble(
         )
     ):
         raise ValueError(
-            "phase1-raw-episode-v8 requires a phase1-causal-v15 corpus with "
+            "phase1-raw-episode-v8 requires a phase1-causal-v15+ corpus with "
             "an explicit WRITE-destination configuration"
         )
     primitive_manifest = load_json(primitives_path / "episode-review.json")

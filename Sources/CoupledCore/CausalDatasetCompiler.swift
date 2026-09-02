@@ -16,7 +16,8 @@ public struct CausalDatasetCompilerConfiguration: Sendable {
         self.conversionVersion = conversionVersion
         self.includeTimestampsInContext = includeTimestampsInContext
         self.minimumTrimmedAuthoredCharacters = minimumTrimmedAuthoredCharacters
-            ?? (["phase1-causal-v14", "phase1-causal-v15"].contains(conversionVersion) ? 4 : 0)
+            ?? (["phase1-causal-v14", "phase1-causal-v15", "phase1-causal-v16"]
+                .contains(conversionVersion) ? 4 : 0)
         precondition(
             self.minimumTrimmedAuthoredCharacters >= 0,
             "minimum trimmed authored characters must be nonnegative"
@@ -38,8 +39,9 @@ public struct CausalDatasetCompilerConfiguration: Sendable {
             normalizedMappings[programLabel] = agent
         }
         precondition(
-            conversionVersion == "phase1-causal-v15" || normalizedMappings.isEmpty,
-            "terminal agent program mappings require phase1-causal-v15"
+            ["phase1-causal-v15", "phase1-causal-v16"]
+                .contains(conversionVersion) || normalizedMappings.isEmpty,
+            "terminal agent program mappings require phase1-causal-v15+"
         )
         self.terminalAgentProgramMappings = normalizedMappings
     }
@@ -301,20 +303,30 @@ public struct CausalDatasetCompiler {
                     ))
                     continue
                 }
+                var modelEvent = event
+                if configuration.conversionVersion == "phase1-causal-v16" {
+                    let normalized = Phase1ReadSourceNormalizer.normalize(event)
+                    modelEvent["modelFacingReadSource"] =
+                        normalized.modelFacingJSONObject
+                    modelEvent["readSourceDerivation"] =
+                        Phase1ReadSourceNormalizer.provenance(
+                            event: event, normalized: normalized
+                        )
+                }
                 converted.append(ConvertedEvent(
                     source: source,
-                    object: event,
+                    object: modelEvent,
                     sourceEventID: eventID,
                     kind: kind,
                     availableAt: capturedAt,
                     beganAt: nil,
                     serialized: try serializeContextEvent(
-                        event,
+                        modelEvent,
                         availableAt: capturedAt,
                         includeTimestamp: configuration.includeTimestampsInContext
                     ),
                     auditSerialized: try serializeAuditContextEvent(
-                        event,
+                        modelEvent,
                         availableAt: capturedAt,
                         includeTimestamp: configuration.includeTimestampsInContext
                     )
@@ -348,7 +360,8 @@ public struct CausalDatasetCompiler {
             switch verification {
             case .success(let canonicalEvent):
                 var modelEvent = canonicalEvent
-                if configuration.conversionVersion == "phase1-causal-v15" {
+                if ["phase1-causal-v15", "phase1-causal-v16"]
+                    .contains(configuration.conversionVersion) {
                     guard let rawConditioning = canonicalEvent["conditioningState"]
                             as? [String: Any],
                           let rawDestination = rawConditioning["destination"]
@@ -556,7 +569,8 @@ public struct CausalDatasetCompiler {
                     "eosReceivesLoss": true,
                 ],
             ]
-            if configuration.conversionVersion == "phase1-causal-v15" {
+            if ["phase1-causal-v15", "phase1-causal-v16"]
+                .contains(configuration.conversionVersion) {
                 example["modelFacingDestination"] = target.object["modelFacingDestination"]
                 example["logicalDestinationKey"] = target.object["logicalDestinationKey"]
                 example["destinationDerivation"] = target.object["destinationDerivation"]
@@ -694,7 +708,8 @@ public struct CausalDatasetCompiler {
                 "eosReceivesLoss": true,
             ],
         ]
-        if configuration.conversionVersion == "phase1-causal-v15" {
+        if ["phase1-causal-v15", "phase1-causal-v16"]
+            .contains(configuration.conversionVersion) {
             datasetManifest["schemaVersion"] = 12
             var serialization = datasetManifest["serialization"] as! [String: Any]
             serialization["contextVersion"] = 4
@@ -711,6 +726,39 @@ public struct CausalDatasetCompiler {
                 "resultingWriteContentUsedForNormalization": false,
                 "configuredTerminalAgentProgramMappings":
                     configuration.terminalAgentProgramMappings,
+            ]
+        }
+        if configuration.conversionVersion == "phase1-causal-v16" {
+            datasetManifest["schemaVersion"] = 13
+            var serialization = datasetManifest["serialization"] as! [String: Any]
+            serialization["contextVersion"] = 5
+            serialization["queryVersion"] = 4
+            serialization["readSourceVersion"] = Phase1ReadSourceNormalizer.version
+            datasetManifest["serialization"] = serialization
+
+            var categoryCounts = [String: Int]()
+            for event in converted where event.kind == "read" {
+                let derivation = event.object["readSourceDerivation"]
+                    as? [String: Any]
+                let category = derivation?.string("category") ?? "missing"
+                categoryCounts[category, default: 0] += 1
+            }
+            let schema7Count = categoryCounts["schema7_ax_selected", default: 0]
+                + categoryCounts["schema7_pointer_fallback", default: 0]
+                + categoryCounts["schema7_unresolved", default: 0]
+            datasetManifest["readSource"] = [
+                "authority": "captured_read_surface_evidence",
+                "modelFacingField": "modelFacingReadSource",
+                "auditField": "readSourceDerivation",
+                "normalizerVersion": Phase1ReadSourceNormalizer.version,
+                "usesOCRContentForIdentity": false,
+                "usesOtherEventsForIdentity": false,
+                "legacySerializationPreserved": true,
+                "counts": [
+                    "categories": categoryCounts,
+                    "schema7": schema7Count,
+                    "nonSchema7": categoryCounts["legacy_pre_schema7", default: 0],
+                ],
             ]
         }
         try writeJSONObject(datasetManifest, to: outputFiles[0], pretty: true)
@@ -1348,9 +1396,14 @@ private func serializeContextEvent(
         "application": nonEmpty(event.string("appName")),
         "window": nonEmpty(event.string("windowTitle")),
     ])
-    let location = kind == "write"
-        ? (event["modelFacingDestination"] as? [String: Any] ?? legacyLocation)
-        : legacyLocation
+    let location: [String: Any]
+    if kind == "write" {
+        location = event["modelFacingDestination"] as? [String: Any]
+            ?? legacyLocation
+    } else {
+        location = event["modelFacingReadSource"] as? [String: Any]
+            ?? legacyLocation
+    }
     var serialized: [String: Any] = compactJSONObject([
         "kind": kind,
         (kind == "read" ? "source" : "destination"): location.isEmpty ? nil : location,
@@ -1849,7 +1902,14 @@ private func convertedRecord(
         "sourceRecordIDs": event.object.stringArray("sourceRecordIDs"),
     ]
     if let beganAt = event.beganAt { record["beganAt"] = beganAt }
-    if event.kind == "write" {
+    if event.kind == "read" {
+        if let source = event.object["modelFacingReadSource"] {
+            record["modelFacingReadSource"] = source
+        }
+        if let derivation = event.object["readSourceDerivation"] {
+            record["readSourceDerivation"] = derivation
+        }
+    } else if event.kind == "write" {
         record["sourceOutcomeMatchesCanonical"] = event.object.boolean(
             "sourceOutcomeMatchesCanonical"
         ) ?? false

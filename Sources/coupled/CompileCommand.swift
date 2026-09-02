@@ -13,7 +13,7 @@ struct CompileCommand {
         var input: String?
         var source: String?
         var output: String?
-        var version = "phase1-causal-v15"
+        var version = "phase1-causal-v16"
         var includeTimestamps = false
         var terminalAgentMappings = [String: String]()
         var index = 0

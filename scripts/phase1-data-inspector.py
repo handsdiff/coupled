@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import threading
 import urllib.parse
 import webbrowser
@@ -18,6 +19,30 @@ from typing import Any
 
 
 PASTE_MARKER = "<|paste|>"
+
+INKLING_ARMS = (
+    "frozen_inkling_small_reasoning_off",
+    "frozen_inkling_small_reasoning_on",
+    "personalized_inkling_small_reasoning_off",
+    "personalized_inkling_small_reasoning_on",
+)
+
+INKLING_ARM_LABELS = {
+    "frozen_inkling_small_reasoning_off": "Frozen Inkling · reasoning off",
+    "frozen_inkling_small_reasoning_on": "Frozen Inkling · reasoning on",
+    "personalized_inkling_small_reasoning_off": "Trained Inkling · reasoning off",
+    "personalized_inkling_small_reasoning_on": "Trained Inkling · reasoning on",
+}
+
+COMPANION_ARM_LABELS = {
+    "frozen_qwen3.5_9b_base": "Frozen Qwen3.5-9B Base",
+    "personalized_qwen3.5_9b_base": "Trained Qwen3.5-9B Base",
+    "frozen_gpt_5.6_sol_xhigh": "GPT-5.6-sol xhigh",
+    "frozen_gpt_5.4_xhigh": "GPT-5.4 xhigh",
+    "frozen_gpt_5.5_xhigh": "GPT-5.5 xhigh",
+    "frozen_gpt_5.6_sol_xhigh_128k": "GPT-5.6-sol xhigh · 128K",
+    "personalized_inkling_small_reasoning_off_native_v5": "Trained Inkling · native-loss v5",
+}
 
 
 class InspectorError(RuntimeError):
@@ -120,6 +145,16 @@ class ArtifactPaths:
     packed: Path
     results: Path
     holistic_review: Path | None
+    mode: str
+    comparison_results: Path | None
+    qwen_scores: Path | None
+    gpt54_results: Path | None
+    gpt55_results: Path | None
+    gpt56_128k_results: Path | None
+    gpt56_128k_packed: Path | None
+    inkling_v5_results: Path | None
+    comparison_holistic_review: Path | None
+    suggestion_eligibility: Path | None
 
 
 def preferred_candidate(paths: list[Path]) -> Path:
@@ -141,6 +176,15 @@ def discover_paths(
     corpus_argument: Path | None,
     packed_argument: Path | None,
     holistic_review_argument: Path | None,
+    comparison_results_argument: Path | None,
+    qwen_scores_argument: Path | None,
+    gpt54_results_argument: Path | None,
+    gpt55_results_argument: Path | None,
+    gpt56_128k_results_argument: Path | None,
+    gpt56_128k_packed_argument: Path | None,
+    inkling_v5_results_argument: Path | None,
+    comparison_holistic_review_argument: Path | None,
+    suggestion_eligibility_argument: Path | None,
 ) -> ArtifactPaths:
     data = project / "coupled-data"
     if results_argument is not None:
@@ -152,7 +196,10 @@ def discover_paths(
             if (value.parent / "comparisons.jsonl").is_file()
         ]
         results = preferred_candidate(result_candidates)
-    experiment = load_json(results / "experiment.json")
+    inkling_mode = (results / "inkling.json").is_file()
+    experiment = load_json(
+        results / ("inkling.json" if inkling_mode else "experiment.json")
+    )
     source = experiment.get("source", {})
 
     if corpus_argument is not None:
@@ -192,21 +239,33 @@ def discover_paths(
             )
     else:
         expected_corpus_id = load_json(corpus / "corpus.json").get("corpusID")
+        expected_prediction_digest = (
+            sha256(results / "scores.jsonl")
+            if inkling_mode
+            else prediction_triples_sha256(load_jsonl(results / "comparisons.jsonl"))
+        )
         review_candidates: list[Path] = []
         for review_path in (project / "episode-review").glob("*holistic*.json"):
             try:
                 review = load_json(review_path)
             except InspectorError:
                 continue
-            if review.get("source", {}).get("corpusID") == expected_corpus_id:
+            review_source = review.get("source", {})
+            digest_matches = (
+                review_source.get("inklingScoresSHA256") == expected_prediction_digest
+                if inkling_mode
+                else review_source.get("predictionTriplesSHA256")
+                == expected_prediction_digest
+            )
+            if review_source.get("corpusID") == expected_corpus_id and digest_matches:
                 review_candidates.append(review_path)
         holistic_review = (
             preferred_candidate(review_candidates) if review_candidates else None
         )
 
     required = {
-        results / "experiment.json",
-        results / "comparisons.jsonl",
+        results / ("inkling.json" if inkling_mode else "experiment.json"),
+        results / ("scores.jsonl" if inkling_mode else "comparisons.jsonl"),
         corpus / "corpus.json",
         corpus / "examples.jsonl",
         corpus / "events.jsonl",
@@ -216,6 +275,92 @@ def discover_paths(
         packed / "packed-examples.jsonl",
     }
     missing = sorted(str(path) for path in required if not path.is_file())
+    comparison_results = (
+        comparison_results_argument.expanduser().resolve()
+        if comparison_results_argument is not None
+        else None
+    )
+    qwen_scores = (
+        qwen_scores_argument.expanduser().resolve()
+        if qwen_scores_argument is not None
+        else None
+    )
+    gpt54_results = (
+        gpt54_results_argument.expanduser().resolve()
+        if gpt54_results_argument is not None
+        else None
+    )
+    gpt55_results = (
+        gpt55_results_argument.expanduser().resolve()
+        if gpt55_results_argument is not None
+        else None
+    )
+    gpt56_128k_results = (
+        gpt56_128k_results_argument.expanduser().resolve()
+        if gpt56_128k_results_argument is not None
+        else None
+    )
+    gpt56_128k_packed = (
+        gpt56_128k_packed_argument.expanduser().resolve()
+        if gpt56_128k_packed_argument is not None
+        else None
+    )
+    inkling_v5_results = (
+        inkling_v5_results_argument.expanduser().resolve()
+        if inkling_v5_results_argument is not None
+        else None
+    )
+    comparison_holistic_review = (
+        comparison_holistic_review_argument.expanduser().resolve()
+        if comparison_holistic_review_argument is not None
+        else None
+    )
+    suggestion_eligibility = (
+        suggestion_eligibility_argument.expanduser().resolve()
+        if suggestion_eligibility_argument is not None
+        else None
+    )
+    optional_required = []
+    if comparison_results is not None:
+        optional_required.extend(
+            [comparison_results / "experiment.json", comparison_results / "comparisons.jsonl"]
+        )
+    if qwen_scores is not None:
+        optional_required.append(qwen_scores / "scores.jsonl")
+    if gpt54_results is not None:
+        optional_required.extend(
+            [gpt54_results / "model.json", gpt54_results / "scores.jsonl"]
+        )
+    if gpt55_results is not None:
+        optional_required.extend(
+            [gpt55_results / "model.json", gpt55_results / "scores.jsonl"]
+        )
+    if (gpt56_128k_results is None) != (gpt56_128k_packed is None):
+        raise InspectorError(
+            "GPT-5.6 128K results and packed inputs must be supplied together"
+        )
+    if gpt56_128k_results is not None and gpt56_128k_packed is not None:
+        optional_required.extend(
+            [
+                gpt56_128k_results / "window.json",
+                gpt56_128k_results / "scores.jsonl",
+                gpt56_128k_packed / "packing.json",
+                gpt56_128k_packed / "semantic-examples.jsonl",
+            ]
+        )
+    if inkling_v5_results is not None:
+        optional_required.extend(
+            [
+                inkling_v5_results / "stability.json",
+                inkling_v5_results / "scores.jsonl",
+                inkling_v5_results / "updates.jsonl",
+            ]
+        )
+    if comparison_holistic_review is not None:
+        optional_required.append(comparison_holistic_review)
+    if suggestion_eligibility is not None:
+        optional_required.append(suggestion_eligibility)
+    missing.extend(str(path) for path in optional_required if not path.is_file())
     if missing:
         raise InspectorError("missing required artifacts:\n" + "\n".join(missing))
     return ArtifactPaths(
@@ -224,6 +369,16 @@ def discover_paths(
         packed=packed,
         results=results,
         holistic_review=holistic_review,
+        mode="inkling" if inkling_mode else "qwen-gpt",
+        comparison_results=comparison_results,
+        qwen_scores=qwen_scores,
+        gpt54_results=gpt54_results,
+        gpt55_results=gpt55_results,
+        gpt56_128k_results=gpt56_128k_results,
+        gpt56_128k_packed=gpt56_128k_packed,
+        inkling_v5_results=inkling_v5_results,
+        comparison_holistic_review=comparison_holistic_review,
+        suggestion_eligibility=suggestion_eligibility,
     )
 
 
@@ -252,11 +407,141 @@ def prediction_triples_sha256(comparisons: list[dict[str, Any]]) -> str:
 class DatasetStore:
     def __init__(self, paths: ArtifactPaths):
         self.paths = paths
-        self.experiment = load_json(paths.results / "experiment.json")
+        self.inkling_mode = paths.mode == "inkling"
+        self.experiment = load_json(
+            paths.results / ("inkling.json" if self.inkling_mode else "experiment.json")
+        )
         self.corpus_manifest = load_json(paths.corpus / "corpus.json")
         self.packing_manifest = load_json(paths.packed / "packing.json")
         self.examples = load_jsonl(paths.corpus / "examples.jsonl")
-        self.comparisons = load_jsonl(paths.results / "comparisons.jsonl")
+        self.inkling_scores = (
+            load_jsonl(paths.results / "scores.jsonl") if self.inkling_mode else []
+        )
+        self.comparisons = (
+            self._group_inkling_scores(self.inkling_scores)
+            if self.inkling_mode
+            else load_jsonl(paths.results / "comparisons.jsonl")
+        )
+        self.updates = (
+            load_jsonl(paths.results / "updates.jsonl")
+            if self.inkling_mode and (paths.results / "updates.jsonl").is_file()
+            else []
+        )
+        self.comparison_experiment = (
+            load_json(paths.comparison_results / "experiment.json")
+            if paths.comparison_results is not None
+            else None
+        )
+        self.companion_comparisons = (
+            load_jsonl(paths.comparison_results / "comparisons.jsonl")
+            if paths.comparison_results is not None
+            else []
+        )
+        self.qwen_score_rows = (
+            load_jsonl(paths.qwen_scores / "scores.jsonl")
+            if paths.qwen_scores is not None
+            else []
+        )
+        self.gpt54_manifest = (
+            load_json(paths.gpt54_results / "model.json")
+            if paths.gpt54_results is not None
+            else None
+        )
+        self.gpt54_score_rows = (
+            load_jsonl(paths.gpt54_results / "scores.jsonl")
+            if paths.gpt54_results is not None
+            else []
+        )
+        self.gpt55_manifest = (
+            load_json(paths.gpt55_results / "model.json")
+            if paths.gpt55_results is not None
+            else None
+        )
+        self.gpt55_score_rows = (
+            load_jsonl(paths.gpt55_results / "scores.jsonl")
+            if paths.gpt55_results is not None
+            else []
+        )
+        self.gpt56_128k_manifest = (
+            load_json(paths.gpt56_128k_results / "window.json")
+            if paths.gpt56_128k_results is not None
+            else None
+        )
+        self.gpt56_128k_score_rows = (
+            load_jsonl(paths.gpt56_128k_results / "scores.jsonl")
+            if paths.gpt56_128k_results is not None
+            else []
+        )
+        self.gpt56_128k_packing_manifest = (
+            load_json(paths.gpt56_128k_packed / "packing.json")
+            if paths.gpt56_128k_packed is not None
+            else None
+        )
+        self.gpt56_128k_semantic_rows = (
+            load_jsonl(paths.gpt56_128k_packed / "semantic-examples.jsonl")
+            if paths.gpt56_128k_packed is not None
+            else []
+        )
+        self.gpt56_128k_semantic_by_id = self._index(
+            self.gpt56_128k_semantic_rows,
+            "exampleID",
+            "GPT-5.6 128K semantic examples",
+        )
+        self.inkling_v5_manifest = (
+            load_json(paths.inkling_v5_results / "stability.json")
+            if paths.inkling_v5_results is not None
+            else None
+        )
+        self.inkling_v5_score_rows = (
+            load_jsonl(paths.inkling_v5_results / "scores.jsonl")
+            if paths.inkling_v5_results is not None
+            else []
+        )
+        self.inkling_v5_updates = (
+            load_jsonl(paths.inkling_v5_results / "updates.jsonl")
+            if paths.inkling_v5_results is not None
+            else []
+        )
+        self.supplemental_holistic_review = (
+            load_json(paths.comparison_holistic_review)
+            if paths.comparison_holistic_review is not None
+            else None
+        )
+        self.model_labels: dict[str, str] = {}
+        if self.companion_comparisons:
+            self.model_labels.update(
+                {
+                    key: value
+                    for key, value in COMPANION_ARM_LABELS.items()
+                    if key
+                    not in {
+                        "frozen_gpt_5.4_xhigh",
+                        "frozen_gpt_5.6_sol_xhigh_128k",
+                        "personalized_inkling_small_reasoning_off_native_v5",
+                    }
+                }
+            )
+        if self.gpt54_score_rows:
+            self.model_labels["frozen_gpt_5.4_xhigh"] = COMPANION_ARM_LABELS[
+                "frozen_gpt_5.4_xhigh"
+            ]
+        if self.gpt55_score_rows:
+            self.model_labels["frozen_gpt_5.5_xhigh"] = COMPANION_ARM_LABELS[
+                "frozen_gpt_5.5_xhigh"
+            ]
+        if self.gpt56_128k_score_rows:
+            self.model_labels["frozen_gpt_5.6_sol_xhigh_128k"] = (
+                COMPANION_ARM_LABELS["frozen_gpt_5.6_sol_xhigh_128k"]
+            )
+        if self.inkling_v5_score_rows:
+            self.model_labels["personalized_inkling_small_reasoning_off_native_v5"] = (
+                COMPANION_ARM_LABELS[
+                    "personalized_inkling_small_reasoning_off_native_v5"
+                ]
+            )
+        self.model_arms = tuple(self.model_labels)
+        if self.inkling_mode:
+            self._merge_companion_arms()
         self.context_blocks = load_jsonl(paths.corpus / "context-blocks.jsonl")
         self.events = load_jsonl(paths.corpus / "events.jsonl")
         self.plans = load_jsonl(paths.packed / "context-plans.jsonl")
@@ -266,7 +551,18 @@ class DatasetStore:
             if paths.holistic_review is not None
             else None
         )
+        self.suggestion_eligibility = (
+            load_json(paths.suggestion_eligibility)
+            if paths.suggestion_eligibility is not None
+            else None
+        )
         self.holistic_pass_ordinals: dict[str, set[int]] = {}
+        self.score_eligible_ordinals: set[int] = set()
+        self.suggestion_timing_by_ordinal: dict[int, dict[str, Any]] = {}
+        self.minimum_net_savings_seconds = 0.0
+        self.human_input_duration_by_ordinal: dict[int, float] = {}
+        self.human_input_over_3_seconds_ordinals: set[int] = set()
+        self.human_input_over_3_seconds_subset: dict[str, Any] = {}
 
         self.example_by_id = self._index(self.examples, "exampleID", "examples")
         self.comparison_by_id = self._index(
@@ -289,6 +585,163 @@ class DatasetStore:
         ]
 
     @staticmethod
+    def _group_inkling_scores(
+        scores: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        grouped: dict[str, dict[str, Any]] = {}
+        for score in scores:
+            example_id = score.get("exampleID")
+            arm = score.get("arm")
+            if not isinstance(example_id, str) or not isinstance(arm, str):
+                raise InspectorError("Inkling score is missing exampleID or arm")
+            row = grouped.setdefault(
+                example_id,
+                {
+                    "exampleID": example_id,
+                    "target": score.get("target"),
+                    "application": score.get("application"),
+                    "arms": {},
+                },
+            )
+            if row["target"] != score.get("target"):
+                raise InspectorError(f"Inkling targets disagree for {example_id}")
+            if arm in row["arms"]:
+                raise InspectorError(f"duplicate Inkling arm for {example_id}: {arm}")
+            row["arms"][arm] = score
+        for example_id, row in grouped.items():
+            missing = [arm for arm in INKLING_ARMS if arm not in row["arms"]]
+            if missing:
+                raise InspectorError(
+                    f"Inkling example {example_id} is missing arms: {', '.join(missing)}"
+                )
+        return list(grouped.values())
+
+    def _merge_companion_arms(self) -> None:
+        grouped_by_id = {row["exampleID"]: row for row in self.comparisons}
+        qwen_by_key = {
+            (row["exampleID"], row["arm"]): row for row in self.qwen_score_rows
+        }
+        for comparison in self.companion_comparisons:
+            example_id = comparison["exampleID"]
+            destination = grouped_by_id.get(example_id)
+            if destination is None:
+                raise InspectorError(
+                    f"companion comparison references unknown example {example_id}"
+                )
+            mappings = {
+                "frozen_qwen3.5_9b_base": comparison.get("frozenQwen", {}),
+                "personalized_qwen3.5_9b_base": comparison.get(
+                    "personalizedQwen", {}
+                ),
+                "frozen_gpt_5.6_sol_xhigh": comparison.get("frontier", {}),
+            }
+            for arm, source in mappings.items():
+                normalized = dict(source)
+                qwen_source = qwen_by_key.get((example_id, arm))
+                if qwen_source is not None:
+                    normalized["generationLatencySeconds"] = qwen_source.get(
+                        "generationLatencySeconds"
+                    )
+                    normalized["targetLikelihoodLatencySeconds"] = qwen_source.get(
+                        "targetLikelihoodLatencySeconds"
+                    )
+                else:
+                    normalized["generationLatencySeconds"] = source.get(
+                        "latencySeconds"
+                    )
+                if arm.startswith("frozen_gpt"):
+                    normalized["estimatedProviderCostUSDAtFrozenRates"] = (
+                        source.get("apiEquivalentCost", {})
+                        .get("estimatedUSD", {})
+                        .get("total")
+                    )
+                else:
+                    normalized["estimatedProviderCostUSDAtFrozenRates"] = (
+                        source.get("estimatedCost", {})
+                        .get("estimatedUSD", {})
+                        .get("combinedScoringAndGeneration")
+                    )
+                normalized["generationEligibleForEvaluation"] = True
+                normalized["generationDisposition"] = "accepted"
+                destination["arms"][arm] = normalized
+
+        for source in self.gpt54_score_rows:
+            example_id = source["exampleID"]
+            destination = grouped_by_id.get(example_id)
+            if destination is None:
+                raise InspectorError(
+                    f"GPT-5.4 score references unknown example {example_id}"
+                )
+            normalized = dict(source)
+            usage = source.get("usage", {})
+            estimated_cost = (
+                float(usage.get("input_tokens", 0)) * 2.50 / 1_000_000
+                + float(usage.get("output_tokens", 0)) * 15.00 / 1_000_000
+            )
+            normalized["generationLatencySeconds"] = source.get("latencySeconds")
+            normalized["estimatedProviderCostUSDAtFrozenRates"] = estimated_cost
+            normalized["generationEligibleForEvaluation"] = True
+            normalized["generationDisposition"] = "accepted"
+            destination["arms"]["frozen_gpt_5.4_xhigh"] = normalized
+
+        for source in self.gpt55_score_rows:
+            example_id = source["exampleID"]
+            destination = grouped_by_id.get(example_id)
+            if destination is None:
+                raise InspectorError(
+                    f"GPT-5.5 score references unknown example {example_id}"
+                )
+            normalized = dict(source)
+            normalized["generationLatencySeconds"] = source.get("latencySeconds")
+            # This was a ChatGPT-subscription run. There is no attributable
+            # marginal invoice or frozen API rate for this route.
+            normalized["estimatedProviderCostUSDAtFrozenRates"] = None
+            normalized["generationEligibleForEvaluation"] = True
+            normalized["generationDisposition"] = "accepted"
+            destination["arms"]["frozen_gpt_5.5_xhigh"] = normalized
+
+        for source in self.gpt56_128k_score_rows:
+            example_id = source["exampleID"]
+            destination = grouped_by_id.get(example_id)
+            if destination is None:
+                raise InspectorError(
+                    f"GPT-5.6 128K score references unknown example {example_id}"
+                )
+            normalized = dict(source)
+            usage = source.get("usage", {})
+            estimated_cost = (
+                float(usage.get("input_tokens", 0)) * 5.00 / 1_000_000
+                + float(usage.get("output_tokens", 0)) * 30.00 / 1_000_000
+            )
+            normalized["generationLatencySeconds"] = source.get("latencySeconds")
+            normalized["estimatedProviderCostUSDAtFrozenRates"] = estimated_cost
+            normalized["generationEligibleForEvaluation"] = True
+            normalized["generationDisposition"] = "accepted"
+            normalized["inputContextLabel"] = "128K packed context"
+            destination["arms"]["frozen_gpt_5.6_sol_xhigh_128k"] = normalized
+
+        for source in self.inkling_v5_score_rows:
+            example_id = source["exampleID"]
+            destination = grouped_by_id.get(example_id)
+            if destination is None:
+                raise InspectorError(
+                    f"Inkling native-loss v5 score references unknown example {example_id}"
+                )
+            normalized = dict(source)
+            normalized["latencySeconds"] = source.get("generationLatencySeconds")
+            destination["arms"][
+                "personalized_inkling_small_reasoning_off_native_v5"
+            ] = normalized
+
+        for example_id, row in grouped_by_id.items():
+            missing = [arm for arm in self.model_arms if arm not in row["arms"]]
+            if missing:
+                raise InspectorError(
+                    f"unified example {example_id} is missing arms: {', '.join(missing)}"
+                )
+            row["arms"] = {arm: row["arms"][arm] for arm in self.model_arms}
+
+    @staticmethod
     def _index(
         rows: list[dict[str, Any]], key: str, label: str
     ) -> dict[str, dict[str, Any]]:
@@ -303,6 +756,41 @@ class DatasetStore:
         return result
 
     def _validate(self) -> None:
+        corpus_id = self.corpus_manifest.get("corpusID")
+        for label, manifest in (
+            ("companion comparison", self.comparison_experiment),
+            ("GPT-5.4", self.gpt54_manifest),
+            ("GPT-5.5", self.gpt55_manifest),
+            ("GPT-5.6 128K", self.gpt56_128k_manifest),
+        ):
+            if manifest is not None and manifest.get("source", {}).get("corpusID") != corpus_id:
+                raise InspectorError(f"{label} corpus ID disagrees")
+        if (
+            self.inkling_v5_manifest is not None
+            and self.inkling_v5_manifest.get("source", {}).get("corpusID")
+            != corpus_id
+        ):
+            raise InspectorError("Inkling native-loss v5 corpus ID disagrees")
+        if (
+            self.gpt56_128k_packing_manifest is not None
+            and self.gpt56_128k_packing_manifest.get("source", {}).get("corpusID")
+            != corpus_id
+        ):
+            raise InspectorError("GPT-5.6 128K packed-input corpus ID disagrees")
+        if self.gpt56_128k_manifest is not None and self.paths.gpt56_128k_packed:
+            semantic_path = self.paths.gpt56_128k_packed / "semantic-examples.jsonl"
+            semantic_digest = sha256(semantic_path)
+            if (
+                self.gpt56_128k_manifest.get("source", {}).get(
+                    "semanticExamplesSHA256"
+                )
+                != semantic_digest
+                or self.gpt56_128k_packing_manifest.get(
+                    "artifactDigestsSHA256", {}
+                ).get("semantic-examples.jsonl")
+                != semantic_digest
+            ):
+                raise InspectorError("GPT-5.6 128K semantic-input digest disagrees")
         scored_ids = [value["exampleID"] for value in self.scored_examples]
         unknown_comparisons = [
             value for value in self.comparison_by_id if value not in self.example_by_id
@@ -333,7 +821,119 @@ class DatasetStore:
             expected_target = target_text(self.example_by_id[example_id]["target"])
             if self.comparison_by_id[example_id].get("target") != expected_target:
                 raise InspectorError(f"result target disagrees for {example_id}")
+            if self.inkling_mode:
+                for arm, score in self.comparison_by_id[example_id]["arms"].items():
+                    score_digest = score.get("semanticModelInputSHA256")
+                    arm_expected = expected
+                    if arm == "frozen_gpt_5.6_sol_xhigh_128k":
+                        semantic_row = self.gpt56_128k_semantic_by_id.get(example_id)
+                        if semantic_row is None:
+                            raise InspectorError(
+                                f"GPT-5.6 128K packed input is missing {example_id}"
+                            )
+                        arm_expected = semantic_row.get("semanticModelInputSHA256")
+                        if semantic_row.get("target") != expected_target:
+                            raise InspectorError(
+                                f"GPT-5.6 128K packed target disagrees for {example_id}"
+                            )
+                    if score_digest is not None and score_digest != arm_expected:
+                        raise InspectorError(
+                            f"model semantic input disagrees for {example_id}/{arm}"
+                        )
         self._validate_holistic_review()
+        self._validate_supplemental_holistic_review()
+        self._validate_suggestion_eligibility()
+
+    def _validate_suggestion_eligibility(self) -> None:
+        artifact = self.suggestion_eligibility
+        available = {
+            int(example["chronologicalOrdinal"]) + 1: example
+            for example in self.scored_examples
+        }
+        if artifact is None:
+            self.score_eligible_ordinals = set(available)
+            return
+        source = artifact.get("source", {})
+        if source.get("corpusID") != self.corpus_manifest.get("corpusID"):
+            raise InspectorError("suggestion eligibility corpus ID disagrees")
+        scope = artifact.get("scope", {})
+        if scope.get("examples") != len(available):
+            raise InspectorError("suggestion eligibility scope disagrees")
+        records = artifact.get("records")
+        if not isinstance(records, list) or len(records) != len(available):
+            raise InspectorError("suggestion eligibility records disagree")
+        estimate = artifact.get("estimate", {})
+        reading_wpm = float(estimate.get("readingWordsPerMinute", 0))
+        mental_seconds = float(estimate.get("mentalEvaluationSeconds", 0))
+        shortcut_count = int(estimate.get("shortcutKeystrokes", 0))
+        seconds_per_key = float(estimate.get("secondsPerShortcutKeystroke", 0))
+        response_seconds = float(estimate.get("systemResponseSeconds", 0))
+        minimum_savings = float(estimate.get("minimumNetSavingsSeconds", 0))
+        if reading_wpm <= 0 or shortcut_count < 0 or seconds_per_key < 0:
+            raise InspectorError("suggestion eligibility estimate is invalid")
+        parsed: dict[int, dict[str, Any]] = {}
+        eligible: set[int] = set()
+        for record in records:
+            if not isinstance(record, dict):
+                raise InspectorError("suggestion eligibility record is invalid")
+            ordinal = record.get("oneBasedExampleOrdinal")
+            if not isinstance(ordinal, int) or ordinal not in available or ordinal in parsed:
+                raise InspectorError("suggestion eligibility ordinal is invalid")
+            example = available[ordinal]
+            if record.get("exampleID") != example.get("exampleID"):
+                raise InspectorError("suggestion eligibility example ID disagrees")
+            words = len(re.findall(r"\S+", target_text(example.get("target", {}))))
+            if record.get("targetWordCount") != words:
+                raise InspectorError("suggestion eligibility word count disagrees")
+            human_seconds = float(record.get("humanInputDurationSeconds"))
+            expected_seconds = (
+                60 * words / reading_wpm
+                + mental_seconds
+                + shortcut_count * seconds_per_key
+                + response_seconds
+            )
+            recorded_seconds = float(record.get("estimatedSuggestionInteractionSeconds"))
+            recorded_savings = float(record.get("estimatedNetSavingsSeconds"))
+            if abs(recorded_seconds - expected_seconds) > 0.0015:
+                raise InspectorError("suggestion interaction estimate disagrees")
+            if abs(recorded_savings - (human_seconds - expected_seconds)) > 0.0015:
+                raise InspectorError("suggestion net savings disagrees")
+            expected_eligible = human_seconds - expected_seconds > minimum_savings
+            if record.get("scoreEligible") is not expected_eligible:
+                raise InspectorError("suggestion eligibility decision disagrees")
+            parsed[ordinal] = record
+            if expected_eligible:
+                eligible.add(ordinal)
+        if set(parsed) != set(available):
+            raise InspectorError("suggestion eligibility coverage disagrees")
+        if scope.get("scoreEligibleExamples") != len(eligible):
+            raise InspectorError("suggestion eligible count disagrees")
+        if scope.get("excludedExamples") != len(available) - len(eligible):
+            raise InspectorError("suggestion excluded count disagrees")
+        self.score_eligible_ordinals = eligible
+        self.suggestion_timing_by_ordinal = parsed
+        self.minimum_net_savings_seconds = minimum_savings
+
+    def _real_time_holistic_pass(
+        self,
+        one_based_ordinal: int,
+        arm: str,
+        score: dict[str, Any],
+    ) -> bool:
+        if one_based_ordinal not in self.holistic_pass_ordinals.get(arm, set()):
+            return False
+        timing = self.suggestion_timing_by_ordinal.get(one_based_ordinal)
+        latency = score.get("generationLatencySeconds")
+        if timing is None or latency is None:
+            return False
+        human_seconds = float(timing["humanInputDurationSeconds"])
+        interaction_seconds = float(
+            timing["estimatedSuggestionInteractionSeconds"]
+        )
+        return (
+            human_seconds - interaction_seconds - float(latency)
+            > self.minimum_net_savings_seconds
+        )
 
     def _validate_holistic_review(self) -> None:
         review = self.holistic_review
@@ -342,9 +942,14 @@ class DatasetStore:
         source = review.get("source", {})
         if source.get("corpusID") != self.corpus_manifest.get("corpusID"):
             raise InspectorError("holistic review corpus ID disagrees")
-        actual_digest = prediction_triples_sha256(self.comparisons)
-        if source.get("predictionTriplesSHA256") != actual_digest:
-            raise InspectorError("holistic review prediction digest disagrees")
+        if self.inkling_mode:
+            actual_digest = sha256(self.paths.results / "scores.jsonl")
+            if source.get("inklingScoresSHA256") != actual_digest:
+                raise InspectorError("holistic review Inkling score digest disagrees")
+        else:
+            actual_digest = prediction_triples_sha256(self.comparisons)
+            if source.get("predictionTriplesSHA256") != actual_digest:
+                raise InspectorError("holistic review prediction digest disagrees")
         scope = review.get("scope", {})
         first = scope.get("firstOneBasedExampleOrdinal")
         last = scope.get("lastOneBasedExampleOrdinal")
@@ -385,6 +990,112 @@ class DatasetStore:
                 )
             self.holistic_pass_ordinals[model] = set(ordinals)
 
+        subset = review.get("subsets", {}).get("humanInputOver3Seconds", {})
+        if not subset:
+            return
+        threshold = subset.get("thresholdSeconds")
+        durations = subset.get("durationSecondsByOneBasedExampleOrdinal")
+        ordinals = subset.get("oneBasedExampleOrdinals")
+        if not isinstance(threshold, (int, float)) or threshold != 3:
+            raise InspectorError("human-input subset must use a three-second threshold")
+        if not isinstance(durations, dict) or not isinstance(ordinals, list):
+            raise InspectorError("human-input subset has invalid duration evidence")
+        parsed_durations: dict[int, float] = {}
+        for ordinal_text, duration in durations.items():
+            try:
+                ordinal = int(ordinal_text)
+            except (TypeError, ValueError) as error:
+                raise InspectorError("human-input duration ordinal is invalid") from error
+            if ordinal not in scoped_available or not isinstance(duration, (int, float)):
+                raise InspectorError("human-input duration evidence is outside the scope")
+            parsed_durations[ordinal] = float(duration)
+        if set(parsed_durations) != scoped_available:
+            raise InspectorError("human-input duration evidence does not cover the scope")
+        expected_long = {
+            ordinal for ordinal, duration in parsed_durations.items()
+            if duration > float(threshold)
+        }
+        if set(ordinals) != expected_long or subset.get("examples") != len(expected_long):
+            raise InspectorError("human-input subset membership disagrees with durations")
+        model_passes = subset.get("modelPasses", {})
+        expected_qwen = len(
+            expected_long
+            & self.holistic_pass_ordinals.get("personalized_qwen3.5_9b_base", set())
+        )
+        expected_frontier = len(
+            expected_long
+            & self.holistic_pass_ordinals.get("frozen_gpt_5.6_sol_xhigh", set())
+        )
+        if (
+            model_passes.get("personalized_qwen3.5_9b_base") != expected_qwen
+            or model_passes.get("frozen_gpt_5.6_sol_xhigh") != expected_frontier
+        ):
+            raise InspectorError("human-input subset holistic pass counts disagree")
+        self.human_input_duration_by_ordinal = parsed_durations
+        self.human_input_over_3_seconds_ordinals = expected_long
+        self.human_input_over_3_seconds_subset = subset
+
+    def _validate_supplemental_holistic_review(self) -> None:
+        review = self.supplemental_holistic_review
+        if review is None:
+            return
+        source = review.get("source", {})
+        if source.get("corpusID") != self.corpus_manifest.get("corpusID"):
+            raise InspectorError("supplemental holistic review corpus ID disagrees")
+        actual_digest = prediction_triples_sha256(self.companion_comparisons)
+        if source.get("predictionTriplesSHA256") != actual_digest:
+            raise InspectorError("supplemental holistic review prediction digest disagrees")
+        for source_key, path, label in (
+            ("gpt54ScoresSHA256", self.paths.gpt54_results, "GPT-5.4"),
+            ("gpt55ScoresSHA256", self.paths.gpt55_results, "GPT-5.5"),
+            (
+                "gpt56_128kScoresSHA256",
+                self.paths.gpt56_128k_results,
+                "GPT-5.6 128K",
+            ),
+            (
+                "inklingNativeV5ScoresSHA256",
+                self.paths.inkling_v5_results,
+                "Inkling native-loss v5",
+            ),
+        ):
+            expected = source.get(source_key)
+            if expected is None:
+                continue
+            if path is None or sha256(path / "scores.jsonl") != expected:
+                raise InspectorError(
+                    f"supplemental holistic review {label} score digest disagrees"
+                )
+        expected_128k_semantic = source.get("gpt56_128kSemanticExamplesSHA256")
+        if expected_128k_semantic is not None:
+            if (
+                self.paths.gpt56_128k_packed is None
+                or sha256(
+                    self.paths.gpt56_128k_packed / "semantic-examples.jsonl"
+                )
+                != expected_128k_semantic
+            ):
+                raise InspectorError(
+                    "supplemental holistic review GPT-5.6 128K semantic-input digest disagrees"
+                )
+        available = {
+            int(example["chronologicalOrdinal"]) + 1 for example in self.scored_examples
+        }
+        for model, value in review.get("models", {}).items():
+            ordinals = value.get("passOneBasedExampleOrdinals")
+            if not isinstance(ordinals, list) or not all(
+                isinstance(ordinal, int) and ordinal in available
+                for ordinal in ordinals
+            ):
+                raise InspectorError(
+                    f"supplemental holistic pass ordinals are invalid: {model}"
+                )
+            if value.get("passCount") != len(ordinals):
+                raise InspectorError(
+                    f"supplemental holistic pass count disagrees: {model}"
+                )
+            self.holistic_pass_ordinals[model] = set(ordinals)
+
     def semantic_input(self, example_id: str) -> str:
         example = self.example_by_id[example_id]
         plan = self.plan_by_id[example_id]
@@ -421,10 +1132,69 @@ class DatasetStore:
         target = comparison.get("target", "")
         conditioning = example.get("conditioningState", {})
         destination = conditioning.get("destination", {})
+        one_based_ordinal = int(example.get("chronologicalOrdinal")) + 1
+        score_eligible = one_based_ordinal in self.score_eligible_ordinals
+        suggestion_timing = self.suggestion_timing_by_ordinal.get(
+            one_based_ordinal, {}
+        )
+        if self.inkling_mode:
+            arms: dict[str, Any] = {}
+            for arm in self.model_arms:
+                score = comparison["arms"][arm]
+                metrics = score.get("predictionMetrics", {})
+                semantic_holistic = one_based_ordinal in self.holistic_pass_ordinals.get(
+                    arm, set()
+                )
+                arms[arm] = {
+                    "prediction": score.get("prediction", ""),
+                    "exact": bool(metrics.get("exactMatch")),
+                    "holistic": semantic_holistic,
+                    "realTimeHolistic": self._real_time_holistic_pass(
+                        one_based_ordinal, arm, score
+                    ),
+                    "similarity": metrics.get("normalizedLevenshteinSimilarity"),
+                    "generationEligible": score.get(
+                        "generationEligibleForEvaluation", False
+                    ),
+                    "generationDisposition": score.get("generationDisposition"),
+                    "latencySeconds": score.get("latencySeconds"),
+                    "generationLatencySeconds": score.get(
+                        "generationLatencySeconds"
+                    ),
+                    "costUSD": score.get(
+                        "estimatedProviderCostUSDAtFrozenRates"
+                    ),
+                }
+            return {
+                "exampleID": example_id,
+                "ordinal": example.get("chronologicalOrdinal"),
+                "blockID": example.get("experimentBlockID"),
+                "application": comparison.get("application")
+                or destination.get("appName"),
+                "window": destination.get("windowTitle"),
+                "target": target,
+                "targetLength": len(target),
+                "targetType": target_type,
+                "scoreEligible": score_eligible,
+                "humanInputDurationSeconds": suggestion_timing.get(
+                    "humanInputDurationSeconds"
+                ),
+                "estimatedSuggestionInteractionSeconds": suggestion_timing.get(
+                    "estimatedSuggestionInteractionSeconds"
+                ),
+                "estimatedNetSavingsSeconds": suggestion_timing.get(
+                    "estimatedNetSavingsSeconds"
+                ),
+                "pasteActionCount": packed.get("pasteActionCount", 0),
+                "arms": arms,
+                "retainedEvents": len(
+                    self.plan_by_id[example_id].get("retainedContextBlocks", [])
+                ),
+                "droppedEvents": packed.get("droppedContextEventCount", 0),
+            }
         personalized = comparison.get("personalizedQwen", {})
         frozen = comparison.get("frozenQwen", {})
         frontier = comparison.get("frontier", {})
-        one_based_ordinal = int(example.get("chronologicalOrdinal")) + 1
         return {
             "exampleID": example_id,
             "ordinal": example.get("chronologicalOrdinal"),
@@ -435,18 +1205,31 @@ class DatasetStore:
             "target": target,
             "targetLength": len(target),
             "targetType": target_type,
+            "scoreEligible": score_eligible,
+            "estimatedSuggestionInteractionSeconds": suggestion_timing.get(
+                "estimatedSuggestionInteractionSeconds"
+            ),
+            "estimatedNetSavingsSeconds": suggestion_timing.get(
+                "estimatedNetSavingsSeconds"
+            ),
             "pasteActionCount": packed.get("pasteActionCount", 0),
             "personalizedExact": personalized.get("prediction") == target,
             "frontierExact": frontier.get("prediction") == target,
             "frozenExact": frozen.get("prediction") == target,
-            "personalizedHolistic": one_based_ordinal
+            "personalizedHolistic": score_eligible and one_based_ordinal
             in self.holistic_pass_ordinals.get(
                 "personalized_qwen3.5_9b_base", set()
             ),
-            "frontierHolistic": one_based_ordinal
+            "frontierHolistic": score_eligible and one_based_ordinal
             in self.holistic_pass_ordinals.get(
                 "frozen_gpt_5.6_sol_xhigh", set()
             ),
+            "humanInputDurationSeconds": suggestion_timing.get(
+                "humanInputDurationSeconds",
+                self.human_input_duration_by_ordinal.get(one_based_ordinal),
+            ),
+            "humanInputOver3Seconds": one_based_ordinal
+            in self.human_input_over_3_seconds_ordinals,
             "personalizedSimilarity": personalized.get("predictionMetrics", {}).get(
                 "normalizedLevenshteinSimilarity",
                 personalized.get("characterSimilarity"),
@@ -469,9 +1252,223 @@ class DatasetStore:
         }
 
     def meta(self) -> dict[str, Any]:
+        if self.inkling_mode:
+            review = self.holistic_review or {}
+            review_models = review.get("models", {})
+            training_cost_by_condition: dict[str, float] = {}
+            for update in self.updates:
+                condition = str(update.get("condition", ""))
+                training_cost_by_condition[condition] = (
+                    training_cost_by_condition.get(condition, 0.0)
+                    + float(update.get("estimatedTrainingCostUSDAtFrozenRate", 0.0))
+                )
+
+            def median(values: list[float]) -> float | None:
+                if not values:
+                    return None
+                ordered = sorted(values)
+                middle = len(ordered) // 2
+                if len(ordered) % 2:
+                    return ordered[middle]
+                return (ordered[middle - 1] + ordered[middle]) / 2
+
+            arm_stats: dict[str, Any] = {}
+            score_scope = len(self.score_eligible_ordinals)
+            qwen_training_cost = 0.0
+            if self.comparison_experiment is not None:
+                qwen_training_cost = float(
+                    self.comparison_experiment.get("providerUsage", {})
+                    .get("tinkerEstimatedCost", {})
+                    .get("trainingAtFrozenRate", 0.0)
+                )
+            for arm in self.model_arms:
+                rows = [comparison["arms"][arm] for comparison in self.comparisons]
+                generation_latencies = [
+                    float(score["generationLatencySeconds"])
+                    for score in rows
+                    if score.get("generationLatencySeconds") is not None
+                ]
+                combined_latencies = [
+                    float(score["latencySeconds"])
+                    for score in rows
+                    if score.get("latencySeconds") is not None
+                ]
+                evaluation_cost_values = [
+                    float(score["estimatedProviderCostUSDAtFrozenRates"])
+                    for score in rows
+                    if score.get("estimatedProviderCostUSDAtFrozenRates") is not None
+                ]
+                evaluation_cost = (
+                    sum(evaluation_cost_values)
+                    if len(evaluation_cost_values) == len(rows)
+                    else None
+                )
+                condition = "reasoning_on" if arm.endswith("reasoning_on") else "reasoning_off"
+                if arm.startswith("personalized_inkling"):
+                    if arm == "personalized_inkling_small_reasoning_off_native_v5":
+                        training_cost = sum(
+                            float(update.get("estimatedTrainingCostUSDAtFrozenRate", 0.0))
+                            for update in self.inkling_v5_updates
+                        )
+                    else:
+                        training_cost = training_cost_by_condition.get(condition, 0.0)
+                elif arm == "personalized_qwen3.5_9b_base":
+                    training_cost = qwen_training_cost
+                else:
+                    training_cost = 0.0
+                holistic_passes = (
+                    len(self.holistic_pass_ordinals[arm])
+                    if arm in self.holistic_pass_ordinals
+                    else None
+                )
+                real_time_holistic_passes = (
+                    sum(
+                        1
+                        for summary in self.summaries
+                        if summary.get("arms", {})
+                        .get(arm, {})
+                        .get("realTimeHolistic")
+                    )
+                    if arm in self.holistic_pass_ordinals
+                    else None
+                )
+                arm_stats[arm] = {
+                    "label": self.model_labels[arm],
+                    "examples": len(rows),
+                    "scoreEligibleExamples": score_scope,
+                    "exactMatches": sum(
+                        1 for score in rows
+                        if score.get("predictionMetrics", {}).get("exactMatch")
+                    ),
+                    "macroNormalizedLevenshteinSimilarity": sum(
+                        float(
+                            score.get("predictionMetrics", {}).get(
+                                "normalizedLevenshteinSimilarity", 0.0
+                            )
+                        )
+                        for score in rows
+                    )
+                    / len(rows),
+                    "holisticPasses": holistic_passes,
+                    "realTimeHolisticPasses": real_time_holistic_passes,
+                    "invalidOrTruncated": sum(
+                        1 for score in rows
+                        if not score.get("generationEligibleForEvaluation", False)
+                    ),
+                    "generationLatencyMeanSeconds": (
+                        sum(generation_latencies) / len(generation_latencies)
+                        if generation_latencies
+                        else None
+                    ),
+                    "generationLatencyMedianSeconds": median(generation_latencies),
+                    "combinedLatencyMeanSeconds": (
+                        sum(combined_latencies) / len(combined_latencies)
+                        if combined_latencies
+                        else None
+                    ),
+                    "combinedLatencyMedianSeconds": median(combined_latencies),
+                    "evaluationCostUSD": evaluation_cost,
+                    "trainingCostUSD": training_cost,
+                    "totalAttributedCostUSD": (
+                        evaluation_cost + training_cost
+                        if evaluation_cost is not None
+                        else None
+                    ),
+                }
+            return {
+                "mode": "inkling",
+                "examples": len(self.scored_examples),
+                "applications": sorted(
+                    {
+                        value.get("application")
+                        for value in self.summaries
+                        if value.get("application")
+                    }
+                ),
+                "blocks": sorted(
+                    {
+                        value.get("blockID")
+                        for value in self.summaries
+                        if value.get("blockID")
+                    }
+                ),
+                "status": self.experiment.get("status"),
+                "corpusID": self.corpus_manifest.get("corpusID"),
+                "packerVersion": self.packing_manifest.get("packerVersion"),
+                "arms": arm_stats,
+                "holisticReview": {
+                    "reviewID": review.get("reviewID"),
+                    "status": review.get("status"),
+                    "passBar": review.get("passBar"),
+                    "scope": review.get("scope"),
+                    "uncertaintyExamplesPerModel": review.get(
+                        "uncertaintyExamplesPerModel"
+                    ),
+                    "scoringEligibility": {
+                        "policyID": (self.suggestion_eligibility or {}).get(
+                            "policyID"
+                        ),
+                        "examples": score_scope,
+                        "excludedExamples": len(self.scored_examples) - score_scope,
+                        "purpose": (self.suggestion_eligibility or {}).get(
+                            "purpose"
+                        ),
+                        "estimate": (self.suggestion_eligibility or {}).get(
+                            "estimate", {}
+                        ),
+                    },
+                },
+                "paths": {
+                    "corpus": str(self.paths.corpus),
+                    "packed": str(self.paths.packed),
+                    "results": str(self.paths.results),
+                    "holisticReview": (
+                        str(self.paths.holistic_review)
+                        if self.paths.holistic_review is not None
+                        else None
+                    ),
+                    "suggestionEligibility": (
+                        str(self.paths.suggestion_eligibility)
+                        if self.paths.suggestion_eligibility is not None
+                        else None
+                    ),
+                    "comparisonResults": (
+                        str(self.paths.comparison_results)
+                        if self.paths.comparison_results is not None
+                        else None
+                    ),
+                    "gpt54Results": (
+                        str(self.paths.gpt54_results)
+                        if self.paths.gpt54_results is not None
+                        else None
+                    ),
+                    "gpt55Results": (
+                        str(self.paths.gpt55_results)
+                        if self.paths.gpt55_results is not None
+                        else None
+                    ),
+                    "gpt56_128kResults": (
+                        str(self.paths.gpt56_128k_results)
+                        if self.paths.gpt56_128k_results is not None
+                        else None
+                    ),
+                    "gpt56_128kPacked": (
+                        str(self.paths.gpt56_128k_packed)
+                        if self.paths.gpt56_128k_packed is not None
+                        else None
+                    ),
+                    "inklingV5Results": (
+                        str(self.paths.inkling_v5_results)
+                        if self.paths.inkling_v5_results is not None
+                        else None
+                    ),
+                },
+            }
         summaries = self.experiment.get("summaries", {})
         review = self.holistic_review or {}
         review_models = review.get("models", {})
+        duration_subset = self.human_input_over_3_seconds_subset
+        duration_model_passes = duration_subset.get("modelPasses", {})
         return {
             "examples": len(self.scored_examples),
             "applications": sorted(
@@ -498,10 +1495,43 @@ class DatasetStore:
                 ),
                 "personalizedPasses": review_models.get(
                     "personalized_qwen3.5_9b_base", {}
-                ).get("passCount"),
+                ).get("passCount") if not self.suggestion_eligibility else len(
+                    self.holistic_pass_ordinals.get(
+                        "personalized_qwen3.5_9b_base", set()
+                    ) & self.score_eligible_ordinals
+                ),
                 "frontierPasses": review_models.get(
                     "frozen_gpt_5.6_sol_xhigh", {}
-                ).get("passCount"),
+                ).get("passCount") if not self.suggestion_eligibility else len(
+                    self.holistic_pass_ordinals.get(
+                        "frozen_gpt_5.6_sol_xhigh", set()
+                    ) & self.score_eligible_ordinals
+                ),
+                "scoringEligibility": {
+                    "policyID": (self.suggestion_eligibility or {}).get(
+                        "policyID"
+                    ),
+                    "examples": len(self.score_eligible_ordinals),
+                    "excludedExamples": len(self.scored_examples)
+                    - len(self.score_eligible_ordinals),
+                    "purpose": (self.suggestion_eligibility or {}).get(
+                        "purpose"
+                    ),
+                    "estimate": (self.suggestion_eligibility or {}).get(
+                        "estimate", {}
+                    ),
+                },
+                "humanInputOver3Seconds": {
+                    "thresholdSeconds": duration_subset.get("thresholdSeconds"),
+                    "measurement": duration_subset.get("measurement"),
+                    "examples": duration_subset.get("examples"),
+                    "personalizedPasses": duration_model_passes.get(
+                        "personalized_qwen3.5_9b_base"
+                    ),
+                    "frontierPasses": duration_model_passes.get(
+                        "frozen_gpt_5.6_sol_xhigh"
+                    ),
+                },
             },
             "paths": {
                 "corpus": str(self.paths.corpus),
@@ -510,6 +1540,11 @@ class DatasetStore:
                 "holisticReview": (
                     str(self.paths.holistic_review)
                     if self.paths.holistic_review is not None
+                    else None
+                ),
+                "suggestionEligibility": (
+                    str(self.paths.suggestion_eligibility)
+                    if self.paths.suggestion_eligibility is not None
                     else None
                 ),
             },
@@ -557,6 +1592,22 @@ class DatasetStore:
         target_event_projection = None
         if target_event is not None:
             target_event_projection = event_projection(target_event["serialized"])
+        alternate_context_inputs: dict[str, Any] = {}
+        gpt56_128k_semantic = self.gpt56_128k_semantic_by_id.get(example_id)
+        if gpt56_128k_semantic is not None:
+            alternate_context_inputs["frozen_gpt_5.6_sol_xhigh_128k"] = {
+                "label": "GPT-5.6-sol xhigh · 128K",
+                "inputTokenBudget": gpt56_128k_semantic.get("inputTokenBudget"),
+                "canonicalPackingTokenCount": gpt56_128k_semantic.get(
+                    "canonicalPackingTokenCount"
+                ),
+                "retainedContextBlockCount": len(
+                    gpt56_128k_semantic.get("retainedContextBlocks", [])
+                ),
+                "semanticModelInputSHA256": gpt56_128k_semantic.get(
+                    "semanticModelInputSHA256"
+                ),
+            }
         return {
             "summary": self._summary(example),
             "holisticReview": {
@@ -565,6 +1616,18 @@ class DatasetStore:
                 "uncertaintyExamplesPerModel": (
                     self.holistic_review or {}
                 ).get("uncertaintyExamplesPerModel"),
+                "humanInputOver3Seconds": self.human_input_over_3_seconds_subset,
+                "scoringEligibility": {
+                    "policyID": (self.suggestion_eligibility or {}).get(
+                        "policyID"
+                    ),
+                    "purpose": (self.suggestion_eligibility or {}).get(
+                        "purpose"
+                    ),
+                    "estimate": (self.suggestion_eligibility or {}).get(
+                        "estimate", {}
+                    ),
+                },
             },
             "taskInstruction": plan.get("taskInstruction"),
             "retainedEvents": retained_events,
@@ -579,6 +1642,7 @@ class DatasetStore:
             "comparison": comparison,
             "packing": packing_summary,
             "contextPlan": plan,
+            "alternateContextInputs": alternate_context_inputs,
             "rawExample": example,
             "semanticInputSHA256": hashlib.sha256(
                 self.semantic_input(example_id).encode()
@@ -646,6 +1710,8 @@ HTML = r'''<!doctype html>
     .badge.bad { border-color: #6a303a; color: var(--bad); background: #281318; }
     .badge.q-holistic { border-color: #24576b; color: var(--q-holistic); background: #0e2530; }
     .badge.gpt-holistic { border-color: #574478; color: var(--gpt-holistic); background: #211932; }
+    .badge.inkling-off { border-color: #24576b; color: #73d7ff; background: #0e2530; }
+    .badge.inkling-on { border-color: #725631; color: #ffc979; background: #2b2112; }
     .badge.read { color: var(--read); }
     .badge.write { color: var(--write); }
     main { min-width: 0; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
@@ -675,7 +1741,12 @@ HTML = r'''<!doctype html>
     .spacer { flex: 1; }
     .query-card { border-left: 3px solid var(--query); }
     .target-card { border-left: 3px solid var(--target); }
-    .prediction-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+    .prediction-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .summary-table-wrap { overflow: auto; }
+    .summary-table { width: 100%; border-collapse: collapse; font: 11px/1.4 var(--mono); }
+    .summary-table th, .summary-table td { padding: 10px 9px; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; }
+    .summary-table th:first-child, .summary-table td:first-child { text-align: left; position: sticky; left: 0; background: var(--panel); }
+    .summary-table th { color: var(--muted); font-weight: 600; }
     .prediction { min-height: 180px; display: flex; flex-direction: column; }
     .prediction.exact { border-color: #34705a; box-shadow: inset 0 3px var(--good); }
     .prediction .card-body { flex: 1; max-height: 52vh; overflow: auto; }
@@ -712,27 +1783,28 @@ HTML = r'''<!doctype html>
             <option value="paste">Paste only</option>
             <option value="mixed">Mixed</option>
           </select>
+          <select id="duration">
+            <option value="">All human input durations</option>
+            <option value="over-3">Human input &gt;3s</option>
+            <option value="at-most-3">Human input ≤3s</option>
+          </select>
+        </div>
+        <div class="filter-row">
           <select id="outcome">
             <option value="">All outcomes</option>
-            <option value="personalized-exact">Personalized exact</option>
+            <option value="personalized-exact">Properly trained Qwen exact</option>
             <option value="frontier-exact">GPT exact</option>
             <option value="personalized-holistic">Qwen holistic pass</option>
             <option value="frontier-holistic">GPT holistic pass</option>
             <option value="either-holistic">Either holistic pass</option>
-            <option value="helped">Personalization helped</option>
-            <option value="hurt">Personalization hurt</option>
           </select>
-        </div>
-        <div class="filter-row">
           <select id="sort">
             <option value="chronology">Chronological</option>
-            <option value="bits-desc">Bits saved ↓</option>
-            <option value="bits-asc">Bits saved ↑</option>
             <option value="length-desc">Target length ↓</option>
-            <option value="similarity-desc">Personalized similarity ↓</option>
+            <option value="similarity-desc">Best similarity ↓</option>
           </select>
-          <button id="random">Random example</button>
         </div>
+        <button id="random">Random example</button>
         <div class="result-count" id="result-count"></div>
       </div>
       <div id="example-list"></div>
@@ -746,7 +1818,8 @@ HTML = r'''<!doctype html>
         </div>
         <div class="subline" id="detail-subline"></div>
         <div class="tabs">
-          <button class="tab active" data-tab="stream">Causal stream</button>
+          <button class="tab active" data-tab="summary">Model summary</button>
+          <button class="tab" data-tab="stream">Causal stream</button>
           <button class="tab" data-tab="predictions">Predictions</button>
           <button class="tab" data-tab="conditioning">Conditioning</button>
           <button class="tab" data-tab="packing">Packing</button>
@@ -757,7 +1830,7 @@ HTML = r'''<!doctype html>
     </main>
   </div>
   <script>
-    const state = { meta: null, examples: [], filtered: [], selected: null, detail: null, tab: 'stream' };
+    const state = { meta: null, examples: [], filtered: [], selected: null, detail: null, tab: 'summary' };
     const $ = id => document.getElementById(id);
     const esc = value => String(value ?? '').replace(/[&<>'"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));
     const fmt = value => value == null ? '—' : Number(value).toFixed(3);
@@ -778,19 +1851,46 @@ HTML = r'''<!doctype html>
 
     function renderMeta() {
       const m = state.meta;
+      if (m.mode === 'inkling') {
+        const gate = m.holisticReview?.scoringEligibility || {};
+        const scope = gate.examples ?? m.examples;
+        const armEntries = Object.entries(m.arms || {});
+        $('stats').innerHTML = `
+          <div class="stat"><strong>${m.examples}</strong>examples</div>
+          <div class="stat"><strong>${scope}</strong>scoreable suggestions</div>
+          <div class="stat"><strong>${gate.excludedExamples ?? 0}</strong>too fast to score</div>
+          <div class="stat"><strong>${armEntries.length}</strong>model arms</div>
+          <div class="stat"><strong>${m.status}</strong>run status</div>`;
+        $('paths').textContent = m.paths.results;
+        $('paths').title = `Corpus: ${m.paths.corpus}\nSemantic context plan: ${m.paths.packed}\nResults: ${m.paths.results}\nWanted-suggestion review: ${m.paths.holisticReview || 'none'}\nSuggestion eligibility: ${m.paths.suggestionEligibility || 'none'}\n\nReviewer bar: ${m.holisticReview?.passBar || 'none'}`;
+        fillSelect('block', m.blocks);
+        fillSelect('app', m.applications);
+        $('duration').innerHTML = '<option value="">All examples</option><option value="score-eligible">Score-eligible opportunities</option><option value="score-excluded">Too fast to score</option>';
+        $('duration').disabled = false;
+        $('outcome').innerHTML = '<option value="">All outcomes</option>'
+          + armEntries.filter(([,value]) => value.realTimeHolisticPasses != null).map(([arm,value]) => `<option value="arm-realtime-holistic:${esc(arm)}">${esc(value.label)} real-time holy-shit pass</option>`).join('')
+          + '<option value="any-realtime-holistic">Any real-time holy-shit pass</option>'
+          + armEntries.filter(([,value]) => value.holisticPasses != null).map(([arm,value]) => `<option value="arm-holistic:${esc(arm)}">${esc(value.label)} semantic holy-shit pass (ignore speed)</option>`).join('')
+          + '<option value="any-holistic">Any semantic holy-shit pass (ignore speed)</option>'
+          + armEntries.map(([arm,value]) => `<option value="arm-exact:${esc(arm)}">${esc(value.label)} exact</option>`).join('');
+        return;
+      }
       const personalized = m.summaries['personalized_qwen3.5_9b_base'] || {};
       const frontier = m.summaries['frozen_gpt_5.6_sol_xhigh'] || {};
       const holistic = m.holisticReview || {};
-      const holisticScope = holistic.scope?.examples ?? 150;
+      const holisticScope = holistic.scoringEligibility?.examples ?? holistic.scope?.examples ?? 150;
+      const longInput = holistic.humanInputOver3Seconds || {};
       const holisticScore = passes => `${passes}/${holisticScope} · ${((passes / holisticScope) * 100).toFixed(1)}%`;
+      const subsetScore = passes => `${passes}/${longInput.examples} · ${((passes / longInput.examples) * 100).toFixed(1)}%`;
       $('stats').innerHTML = `
         <div class="stat"><strong>${m.examples}</strong>examples</div>
-        <div class="stat"><strong>${Number(m.bitsSaved || 0).toLocaleString(undefined,{maximumFractionDigits:1})}</strong>bits saved</div>
-        <div class="stat"><strong>${fmt(personalized.microTargetTokenNLL)}</strong>personalized NLL</div>
+        <div class="stat"><strong>${fmt(personalized.microTargetTokenNLL)}</strong>trained Qwen NLL</div>
         <div class="stat"><strong>${personalized.generatedCompletion?.exactMatches ?? personalized.exactMatches ?? 0}</strong>Qwen exact</div>
         <div class="stat"><strong>${frontier.generatedCompletion?.exactMatches ?? frontier.exactMatches ?? 0}</strong>GPT exact</div>
-        ${holistic.personalizedPasses == null ? '' : `<div class="stat" title="Subjective strict reviewer pass; approximately ±${holistic.uncertaintyExamplesPerModel ?? 3} examples"><strong>${holisticScore(holistic.personalizedPasses)}</strong>Q holistic</div>`}
-        ${holistic.frontierPasses == null ? '' : `<div class="stat" title="Subjective strict reviewer pass; approximately ±${holistic.uncertaintyExamplesPerModel ?? 3} examples"><strong>${holisticScore(holistic.frontierPasses)}</strong>GPT holistic</div>`}`;
+        ${holistic.personalizedPasses == null ? '' : `<div class="stat" title="Binary wanted-suggestion pass among score-eligible opportunities"><strong>${holisticScore(holistic.personalizedPasses)}</strong>Q wanted</div>`}
+        ${holistic.frontierPasses == null ? '' : `<div class="stat" title="Binary wanted-suggestion pass among score-eligible opportunities"><strong>${holisticScore(holistic.frontierPasses)}</strong>GPT wanted</div>`}
+        ${longInput.personalizedPasses == null ? '' : `<div class="stat" title="Strict semantic score among targets whose raw human input span exceeded ${longInput.thresholdSeconds}s"><strong>${subsetScore(longInput.personalizedPasses)}</strong>Q &gt;3s holistic</div>`}
+        ${longInput.frontierPasses == null ? '' : `<div class="stat" title="Strict semantic score among targets whose raw human input span exceeded ${longInput.thresholdSeconds}s"><strong>${subsetScore(longInput.frontierPasses)}</strong>GPT &gt;3s holistic</div>`}`;
       $('paths').textContent = m.paths.results;
       $('paths').title = `Corpus: ${m.paths.corpus}\nPacked: ${m.paths.packed}\nResults: ${m.paths.results}\nHolistic review: ${m.paths.holisticReview || 'none'}${holistic.passBar ? `\n\nReviewer bar: ${holistic.passBar}` : ''}`;
       fillSelect('block', m.blocks);
@@ -802,27 +1902,36 @@ HTML = r'''<!doctype html>
       const block = $('block').value;
       const app = $('app').value;
       const type = $('type').value;
+      const duration = $('duration').value;
       const outcome = $('outcome').value;
       state.filtered = state.examples.filter(example => {
         if (block && example.blockID !== block) return false;
         if (app && example.application !== app) return false;
         if (type && example.targetType !== type) return false;
+        if (duration === 'over-3' && !example.humanInputOver3Seconds) return false;
+        if (duration === 'at-most-3' && example.humanInputOver3Seconds) return false;
+        if (duration === 'score-eligible' && !example.scoreEligible) return false;
+        if (duration === 'score-excluded' && example.scoreEligible) return false;
         if (query && !`${example.target} ${example.application} ${example.window} ${example.exampleID}`.toLowerCase().includes(query)) return false;
         if (outcome === 'personalized-exact' && !example.personalizedExact) return false;
         if (outcome === 'frontier-exact' && !example.frontierExact) return false;
         if (outcome === 'personalized-holistic' && !example.personalizedHolistic) return false;
         if (outcome === 'frontier-holistic' && !example.frontierHolistic) return false;
         if (outcome === 'either-holistic' && !(example.personalizedHolistic || example.frontierHolistic)) return false;
-        if (outcome === 'helped' && !(example.bitsSaved > 0)) return false;
-        if (outcome === 'hurt' && !(example.bitsSaved < 0)) return false;
+        if (outcome.startsWith('arm-realtime-holistic:') && !example.arms?.[outcome.slice(22)]?.realTimeHolistic) return false;
+        if (outcome.startsWith('arm-holistic:') && !example.arms?.[outcome.slice(13)]?.holistic) return false;
+        if (outcome.startsWith('arm-exact:') && !example.arms?.[outcome.slice(10)]?.exact) return false;
+        if (outcome === 'any-realtime-holistic' && !Object.values(example.arms || {}).some(value => value.realTimeHolistic)) return false;
+        if (outcome === 'any-holistic' && !Object.values(example.arms || {}).some(value => value.holistic)) return false;
         return true;
       });
       const sort = $('sort').value;
       state.filtered.sort((a,b) => {
-        if (sort === 'bits-desc') return (b.bitsSaved ?? -Infinity) - (a.bitsSaved ?? -Infinity);
-        if (sort === 'bits-asc') return (a.bitsSaved ?? Infinity) - (b.bitsSaved ?? Infinity);
         if (sort === 'length-desc') return b.targetLength - a.targetLength;
-        if (sort === 'similarity-desc') return (b.personalizedSimilarity ?? -1) - (a.personalizedSimilarity ?? -1);
+        if (sort === 'similarity-desc') {
+          const best = value => value.arms ? Math.max(...Object.values(value.arms).map(arm => arm.similarity ?? -1)) : (value.personalizedSimilarity ?? -1);
+          return best(b) - best(a);
+        }
         return a.ordinal - b.ordinal;
       });
       renderList();
@@ -843,12 +1952,15 @@ HTML = r'''<!doctype html>
           <div class="target-preview">${esc(targetPreview(example.target))}</div>
           <div class="row-bottom">
             <span class="badge">${esc(example.targetType)}</span>
+            ${state.meta.mode === 'inkling' ? Object.entries(example.arms || {}).filter(([,value]) => value.realTimeHolistic).map(([arm]) => `<span class="badge good" title="Semantic pass delivered fast enough to be useful">${esc(state.meta.arms?.[arm]?.label || arm)} · real-time holy-shit</span>`).join('') : ''}
+            ${state.meta.mode === 'inkling' ? Object.entries(example.arms || {}).filter(([,value]) => value.holistic && !value.realTimeHolistic).map(([arm]) => `<span class="badge ${arm.endsWith('reasoning_on') ? 'inkling-on' : 'inkling-off'}" title="Semantic pass ignoring generation speed">${esc(state.meta.arms?.[arm]?.label || arm)} · semantic-only</span>`).join('') : ''}
             ${example.personalizedExact ? '<span class="badge good">Q exact</span>' : ''}
             ${example.frontierExact ? '<span class="badge good">GPT exact</span>' : ''}
             ${example.personalizedHolistic ? '<span class="badge q-holistic" title="Subjective strict reviewer pass">Q holistic</span>' : ''}
             ${example.frontierHolistic ? '<span class="badge gpt-holistic" title="Subjective strict reviewer pass">GPT holistic</span>' : ''}
+            ${example.scoreEligible ? '' : '<span class="badge bad" title="Estimated suggestion interaction would not save at least one second">too fast to score</span>'}
+            ${example.humanInputDurationSeconds == null ? '' : `<span class="badge" title="Raw elapsed span from first to last mutation-capable human input across the closed episode">${example.humanInputDurationSeconds.toFixed(3)}s human</span>`}
             <span class="spacer"></span>
-            <span>${example.bitsSaved == null ? '—' : `${example.bitsSaved.toFixed(1)} bits`}</span>
           </div>
         </div>`).join('');
       document.querySelectorAll('.example-row').forEach(row => row.addEventListener('click', () => selectExample(row.dataset.id)));
@@ -870,11 +1982,17 @@ HTML = r'''<!doctype html>
       $('detail-header').classList.remove('hidden');
       $('detail-target').textContent = targetPreview(d.targetText);
       const s = d.summary;
+      const inklingBadges = state.meta.mode === 'inkling'
+        ? Object.entries(s.arms || {}).filter(([,value]) => value.holistic).map(([arm,value]) => `<span class="badge ${value.realTimeHolistic ? 'good' : (arm.endsWith('reasoning_on') ? 'inkling-on' : 'inkling-off')}">${esc(state.meta.arms?.[arm]?.label || arm)} · ${value.realTimeHolistic ? 'real-time holy-shit' : 'semantic-only holy-shit'}</span>`).join('')
+        : '';
       $('detail-subline').innerHTML = `
         <span>#${s.ordinal + 1}</span><span>${esc(s.blockID)}</span><span>${esc(s.application)}</span>
         <span>${esc(s.targetType)}</span><span>${s.targetLength} chars</span>
-        ${s.personalizedHolistic ? '<span class="badge q-holistic">Q holistic pass</span>' : ''}
-        ${s.frontierHolistic ? '<span class="badge gpt-holistic">GPT holistic pass</span>' : ''}
+        ${inklingBadges}
+        ${s.personalizedHolistic ? '<span class="badge q-holistic">Q wanted-suggestion pass</span>' : ''}
+        ${s.frontierHolistic ? '<span class="badge gpt-holistic">GPT wanted-suggestion pass</span>' : ''}
+        ${s.scoreEligible ? '<span class="badge good">score eligible</span>' : '<span class="badge bad">too fast to score</span>'}
+        ${s.humanInputDurationSeconds == null ? '' : `<span class="badge" title="Raw elapsed span from first to last mutation-capable human input across the closed episode">${s.humanInputDurationSeconds.toFixed(3)}s human input${s.estimatedSuggestionInteractionSeconds == null ? '' : ` · ${s.estimatedSuggestionInteractionSeconds.toFixed(3)}s estimated suggestion · ${s.estimatedNetSavingsSeconds.toFixed(3)}s net`}</span>`}
         <span>${d.retainedEvents.length} retained events</span><span>${s.droppedEvents} dropped</span>
         <span title="${esc(s.exampleID)}">${esc(s.exampleID.slice(-20))}</span>`;
     }
@@ -894,12 +2012,14 @@ HTML = r'''<!doctype html>
     function renderStream() {
       const d = state.detail;
       const lastOpen = Math.max(0, d.retainedEvents.length - 4);
+      const alternateContexts = Object.values(d.alternateContextInputs || {});
       return `
         <div class="toolbar">
           <input id="history-search" type="search" placeholder="Filter retained event text…">
           <button id="expand-events">Expand all</button><button id="collapse-events">Collapse all</button>
           <span class="spacer"></span><span class="badge">model-visible</span>
         </div>
+        ${alternateContexts.length ? `<div class="card"><div class="card-head"><strong>CONTEXT DISPLAY NOTE</strong></div><div class="card-body"><pre>This tab displays the canonical 32K causal stream. ${alternateContexts.map(value => `${value.label} used its separately validated packed context (${value.retainedContextBlockCount} retained blocks; budget ${value.inputTokenBudget} tokens).`).join('\n')}</pre></div></div>` : ''}
         <div class="card"><div class="card-head"><strong>TASK INSTRUCTION</strong></div><div class="card-body"><pre>${esc(d.taskInstruction)}</pre></div></div>
         <div id="event-stream">
           ${d.retainedEvents.map((event,index) => {
@@ -916,29 +2036,85 @@ HTML = r'''<!doctype html>
         <div style="margin-top:16px"><div class="card-head"><strong>OBSERVED WRITE SEGMENTS</strong></div>${(d.target.segments || []).map(segmentText).join('')}</div>`;
     }
 
-    function predictionCard(name, row, nllAvailable, holisticPass, holisticClass) {
+    function predictionCard(name, row, nllAvailable, holisticPass, realTimeHolisticPass, holisticClass) {
       const exact = row.prediction === state.detail.targetText;
       const metrics = row.predictionMetrics || {};
       const similarity = metrics.normalizedLevenshteinSimilarity ?? row.characterSimilarity;
+      const eligible = row.generationEligibleForEvaluation;
+      const disposition = row.generationDisposition;
       return `<div class="card prediction ${exact ? 'exact' : ''}">
-        <div class="card-head"><strong>${esc(name)}</strong><span class="spacer"></span>${holisticPass ? `<span class="badge ${holisticClass}" title="Subjective strict reviewer pass">holistic pass</span>` : ''}${exact ? '<span class="badge good">exact</span>' : ''}</div>
+        <div class="card-head"><strong>${esc(name)}</strong><span class="spacer"></span>${row.inputContextLabel ? `<span class="badge" title="This arm was validated against a distinct packed semantic input">${esc(row.inputContextLabel)}</span>` : ''}${eligible === false ? `<span class="badge bad">${esc(disposition || 'invalid')}</span>` : ''}${realTimeHolisticPass ? '<span class="badge good" title="Semantic pass delivered fast enough to beat the human write">real-time holy-shit</span>' : (holisticPass ? `<span class="badge ${holisticClass}" title="Semantic pass when generation speed is ignored">semantic-only holy-shit</span>` : '')}${exact ? '<span class="badge good">exact</span>' : ''}</div>
         <div class="card-body"><pre>${esc(targetPreview(row.prediction))}</pre></div>
-        <div class="metrics"><span>edit similarity ${pct(similarity)}</span><span>prefix ${metrics.correctPrefixCharacters ?? '—'} chars</span>${nllAvailable ? `<span>NLL ${fmt(row.meanNLL)}</span>` : ''}</div>
+        <div class="metrics"><span>edit similarity ${pct(similarity)}</span><span>prefix ${metrics.correctPrefixCharacters ?? '—'} chars</span>${nllAvailable ? `<span>NLL ${fmt(row.meanNLL)}</span>` : ''}${row.generationLatencySeconds == null ? '' : `<span>generation ${Number(row.generationLatencySeconds).toFixed(3)}s</span>`}${row.latencySeconds == null ? '' : `<span>combined ${Number(row.latencySeconds).toFixed(3)}s</span>`}${row.estimatedProviderCostUSDAtFrozenRates == null ? '' : `<span>eval $${Number(row.estimatedProviderCostUSDAtFrozenRates).toFixed(4)}</span>`}</div>
       </div>`;
+    }
+
+    function renderModelSummary() {
+      if (state.meta.mode !== 'inkling') return renderStream();
+      const scope = state.meta.examples;
+      const rows = Object.values(state.meta.arms || {}).map(arm => {
+        const scoreScope = arm.scoreEligibleExamples ?? scope;
+        const realTime = arm.realTimeHolisticPasses == null
+          ? 'not judged'
+          : `${arm.realTimeHolisticPasses}/${scoreScope} (${((arm.realTimeHolisticPasses / scoreScope) * 100).toFixed(1)}%)`;
+        const semantic = arm.holisticPasses == null
+          ? 'not judged'
+          : `${arm.holisticPasses}/${scoreScope} (${((arm.holisticPasses / scoreScope) * 100).toFixed(1)}%)`;
+        const generation = arm.generationLatencyMeanSeconds == null
+          ? '—'
+          : `${arm.generationLatencyMeanSeconds.toFixed(2)} / ${arm.generationLatencyMedianSeconds.toFixed(2)}s`;
+        const combined = arm.combinedLatencyMeanSeconds == null
+          ? '—'
+          : `${arm.combinedLatencyMeanSeconds.toFixed(2)} / ${arm.combinedLatencyMedianSeconds.toFixed(2)}s`;
+        return `<tr>
+          <td><strong>${esc(arm.label)}</strong>${arm.invalidOrTruncated ? `<br><span class="badge bad">${arm.invalidOrTruncated} invalid/truncated</span>` : ''}</td>
+          <td>${(arm.macroNormalizedLevenshteinSimilarity * 100).toFixed(1)}%</td>
+          <td>${arm.exactMatches}/${state.meta.examples}</td>
+          <td><strong>${realTime}</strong></td>
+          <td>${semantic}</td>
+          <td>${generation}</td>
+          <td>${combined}</td>
+          <td>${arm.evaluationCostUSD == null ? '— subscription' : `$${arm.evaluationCostUSD.toFixed(2)}`}</td>
+          <td>${arm.trainingCostUSD ? `$${arm.trainingCostUSD.toFixed(2)}` : '—'}</td>
+          <td><strong>${arm.totalAttributedCostUSD == null ? '—' : `$${arm.totalAttributedCostUSD.toFixed(2)}`}</strong></td>
+        </tr>`;
+      }).join('');
+      return `<div class="card">
+        <div class="card-head"><strong>AGGREGATE MODEL COMPARISON</strong><span class="spacer"></span><span>${state.meta.examples} captured opportunities</span></div>
+        <div class="summary-table-wrap"><table class="summary-table">
+          <thead><tr><th>Model arm</th><th>Macro edit accuracy</th><th>Exact</th><th>Real-time holy-shit</th><th>Semantic holy-shit<br>(ignore speed)</th><th>Generation mean / median</th><th>Combined mean / median</th><th>Evaluation cost</th><th>Training cost</th><th>Attributed total</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table></div>
+      </div>
+      <div class="card"><div class="card-head"><strong>METRIC CONTRACT</strong></div><div class="card-body"><pre>Macro edit accuracy = mean normalized Levenshtein similarity across all ${state.meta.examples} captured examples.
+Exact = byte-identical generated completion.
+Real-time holy-shit = semantic manual pass and generation + estimated review/acceptance time beats the recorded human write by more than one second.
+Semantic holy-shit = the same manual quality bar while ignoring model latency. Both rates use the model-independent ${state.meta.holisticReview?.scoringEligibility?.examples ?? scope}-opportunity utility gate; all ${scope} examples remain visible for inspection.
+Generation latency is the user-facing generation request. Combined latency additionally includes target-likelihood scoring where that arm performed it.
+Costs are API/provider-equivalent estimates at frozen rates when a frozen rate exists. GPT subscription runs have no separately attributable marginal invoice. GPT-5.4 uses $2.50/M uncached input and $15/M output; no prompt exceeded its long-context surcharge threshold. GPT-5.5 is shown as subscription-only because this run recorded no defensible API-equivalent rate.</pre></div></div>`;
     }
 
     function renderPredictions() {
       const c = state.detail.comparison;
       const s = state.detail.summary;
       const review = state.detail.holisticReview || {};
+      const longInput = review.humanInputOver3Seconds || {};
+      const scoringGate = review.scoringEligibility || {};
+      if (state.meta.mode === 'inkling') {
+        const cards = Object.entries(state.meta.arms).map(([arm,meta]) => {
+          const armSummary = s.arms?.[arm] || {};
+          return predictionCard(meta.label, c.arms?.[arm] || {}, true, armSummary.holistic, armSummary.realTimeHolistic, arm.endsWith('reasoning_on') ? 'inkling-on' : 'inkling-off');
+        }).join('');
+        return `<div class="card target-card"><div class="card-head"><strong>HUMAN TARGET</strong></div><div class="card-body"><pre>${esc(state.detail.targetText)}</pre></div></div>
+          <div class="prediction-grid">${cards}</div>
+          ${review.passBar ? `<div class="card"><div class="card-head"><strong>HOLY-SHIT BAR</strong><span class="spacer"></span><span>binary · semantic and real-time variants</span></div><div class="card-body"><pre>${esc(review.passBar)}${scoringGate.estimate?.formula ? `\n\nReal-time gate: generation latency + ${esc(scoringGate.estimate.formula)}` : ''}</pre></div></div>` : ''}`;
+      }
       return `<div class="card target-card"><div class="card-head"><strong>HUMAN TARGET</strong></div><div class="card-body"><pre>${esc(state.detail.targetText)}</pre></div></div>
         <div class="prediction-grid">
-          ${predictionCard('Frozen Qwen3.5-9B', c.frozenQwen || {}, true, false, '')}
-          ${predictionCard('Personalized Qwen3.5-9B', c.personalizedQwen || {}, true, s.personalizedHolistic, 'q-holistic')}
-          ${predictionCard('GPT-5.6-sol xhigh', c.frontier || {}, false, s.frontierHolistic, 'gpt-holistic')}
+          ${predictionCard('Properly trained Qwen3.5-9B', c.personalizedQwen || {}, true, s.personalizedHolistic, false, 'q-holistic')}
+          ${predictionCard('GPT-5.6-sol xhigh', c.frontier || {}, false, s.frontierHolistic, false, 'gpt-holistic')}
         </div>
-        ${review.passBar ? `<div class="card"><div class="card-head"><strong>HOLISTIC REVIEW BAR</strong><span class="spacer"></span><span>subjective · approximately ±${review.uncertaintyExamplesPerModel ?? 3} examples</span></div><div class="card-body"><pre>${esc(review.passBar)}</pre></div></div>` : ''}
-        <div class="card"><div class="card-head"><strong>PAIRED PERSONALIZATION</strong></div><div class="card-body"><pre>Bits saved versus frozen: ${fmt(c.personalizedBitsSavedVersusFrozen)}\nPaste actions in target: ${c.pasteActionCount ?? 0}</pre></div></div>`;
+        ${review.passBar ? `<div class="card"><div class="card-head"><strong>WANTED-SUGGESTION BAR</strong><span class="spacer"></span><span>binary · score-eligible opportunities only</span></div><div class="card-body"><pre>${esc(review.passBar)}${scoringGate.estimate?.formula ? `\n\nEligibility: ${esc(scoringGate.estimate.formula)}` : ''}${longInput.measurement ? `\n\n&gt;3s subset: ${esc(longInput.measurement)}` : ''}</pre></div></div>` : ''}`;
     }
 
     function jsonCard(title, value) {
@@ -968,12 +2144,15 @@ HTML = r'''<!doctype html>
     }
 
     function renderRaw() {
-      return `${jsonCard('Compiled example', state.detail.rawExample)}${jsonCard('Comparison result', state.detail.comparison)}${jsonCard('Target event projection', state.detail.targetEvent)}${jsonCard('Context plan', state.detail.contextPlan)}`;
+      const comparison = {...state.detail.comparison};
+      delete comparison.frozenQwen;
+      delete comparison.personalizedBitsSavedVersusFrozen;
+      return `${jsonCard('Compiled example', state.detail.rawExample)}${jsonCard('Comparison result', comparison)}${jsonCard('Target event projection', state.detail.targetEvent)}${jsonCard('Context plan', state.detail.contextPlan)}`;
     }
 
     function renderTab() {
       document.querySelectorAll('.tab').forEach(tab => tab.classList.toggle('active', tab.dataset.tab === state.tab));
-      const renderers = {stream:renderStream,predictions:renderPredictions,conditioning:renderConditioning,packing:renderPacking,raw:renderRaw};
+      const renderers = {summary:renderModelSummary,stream:renderStream,predictions:renderPredictions,conditioning:renderConditioning,packing:renderPacking,raw:renderRaw};
       $('detail').innerHTML = renderers[state.tab]();
       if (state.tab === 'stream') {
         $('expand-events').addEventListener('click', () => document.querySelectorAll('.event').forEach(value => value.open = true));
@@ -994,6 +2173,7 @@ HTML = r'''<!doctype html>
 
     async function boot() {
       [state.meta, state.examples] = await Promise.all([getJSON('/api/meta'), getJSON('/api/examples')]);
+      if (state.meta.mode !== 'inkling') state.tab = 'stream';
       renderMeta();
       applyFilters();
       const hash = decodeURIComponent(location.hash.slice(1));
@@ -1001,7 +2181,7 @@ HTML = r'''<!doctype html>
       if (initial) selectExample(initial);
     }
 
-    ['search','block','app','type','outcome','sort'].forEach(id => $(id).addEventListener(id === 'search' ? 'input' : 'change', applyFilters));
+    ['search','block','app','type','duration','outcome','sort'].forEach(id => $(id).addEventListener(id === 'search' ? 'input' : 'change', applyFilters));
     $('random').addEventListener('click', () => state.filtered.length && selectExample(state.filtered[Math.floor(Math.random()*state.filtered.length)].exampleID));
     $('previous').addEventListener('click', () => moveSelection(-1));
     $('next').addEventListener('click', () => moveSelection(1));
@@ -1097,6 +2277,51 @@ def parse_arguments() -> argparse.Namespace:
         type=Path,
         help="override the optional subjective holistic-review labels",
     )
+    parser.add_argument(
+        "--comparison-results",
+        type=Path,
+        help="optional Qwen/GPT-5.6 comparison artifact to add to Inkling mode",
+    )
+    parser.add_argument(
+        "--qwen-scores",
+        type=Path,
+        help="optional Tinker score directory supplying Qwen generation latency",
+    )
+    parser.add_argument(
+        "--gpt54-results",
+        type=Path,
+        help="optional completed GPT-5.4 score directory to add to Inkling mode",
+    )
+    parser.add_argument(
+        "--gpt55-results",
+        type=Path,
+        help="optional completed GPT-5.5 score directory to add to Inkling mode",
+    )
+    parser.add_argument(
+        "--gpt56-128k-results",
+        type=Path,
+        help="optional completed GPT-5.6-sol 128K score directory",
+    )
+    parser.add_argument(
+        "--gpt56-128k-packed",
+        type=Path,
+        help="packed 128K semantic inputs corresponding to --gpt56-128k-results",
+    )
+    parser.add_argument(
+        "--inkling-v5-results",
+        type=Path,
+        help="optional completed native-loss Inkling v5 score directory",
+    )
+    parser.add_argument(
+        "--comparison-holistic-review",
+        type=Path,
+        help="optional Qwen/GPT-5.6 subjective holistic-review labels",
+    )
+    parser.add_argument(
+        "--suggestion-eligibility",
+        type=Path,
+        help="optional shared timing-based eligibility artifact for suggestion scoring",
+    )
     parser.add_argument("--port", type=int, default=8765, help="localhost port (default: 8765)")
     parser.add_argument("--no-open", action="store_true", help="do not open the browser")
     parser.add_argument("--check", action="store_true", help="validate artifacts and exit")
@@ -1112,6 +2337,15 @@ def main() -> None:
         arguments.corpus,
         arguments.packed,
         arguments.holistic_review,
+        arguments.comparison_results,
+        arguments.qwen_scores,
+        arguments.gpt54_results,
+        arguments.gpt55_results,
+        arguments.gpt56_128k_results,
+        arguments.gpt56_128k_packed,
+        arguments.inkling_v5_results,
+        arguments.comparison_holistic_review,
+        arguments.suggestion_eligibility,
     )
     store = DatasetStore(paths)
     if arguments.check:
@@ -1124,6 +2358,8 @@ def main() -> None:
         print(f"Results: {paths.results}")
         if paths.holistic_review is not None:
             print(f"Review:  {paths.holistic_review}")
+        if paths.suggestion_eligibility is not None:
+            print(f"Gate:    {paths.suggestion_eligibility}")
         return
 
     if not 0 <= arguments.port <= 65535:

@@ -47,7 +47,7 @@ jq -e -s --slurpfile manifest "$manifest" --slurpfile examples "$examples" --slu
   ($m.counts.examples == ($examples | length)) and
   ($m.counts.targetExclusions == ($exclusions | length)) and
   ($m.counts.contextExclusions == ($context_exclusions | length)) and
-  (if ($m.conversionVersion == "phase1-causal-v14" or $m.conversionVersion == "phase1-causal-v15") then
+  (if ($m.conversionVersion == "phase1-causal-v14" or $m.conversionVersion == "phase1-causal-v15" or $m.conversionVersion == "phase1-causal-v16") then
      ($m.eligibility.minimumTrimmedAuthoredCharactersForTextOnlyTarget == 4) and
      ($m.eligibility.groundedPasteActionBypassesMinimumAuthoredLength == true)
    else true end) and
@@ -68,10 +68,17 @@ jq -e -s --slurpfile manifest "$manifest" --slurpfile examples "$examples" --slu
     (($model | has("boundaryReason")) | not) and
     ($audit.schemaVersion == 1) and
     (if .kind == "read" then
-       (($model.source // {} | keys - ["application", "window"] | length) == 0) and
+       (if $m.conversionVersion == "phase1-causal-v16" then
+          (($model.source // {} | keys - ["schemaVersion", "application", "window", "surfaceKind", "surfaceLabel", "resourceTitle"] | length) == 0) and
+          ($model.source == $event.modelFacingReadSource) and
+          ($event.readSourceDerivation.normalizerVersion == "phase1-read-source-v1") and
+          ($event.readSourceDerivation.category | IN("legacy_pre_schema7", "schema7_ax_selected", "schema7_pointer_fallback", "schema7_unresolved"))
+        else
+          (($model.source // {} | keys - ["application", "window"] | length) == 0)
+        end) and
        (($model | has("destination")) | not)
      else
-       (if $m.conversionVersion == "phase1-causal-v15" then
+       (if ($m.conversionVersion == "phase1-causal-v15" or $m.conversionVersion == "phase1-causal-v16") then
           (($model.destination // {} | keys - ["schemaVersion", "application", "surfaceKind", "surfaceLabel", "resourceTitle", "terminalProgramLabel", "interactionMode", "agent"] | length) == 0) and
           ($model.destination == $event.modelFacingDestination) and
           (($event.logicalDestinationKey | type) == "string") and
@@ -124,13 +131,20 @@ jq -e -s --slurpfile manifest "$manifest" --slurpfile examples "$examples" --slu
     ($m.loader.pasteMarkerTokensReceiveLoss == true) and
     ($m.loader.pastedPayloadTokensReceiveLoss == false) and
     ($m.loader.eosTokenReceivesLoss == true) and
-    ($m.serialization.contextVersion == (if $m.conversionVersion == "phase1-causal-v15" then 4 else 3 end)) and
-    (if $m.conversionVersion == "phase1-causal-v15" then
+    ($m.serialization.contextVersion == (if $m.conversionVersion == "phase1-causal-v16" then 5 elif $m.conversionVersion == "phase1-causal-v15" then 4 else 3 end)) and
+    (if ($m.conversionVersion == "phase1-causal-v15" or $m.conversionVersion == "phase1-causal-v16") then
        ($m.serialization.queryVersion == 4) and
        (($m.writeDestination.configuredTerminalAgentProgramMappings | type) == "object") and
        ($query.destination == .modelFacingDestination) and
        (.logicalDestinationKey == $by_id[$example.targetEventID].logicalDestinationKey) and
        (.destinationDerivation.normalizerVersion == "phase1-write-destination-v1")
+     else true end) and
+    (if $m.conversionVersion == "phase1-causal-v16" then
+       ($m.serialization.readSourceVersion == "phase1-read-source-v1") and
+       ($m.readSource.normalizerVersion == "phase1-read-source-v1") and
+       ($m.readSource.usesOCRContentForIdentity == false) and
+       ($m.readSource.usesOtherEventsForIdentity == false) and
+       ($m.readSource.legacySerializationPreserved == true)
      else true end) and
     ($m.serialization.auditContextVersion == 1) and
     (if .conditioningState.schemaVersion >= 2 then

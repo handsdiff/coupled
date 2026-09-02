@@ -245,9 +245,9 @@ def construct(
 ) -> dict[str, Any]:
     manifest = load_json(source / "corpus.json")
     if manifest.get("conversionVersion") not in {
-        "phase1-causal-v14", "phase1-causal-v15",
+        "phase1-causal-v14", "phase1-causal-v15", "phase1-causal-v16",
     }:
-        raise ValueError("strict episodes require phase1-causal-v14 or v15 source")
+        raise ValueError("strict episodes require phase1-causal-v14+ source")
     source_events = load_jsonl(source / "events.jsonl")
     source_blocks = load_jsonl(source / "context-blocks.jsonl")
     source_examples = load_jsonl(source / "examples.jsonl")
@@ -515,7 +515,9 @@ def construct(
             raise ValueError(f"candidate lacks initial conditioning: {adjudication.get('label')}")
         model_facing_destination = candidate.get("initialModelFacingDestination")
         if (
-            manifest.get("conversionVersion") == "phase1-causal-v15"
+            manifest.get("conversionVersion") in {
+                "phase1-causal-v15", "phase1-causal-v16",
+            }
             and not isinstance(model_facing_destination, dict)
         ):
             raise ValueError(
@@ -643,6 +645,11 @@ def construct(
             **(
                 {"writeDestination": manifest["writeDestination"]}
                 if isinstance(manifest.get("writeDestination"), dict)
+                else {}
+            ),
+            **(
+                {"readSource": manifest["readSource"]}
+                if isinstance(manifest.get("readSource"), dict)
                 else {}
             ),
             "objective": {

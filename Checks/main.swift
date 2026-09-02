@@ -613,6 +613,32 @@ expect(
             as! Bool,
     "v14 manifest freezes the text-only minimum and grounded-paste exception"
 )
+
+let fixtureOutputV16 = fixtureRoot.appendingPathComponent("output-v16")
+let compilerV16Result = try! CausalDatasetCompiler(configuration: .init(
+    conversionVersion: "phase1-causal-v16"
+)).compile(inputDirectory: fixtureInput, outputDirectory: fixtureOutputV16)
+let compiledV16Events = readFixtureJSONL(
+    fixtureOutputV16.appendingPathComponent("events.jsonl")
+)
+let compiledV16Manifest = try! JSONSerialization.jsonObject(
+    with: Data(contentsOf: fixtureOutputV16.appendingPathComponent("dataset.json"))
+) as! [String: Any]
+let v16Serialization = compiledV16Manifest["serialization"] as! [String: Any]
+let v16ReadSource = compiledV16Manifest["readSource"] as! [String: Any]
+let v16ReadCounts = v16ReadSource["counts"] as! [String: Any]
+expect(
+    compilerV16Result.convertedEventCount == 2
+        && compilerV16Result.exampleCount == 0
+        && compiledV16Manifest["conversionVersion"] as! String
+            == "phase1-causal-v16"
+        && v16Serialization["contextVersion"] as! Int == 5
+        && (compiledV16Events[0]["serialized"] as! String)
+            == (compiledEvents[0]["serialized"] as! String)
+        && v16ReadCounts["schema7"] as! Int == 0
+        && v16ReadCounts["nonSchema7"] as! Int == 2,
+    "v16 changes READ identity only when schema-7 evidence exists"
+)
 let compactRead = try! JSONSerialization.jsonObject(
     with: Data((compiledEvents[0]["serialized"] as! String).utf8)
 ) as! [String: Any]
@@ -2846,6 +2872,97 @@ expect(
         && chatDestination.surfaceLabel == "Ask Gemini"
         && chatDestination.resourceTitle == "Google Gemini",
     "browser chat identity retains both focused prompt and conversation resource"
+)
+
+let legacyReadSource = Phase1ReadSourceNormalizer.normalize([
+    "appName": "Code",
+    "bundleIdentifier": "com.microsoft.VSCode",
+    "windowTitle": "checkpoint.md",
+])
+expect(
+    legacyReadSource.category == "legacy_pre_schema7"
+        && legacyReadSource.modelFacingJSONObject as NSDictionary
+            == ["application": "Code", "window": "checkpoint.md"] as NSDictionary,
+    "pre-schema-7 READ identity remains byte-compatible"
+)
+let selectedPaneReadSource = Phase1ReadSourceNormalizer.normalize([
+    "appName": "Code",
+    "bundleIdentifier": "com.microsoft.VSCode",
+    "windowTitle": "checkpoint.md",
+    "readSurface": [
+        "ruleVersion": "ax-pane-read-v2",
+        "status": "surface_ocr_replacement",
+        "surfaceSelection": [
+            "method": "ax_repeated_bounded_surface",
+            "confidence": "medium",
+            "reason": "repeated_bounded_surface",
+            "isV1Fallback": false,
+            "selectedDepth": 1,
+            "selectedRole": "AXGroup",
+        ],
+    ],
+    "accessibilitySurface": ["ancestors": [[
+        "depth": 1,
+        "role": "AXGroup",
+        "title": "",
+        "elementDescription": "",
+    ]]],
+])
+expect(
+    selectedPaneReadSource.application == "Visual Studio Code"
+        && selectedPaneReadSource.surfaceKind == "active_pane"
+        && selectedPaneReadSource.resourceTitle == nil
+        && selectedPaneReadSource.modelFacingJSONObject["window"] == nil,
+    "a proven VS Code subpane never inherits the background editor title"
+)
+let mainReadSource = Phase1ReadSourceNormalizer.normalize([
+    "appName": "ChatGPT",
+    "bundleIdentifier": "com.openai.codex",
+    "windowTitle": "ChatGPT",
+    "readSurface": [
+        "ruleVersion": "ax-pane-read-v2",
+        "status": "surface_ocr_replacement",
+        "surfaceSelection": [
+            "method": "ax_semantic_container",
+            "confidence": "high",
+            "reason": "semantic_main_landmark",
+            "isV1Fallback": false,
+            "selectedDepth": 3,
+            "selectedRole": "AXGroup",
+            "selectedSubrole": "AXLandmarkMain",
+        ],
+    ],
+    "accessibilitySurface": ["ancestors": [[
+        "depth": 3,
+        "role": "AXGroup",
+        "subrole": "AXLandmarkMain",
+        "title": "",
+        "elementDescription": "",
+    ]]],
+])
+expect(
+    mainReadSource.surfaceKind == "main_content"
+        && mainReadSource.resourceTitle == "ChatGPT",
+    "a proven main READ surface may retain its aligned resource title"
+)
+let fallbackReadSource = Phase1ReadSourceNormalizer.normalize([
+    "appName": "Obsidian",
+    "bundleIdentifier": "md.obsidian",
+    "windowTitle": "Entry",
+    "readSurface": [
+        "ruleVersion": "ax-pane-read-v2",
+        "status": "surface_ocr_replacement",
+        "surfaceSelection": [
+            "method": "v1_fallback",
+            "isV1Fallback": true,
+        ],
+    ],
+])
+expect(
+    fallbackReadSource.category == "schema7_pointer_fallback"
+        && fallbackReadSource.surfaceKind == "active_surface_proxy"
+        && fallbackReadSource.resourceTitle == nil,
+    "schema-7 fallback is explicit and does not claim AX pane identity"
 )
 
 try! FileManager.default.removeItem(at: fixtureRoot)
