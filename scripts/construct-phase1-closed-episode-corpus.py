@@ -652,6 +652,11 @@ def construct(
                 if isinstance(manifest.get("readSource"), dict)
                 else {}
             ),
+            **(
+                {"semanticReadProjection": manifest["semanticReadProjection"]}
+                if isinstance(manifest.get("semanticReadProjection"), dict)
+                else {}
+            ),
             "objective": {
                 **manifest["objective"],
                 "predictionUnit": "closed_composition_episode",

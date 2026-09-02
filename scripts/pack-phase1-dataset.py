@@ -21,6 +21,11 @@ import tempfile
 from pathlib import Path
 from typing import Any, Iterable
 
+from phase1_read_novelty import (
+    RENDERER_VERSION as READ_NOVELTY_RENDERER_VERSION,
+    apply_dependency_aware_read_rendering,
+)
+
 try:
     import huggingface_hub
     import tokenizers
@@ -37,6 +42,7 @@ except ImportError as error:
 
 
 PACKER_VERSION = "phase1-token-pack-v7"
+DEPENDENCY_AWARE_PACKER_VERSION = "phase1-token-pack-v8"
 DEFAULT_TOKENIZER = "Qwen/Qwen3.5-9B-Base"
 DEFAULT_PASTE_MARKER = "<|paste|>"
 DEFAULT_TASK_INSTRUCTION = (
@@ -364,6 +370,7 @@ def pack_model_input(
     token_budget: int,
     task_instruction: str,
     context_token_cache: dict[str, tuple[str, list[int]]],
+    dependency_aware_read_novelty: bool = False,
 ) -> dict[str, Any]:
     query = example.get("query")
     context_event_ids = example.get("contextBlockIDs", example.get("contextEventIDs"))
@@ -438,6 +445,25 @@ def pack_model_input(
         break
 
     retained = list(reversed(retained_reversed))
+    selected_token_count_before_read_rendering = sum(
+        len(block["tokenIDs"]) for block in retained
+    )
+    read_rendering_counts = {
+        "novelContentRendered": 0,
+        "adjacentRepeatContentSuppressed": 0,
+        "completeFallbackDependencyUnavailable": 0,
+        "completeFallbackUncertainMicroglyph": 0,
+        "truncatedReadStateRetained": 0,
+        "nonReadProjectionRetained": 0,
+        "completeReadStatesRetained": 0,
+        "tokensRemoved": 0,
+    }
+    if dependency_aware_read_novelty:
+        retained, read_rendering_counts = apply_dependency_aware_read_rendering(
+            retained,
+            events_by_id,
+            lambda text: encode_plain_text(tokenizer, text),
+        )
     history_ids: list[int] = []
     spans: list[dict[str, Any]] = []
     for block in retained:
@@ -451,9 +477,12 @@ def pack_model_input(
             "contentTruncated": block["contentTruncated"],
             "serializedSHA256": hashlib.sha256(block["serialized"].encode()).hexdigest(),
         }
-        if block["contentTruncated"]:
+        if block["contentTruncated"] or block.get("packedSerialized") is not None:
             span["packedSerialized"] = block["serialized"]
+        if block["contentTruncated"]:
             span["truncation"] = block["truncation"]
+        if block.get("readRendering") is not None:
+            span["readRendering"] = block["readRendering"]
         spans.append(span)
 
     input_ids = instruction_ids + history_ids + query_ids
@@ -475,12 +504,17 @@ def pack_model_input(
         "taskInstructionIDs": instruction_ids,
         "queryIDs": query_ids,
         "completeTokenCount": complete_token_count,
+        "selectedTokenCountBeforeReadRendering": (
+            len(instruction_ids) + len(query_ids)
+            + selected_token_count_before_read_rendering
+        ),
         "historyTokenCount": len(history_ids),
         "unusedTokenBudget": token_budget - len(input_ids),
         "contextEventSpans": spans,
         "sourceContextEventCount": len(context_event_ids),
         "droppedContextEventCount": len(context_event_ids) - len(spans),
         "partiallyRetainedContextEventCount": partial_count,
+        "readRenderingCounts": read_rendering_counts,
     }
 
 
@@ -601,7 +635,21 @@ def main() -> int:
     parser.add_argument("--paste-marker", default=DEFAULT_PASTE_MARKER)
     parser.add_argument("--task-instruction", default=DEFAULT_TASK_INSTRUCTION)
     parser.add_argument("--local-files-only", action="store_true")
+    parser.add_argument(
+        "--dependency-aware-read-novelty",
+        action="store_true",
+        help=(
+            "shadow v8: render semantic READ novelty only when its exact "
+            "complete predecessor survives context packing"
+        ),
+    )
     arguments = parser.parse_args()
+
+    packer_version = (
+        DEPENDENCY_AWARE_PACKER_VERSION
+        if arguments.dependency_aware_read_novelty
+        else PACKER_VERSION
+    )
 
     source = arguments.input.expanduser().resolve()
     output = arguments.output.expanduser().resolve()
@@ -611,6 +659,15 @@ def main() -> int:
         raise ValueError(f"output already exists: {output}; use a fresh directory")
 
     source_manifest, examples, events_by_id = require_compiled_dataset(source)
+    if (
+        arguments.dependency_aware_read_novelty
+        and source_manifest.get("semanticReadProjection", {}).get("sourceField")
+            != "readNovelty"
+    ):
+        raise ValueError(
+            "--dependency-aware-read-novelty requires a compiled semantic-v16 "
+            "dataset that preserves readNovelty"
+        )
     snapshot, resolved_revision = resolve_tokenizer_snapshot(
         arguments.tokenizer, arguments.revision, arguments.local_files_only
     )
@@ -669,6 +726,8 @@ def main() -> int:
         total_paste_actions = 0
         total_input_tokens = 0
         total_input_tokens_discarded = 0
+        total_input_tokens_removed_by_truncation = 0
+        total_input_tokens_removed_by_read_rendering = 0
         total_target_tokens = 0
         maximum_input_tokens_before_truncation = 0
         maximum_query_tokens = 0
@@ -677,6 +736,16 @@ def main() -> int:
         total_dropped_context_events = 0
         total_partially_retained_context_events = 0
         resolved_paste_payloads_preserved_in_history = 0
+        total_read_rendering_counts = {
+            "novelContentRendered": 0,
+            "adjacentRepeatContentSuppressed": 0,
+            "completeFallbackDependencyUnavailable": 0,
+            "completeFallbackUncertainMicroglyph": 0,
+            "truncatedReadStateRetained": 0,
+            "nonReadProjectionRetained": 0,
+            "completeReadStatesRetained": 0,
+            "tokensRemoved": 0,
+        }
         context_token_cache: dict[str, tuple[str, list[int]]] = {}
         for example in examples:
             segments = example.get("target", {}).get("segments")
@@ -743,6 +812,9 @@ def main() -> int:
             packed_input = pack_model_input(
                 example, events_by_id, reloaded_plain, arguments.input_token_budget,
                 arguments.task_instruction, context_token_cache,
+                dependency_aware_read_novelty=(
+                    arguments.dependency_aware_read_novelty
+                ),
             )
             input_ids = packed_input["inputIDs"]
             query_ids = packed_input["queryIDs"]
@@ -767,7 +839,7 @@ def main() -> int:
 
             record = {
                 "schemaVersion": 4,
-                "packerVersion": PACKER_VERSION,
+                "packerVersion": packer_version,
                 "exampleID": example["exampleID"],
                 "sessionID": example["sessionID"],
                 "targetEventID": example["targetEventID"],
@@ -803,6 +875,10 @@ def main() -> int:
                 "pasteMarkerTokenCount": len(paste_marker_token_ids),
                 "targetSegmentTokenSpans": segment_spans,
             }
+            if arguments.dependency_aware_read_novelty:
+                record["modelInputTokenCountAfterContextSelection"] = (
+                    packed_input["selectedTokenCountBeforeReadRendering"]
+                )
             packed_records.append(record)
             retained_plan_blocks = []
             retained_serialized = []
@@ -817,6 +893,10 @@ def main() -> int:
                     "serializedOverride": span.get("packedSerialized"),
                     "serializedSHA256": hashlib.sha256(serialized.encode()).hexdigest(),
                     "contentTruncated": span["contentTruncated"],
+                    **(
+                        {"readRendering": span["readRendering"]}
+                        if span.get("readRendering") is not None else {}
+                    ),
                 })
             semantic_context = "\n".join(retained_serialized)
             semantic_body = (
@@ -826,7 +906,7 @@ def main() -> int:
             semantic_input = arguments.task_instruction + "\n" + semantic_body
             context_plans.append({
                 "schemaVersion": 1,
-                "packerVersion": PACKER_VERSION,
+                "packerVersion": packer_version,
                 "exampleID": example["exampleID"],
                 "experimentBlockID": example.get("experimentBlockID"),
                 "targetEventID": example["targetEventID"],
@@ -839,6 +919,15 @@ def main() -> int:
             total_paste_actions += paste_count
             total_input_tokens += len(input_ids)
             total_input_tokens_discarded += discarded
+            total_input_tokens_removed_by_truncation += (
+                packed_input["completeTokenCount"]
+                - packed_input["selectedTokenCountBeforeReadRendering"]
+            )
+            total_input_tokens_removed_by_read_rendering += (
+                packed_input["selectedTokenCountBeforeReadRendering"] - len(input_ids)
+            )
+            for key, value in packed_input["readRenderingCounts"].items():
+                total_read_rendering_counts[key] += value
             total_target_tokens += len(target_ids)
             maximum_input_tokens_before_truncation = max(
                 maximum_input_tokens_before_truncation, packed_input["completeTokenCount"]
@@ -871,7 +960,7 @@ def main() -> int:
         }
         manifest = {
             "schemaVersion": 4,
-            "packerVersion": PACKER_VERSION,
+            "packerVersion": packer_version,
             "createdAt": dt.datetime.now(dt.timezone.utc).isoformat().replace(
                 "+00:00", "Z"
             ),
@@ -968,6 +1057,27 @@ def main() -> int:
                 "maximumUnusedModelInputTokenBudget": maximum_unused_input_budget,
             },
         }
+        if arguments.dependency_aware_read_novelty:
+            manifest["packing"]["readNoveltyRendering"] = {
+                "enabled": True,
+                "status": "shadow_opt_in",
+                "rendererVersion": READ_NOVELTY_RENDERER_VERSION,
+                "selectionUsesCompleteReadTokens": True,
+                "dependencyRule": "render novelty only when dependsOnEventID is retained as a complete reconstructable READ state",
+                "missingDependencyFallback": "retain complete current READ",
+                "uncertainMicroglyphPolicy": "retain complete current READ",
+                "exactAdjacentRepeatRepresentation": "retain READ record with empty content",
+                "completeSemanticReadRemainsSourceAuthority": True,
+            }
+            manifest["counts"].update({
+                "modelInputTokensRemovedByContextTruncation": (
+                    total_input_tokens_removed_by_truncation
+                ),
+                "modelInputTokensRemovedByReadNoveltyRendering": (
+                    total_input_tokens_removed_by_read_rendering
+                ),
+                "readRendering": total_read_rendering_counts,
+            })
         manifest["artifactDigestsSHA256"] = {
             "packed-examples.jsonl": sha256(packed_path),
             "context-plans.jsonl": sha256(context_plans_path),

@@ -760,6 +760,14 @@ public struct CausalDatasetCompiler {
                     "nonSchema7": categoryCounts["legacy_pre_schema7", default: 0],
                 ],
             ]
+            if reduction?.string("reducerVersion") == "phase1-semantic-v16" {
+                datasetManifest["semanticReadProjection"] = [
+                    "sourceField": "readNovelty",
+                    "completeReadRemainsAuthoritative": true,
+                    "compilerRendering": "none",
+                    "requiredPackingRule": "novelty may be rendered only when its exact dependency is retained as a complete reconstructable READ state",
+                ]
+            }
         }
         try writeJSONObject(datasetManifest, to: outputFiles[0], pretty: true)
 
@@ -1908,6 +1916,10 @@ private func convertedRecord(
         }
         if let derivation = event.object["readSourceDerivation"] {
             record["readSourceDerivation"] = derivation
+        }
+        if conversionVersion == "phase1-causal-v16",
+           let novelty = event.object["readNovelty"] {
+            record["readNovelty"] = novelty
         }
     } else if event.kind == "write" {
         record["sourceOutcomeMatchesCanonical"] = event.object.boolean(

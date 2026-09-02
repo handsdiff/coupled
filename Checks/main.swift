@@ -3054,6 +3054,39 @@ _ = try! CausalDatasetCompiler().compile(
     sourceDirectory: motivatingInput,
     outputDirectory: motivatingDataset
 )
+let motivatingDatasetV16 = fixtureRoot.appendingPathComponent(
+    "motivating-dataset-v16"
+)
+_ = try! CausalDatasetCompiler(configuration: .init(
+    conversionVersion: "phase1-causal-v16"
+)).compile(
+    inputDirectory: motivatingReductionV16,
+    sourceDirectory: motivatingInput,
+    outputDirectory: motivatingDatasetV16
+)
+let motivatingCompiledV16Events = readFixtureJSONL(
+    motivatingDatasetV16.appendingPathComponent("events.jsonl")
+)
+let compiledV16NovelRead = motivatingCompiledV16Events.first {
+    ($0["sourceRecordIDs"] as? [String]) == ["same-pane-overlap-two"]
+}
+let compiledV16Novelty = compiledV16NovelRead?["readNovelty"]
+    as? [String: Any]
+expect(
+    compiledV16Novelty?["decision"] as? String == "emit_new_content"
+        && compiledV16Novelty?["content"] as? String == "same gamma"
+        && compiledV16Novelty?["currentEventID"] as? String
+            == compiledV16NovelRead?["sourceEventID"] as? String,
+    "causal v16 propagates shadow READ novelty without replacing complete content"
+)
+let motivatingCompiledV16Manifest = try! JSONSerialization.jsonObject(
+    with: Data(contentsOf: motivatingDatasetV16.appendingPathComponent("dataset.json"))
+) as! [String: Any]
+expect(
+    (motivatingCompiledV16Manifest["semanticReadProjection"]
+        as? [String: Any])?["completeReadRemainsAuthoritative"] as? Bool == true,
+    "causal v16 declares complete semantic READ authority for shadow novelty"
+)
 let motivatingExamples = readFixtureJSONL(
     motivatingDataset.appendingPathComponent("examples.jsonl")
 )

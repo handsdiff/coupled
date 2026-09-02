@@ -101,7 +101,7 @@ def contract(manifest: dict[str, Any]) -> dict[str, Any]:
             key: value for key, value in read_source.items()
             if key != "counts"
         }
-    return {
+    result = {
         "conversionVersion": manifest.get("conversionVersion"),
         "serialization": manifest.get("serialization"),
         "objective": manifest.get("objective"),
@@ -111,6 +111,9 @@ def contract(manifest: dict[str, Any]) -> dict[str, Any]:
         "writeDestination": manifest.get("writeDestination"),
         "readSource": read_source,
     }
+    if isinstance(manifest.get("semanticReadProjection"), dict):
+        result["semanticReadProjection"] = manifest["semanticReadProjection"]
+    return result
 
 
 def load_session(path: Path) -> dict[str, Any]:
