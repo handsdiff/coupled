@@ -72,6 +72,20 @@ This does not replace semantic v13 until a focused end-to-end canary confirms
 the stored images, pane OCR, causal exclusions, and duplicate behavior on real
 apps.
 
+The focused `phase1-visual-read-promotion-canary-1` is complete and immutable.
+It retained 28 promoted frames: 14 causally eligible frames each produced one
+full-window raw OCR observation, while 14 frames whose visual-change interval
+overlapped an active WRITE remained raw-only. Native `ax-pane-read-v2` replay
+produced pane evidence for all 14 visual observations; semantic v14 emitted 14
+visual READs and none contained the Obsidian active-WRITE sentinel. Moving the
+pointer over Chrome's toolbar retained the semantic content anchor and emitted
+Gemini response text rather than toolbar text. The canary also exposed stale
+window-title metadata when Chromium reused a CGWindowID across a tab change;
+the monitor now refreshes that window's title and bounds at each completed
+frame. The full build and regression suite pass after that correction. V14
+remains a candidate until the metadata correction is observed in a packaged
+live build and the resulting corpus is manually audited.
+
 ## Active data contract
 
 Collection covers Chrome, Arc, Codex/ChatGPT, Obsidian, and VS Code, including
@@ -177,9 +191,9 @@ latency projection, not proof that a live router knew the destination then.
   metadata, WRITE serialization, episode membership, and eligibility are
   unchanged. These cohorts remain explicit because schema-7 capability does
   not imply successful AX-pane selection.
-- `phase1-ordinary-work-2026-09-01-5` is the active append-only raw session. The
-  collector is running with the candidate 1-second READ, 3-second WRITE,
-  zero-crop configuration. It must not be reduced while live.
+- No collector is currently running. `phase1-visual-read-promotion-canary-1`
+  was stopped cleanly and reduced separately as a candidate-v14 validation
+  trace; it does not alter the frozen semantic-v13 corpus.
 - The historical 224- and 450-example experiments are developmental evidence,
   not untouched prospective confirmation of the promoted pipeline.
 
@@ -199,10 +213,9 @@ Missing evidence stays unknown; these limits do not authorize guesses.
 
 ## Next step
 
-1. Continue `phase1-ordinary-work-2026-09-01-5` without changing collector
-   rules. After stopping it, finalize READ evidence, semantic v13, and causal
-   v16 from the immutable completed raw session.
-2. Assemble compatible promoted sessions with explicit coverage gaps and build
+1. Package the capture-time Chromium metadata correction and confirm it in one
+   normal collection; no dedicated permission-reset micro-canary is required.
+2. Finalize completed compatible sessions with explicit coverage gaps and build
    episode v8 / episode-causal v8.
 3. Manually audit READ surfaces, WRITE destinations, episode boundaries,
    unresolved records, exclusions, model-visible histories, and targets.

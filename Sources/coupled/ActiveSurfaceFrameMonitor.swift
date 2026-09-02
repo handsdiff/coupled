@@ -111,6 +111,10 @@ final class ActiveSurfaceFrameMonitor: NSObject, SCStreamOutput, SCStreamDelegat
         interactionPoint = point
         self.rawInteractionSurface = rawInteractionSurface
         surfaceSelectionReason = selectionReason
+        // A durable macOS window ID can survive tab and document-title
+        // changes. Keep the monitored geometry/identity while refreshing the
+        // metadata supplied by the latest window-server observation.
+        selectedSurface = surface
         if isSemanticContentPoint(
             point,
             rawInteractionSurface: rawInteractionSurface,
@@ -487,6 +491,8 @@ final class ActiveSurfaceFrameMonitor: NSObject, SCStreamOutput, SCStreamDelegat
             }
 
             self.frameSequence += 1
+            let captureSurface = refreshedVisualSurfaceMetadata(surface)
+            self.selectedSurface = captureSurface
             self.accept(ShadowVisualFrame(
                 sequence: self.frameSequence,
                 requestedAt: nil,
@@ -494,7 +500,7 @@ final class ActiveSurfaceFrameMonitor: NSObject, SCStreamOutput, SCStreamDelegat
                 displayTimeNanoseconds: displayTimeNanoseconds,
                 pixelWidth: pixelWidth,
                 pixelHeight: pixelHeight,
-                surface: surface,
+                surface: captureSurface,
                 point: point,
                 fingerprint: fingerprint,
                 pixelBuffer: pixelBuffer
@@ -1180,6 +1186,44 @@ private func sameVisualCaptureSurface(
         && abs(left.windowBounds.minY - right.windowBounds.minY) <= tolerance
         && abs(left.windowBounds.width - right.windowBounds.width) <= tolerance
         && abs(left.windowBounds.height - right.windowBounds.height) <= tolerance
+}
+
+/// Refresh mutable window-server metadata at completed-frame time. Chromium
+/// and other document hosts commonly reuse one CGWindowID while changing the
+/// selected tab or document title; the stream remains valid, but its initial
+/// title must not be attached to later pixels.
+private func refreshedVisualSurfaceMetadata(
+    _ surface: ResolvedReadSurface
+) -> ResolvedReadSurface {
+    let options: CGWindowListOption = [
+        .optionIncludingWindow,
+        .excludeDesktopElements,
+    ]
+    guard let rawList = CGWindowListCopyWindowInfo(options, surface.windowID),
+          let windows = rawList as? [[String: Any]],
+          let window = windows.first(where: {
+              ($0[kCGWindowNumber as String] as? NSNumber)?.uint32Value
+                    == surface.windowID
+                  && ($0[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value
+                    == surface.processIdentifier
+          }),
+          let boundsDictionary = window[kCGWindowBounds as String] as? NSDictionary,
+          let bounds = CGRect(dictionaryRepresentation: boundsDictionary) else {
+        return surface
+    }
+    let rawTitle = window[kCGWindowName as String] as? String
+    let title = rawTitle?.isEmpty == false ? rawTitle : surface.windowTitle
+    return ResolvedReadSurface(
+        resolvedAt: nowTimestamp(),
+        displayID: surface.displayID,
+        displayBounds: surface.displayBounds,
+        windowID: surface.windowID,
+        windowTitle: title,
+        windowBounds: bounds,
+        appName: surface.appName,
+        bundleIdentifier: surface.bundleIdentifier,
+        processIdentifier: surface.processIdentifier
+    )
 }
 
 private func makeVisualFrameFingerprint(
