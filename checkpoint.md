@@ -1,4 +1,4 @@
-# Coupled checkpoint — 2026-09-01
+# Coupled checkpoint — 2026-09-02
 
 This is a snapshot of the current project state, not a changelog. Superseded
 designs, failed runs, and intermediate results belong in Git history:
@@ -194,9 +194,25 @@ latency projection, not proof that a live router knew the destination then.
   metadata, WRITE serialization, episode membership, and eligibility are
   unchanged. These cohorts remain explicit because schema-7 capability does
   not imply successful AX-pane selection.
-- No collector is currently running. `phase1-visual-read-promotion-canary-1`
-  was stopped cleanly and reduced separately as a candidate-v14 validation
-  trace; it does not alter the frozen semantic-v13 corpus.
+- `phase1-ordinary-work-2026-09-01-5` is finalized as a separate compatible
+  shard through `ax-pane-read-v2`, semantic v13, causal v16, and episode v8:
+  3,100 raw records; 837 READs; 167 WRITEs; 1,004 causal events; 149 eligible
+  micro targets; 140 closed episodes; and 69 loss-bearing closed-composition
+  targets. Its READ-source split is 596 proper AX-pane selections, 238 pointer
+  fallbacks, and three unresolved surfaces. The closed-episode audits pass.
+- Together, the existing 11-session corpus and the September 1 session contain
+  1,243 closed episodes and 675 loss-bearing closed-composition targets. They
+  remain separate immutable shards for now: reconstructing one monolithic
+  corpus would duplicate many gigabytes of cumulative model-input text and is
+  unnecessary for semantic validation. A later packing/experiment step must
+  consume both shards in chronological order with an explicit coverage gap.
+- `phase1-ordinary-work-2026-09-02-1` is currently collecting with the packaged
+  visual-frame build. It is the first ordinary-work session capable of semantic
+  v14 replay; no v14 interpretation is performed online, and the session must
+  be finalized and audited after collection stops.
+- `phase1-visual-read-promotion-canary-1` was stopped cleanly and reduced
+  separately as a candidate-v14 validation trace; it does not alter the frozen
+  semantic-v13 corpus.
 - The historical 224- and 450-example experiments are developmental evidence,
   not untouched prospective confirmation of the promoted pipeline.
 
@@ -216,10 +232,11 @@ Missing evidence stays unknown; these limits do not authorize guesses.
 
 ## Next step
 
-1. Package the capture-time Chromium metadata correction and confirm it in one
-   normal collection; no dedicated permission-reset micro-canary is required.
-2. Finalize completed compatible sessions with explicit coverage gaps and build
-   episode v8 / episode-causal v8.
+1. Let the September 2 ordinary-work session exercise the packaged visual-frame
+   collector, then finalize it through pane evidence and candidate semantic v14.
+2. Audit its promoted visual READs before freezing v14, then combine compatible
+   episode shards chronologically at packing time without duplicating full
+   cumulative contexts.
 3. Manually audit READ surfaces, WRITE destinations, episode boundaries,
    unresolved records, exclusions, model-visible histories, and targets.
 4. If no recurrent material error appears, freeze the untouched corpus, timing,
