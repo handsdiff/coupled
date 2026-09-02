@@ -146,33 +146,211 @@ expect(
     "reread after leaving a viewport"
 )
 expect(
-    adjacentCausalReadDelta(previous: "ABCD", current: "CDEF")?.emittedContent
+    adjacentCausalReadEdgeDelta(previous: "ABCD", current: "CDEF")?.emittedContent
         == "EF",
     "adjacent causal READ delta retains only the newly visible ordered suffix"
 )
 expect(
-    adjacentCausalReadDelta(
+    adjacentCausalReadEdgeDelta(previous: "CDEF", current: "ABCD")?.emittedContent
+        == "AB",
+    "adjacent causal READ delta retains only the newly visible ordered prefix"
+)
+expect(
+    adjacentCausalReadEdgeDelta(previous: "ABCD", current: "AHJD") == nil,
+    "same-position prefix and suffix matches are not adjacent repeated text"
+)
+expect(
+    adjacentCausalReadEdgeDelta(previous: "BC", current: "ABCD") == nil,
+    "internal containment is not adjacent repeated text"
+)
+expect(
+    adjacentCausalReadEdgeDelta(
         previous: "first line\npartial response",
         current: "first line\npartial response completed"
     )?.emittedContent == "completed",
     "adjacent causal READ delta emits a streaming completion"
 )
 expect(
-    adjacentCausalReadDelta(
+    adjacentCausalReadEdgeDelta(
         previous: "alpha\nbeta",
         current: "alpha beta gamma"
     )?.emittedContent == "gamma",
     "adjacent causal READ delta tolerates OCR line wrapping"
 )
 expect(
-    adjacentCausalReadDelta(previous: "same state", current: "same state")?
+    adjacentCausalReadEdgeDelta(
+        previous: "Cafe\u{301}",
+        current: "Café society"
+    )?.emittedContent == "society",
+    "adjacent causal READ delta uses Unicode-equivalent characters"
+)
+expect(
+    adjacentCausalReadEdgeDelta(previous: "same state", current: "same state")?
         .emittedContent == "",
     "adjacent causal READ delta suppresses an exact repeated state"
 )
 expect(
-    adjacentCausalReadDelta(previous: "unrelated alpha", current: "different omega")
+    adjacentCausalReadEdgeDelta(previous: "unrelated alpha", current: "different omega")
         == nil,
     "adjacent causal READ delta conservatively retains an unaligned current state"
+)
+var readScaffoldingTracker = ReadInterfaceScaffoldingTracker()
+let firstStreamingProjection = readScaffoldingTracker.project(
+    surfaceKey: "codex-fixture-surface",
+    bundleIdentifier: "com.openai.codex",
+    windowTitle: "Reviewer",
+    observedContent: "Question\nWorking for 40s >\nAnswer prefix\nDo anything",
+    lines: [
+        ReadOCRLineEvidence(index: 0, text: "Question", confidence: 1,
+            x: 0.1, y: 0.9, width: 0.5, height: 0.03),
+        ReadOCRLineEvidence(index: 1, text: "Working for 40s >", confidence: 1,
+            x: 0.1, y: 0.7, width: 0.3, height: 0.03),
+        ReadOCRLineEvidence(index: 2, text: "Answer prefix", confidence: 1,
+            x: 0.1, y: 0.5, width: 0.5, height: 0.03),
+        ReadOCRLineEvidence(index: 3, text: "Do anything", confidence: 1,
+            x: 0.1, y: 0.04, width: 0.3, height: 0.03),
+    ]
+)
+let secondStreamingProjection = readScaffoldingTracker.project(
+    surfaceKey: "codex-fixture-surface",
+    bundleIdentifier: "com.openai.codex",
+    windowTitle: "Reviewer",
+    observedContent: "Question\nWorked for 39s >\nAnswer prefix\ncontinued\nq\nPo anything\n+\nApprove for me\n5.6 Sol Extra High v",
+    lines: [
+        ReadOCRLineEvidence(index: 0, text: "Question", confidence: 1,
+            x: 0.1, y: 0.9, width: 0.5, height: 0.03),
+        ReadOCRLineEvidence(index: 1, text: "Worked for 39s >", confidence: 1,
+            x: 0.1, y: 0.7, width: 0.3, height: 0.03),
+        ReadOCRLineEvidence(index: 2, text: "Answer prefix", confidence: 1,
+            x: 0.1, y: 0.5, width: 0.5, height: 0.03),
+        ReadOCRLineEvidence(index: 3, text: "continued", confidence: 1,
+            x: 0.1, y: 0.45, width: 0.5, height: 0.03),
+        ReadOCRLineEvidence(index: 4, text: "q", confidence: 0.3,
+            x: 0.1, y: 0.2, width: 0.02, height: 0.03),
+        ReadOCRLineEvidence(index: 5, text: "Po anything", confidence: 1,
+            x: 0.1, y: 0.11, width: 0.3, height: 0.03),
+        ReadOCRLineEvidence(index: 6, text: "+", confidence: 1,
+            x: 0.1, y: 0.04, width: 0.02, height: 0.03),
+        ReadOCRLineEvidence(index: 7, text: "Approve for me", confidence: 1,
+            x: 0.2, y: 0.04, width: 0.2, height: 0.03),
+        ReadOCRLineEvidence(index: 8, text: "5.6 Sol Extra High v", confidence: 1,
+            x: 0.5, y: 0.04, width: 0.3, height: 0.03),
+    ]
+)
+expect(
+    firstStreamingProjection.content == "Question\nAnswer prefix",
+    "semantic READ keeps the first substantive response while removing proven Codex chrome"
+)
+expect(
+    secondStreamingProjection.content == "Question\nAnswer prefix\ncontinued"
+        && adjacentCausalReadEdgeDelta(
+            previous: firstStreamingProjection.content,
+            current: secondStreamingProjection.content
+        )?.emittedContent == "continued",
+    "real-shaped dynamic response yields only the exact continuation after scaffolding removal"
+)
+expect(
+    Set(secondStreamingProjection.removed.map(\.reason)) == Set([
+        "codex_progress_status", "low_confidence_composer_microtext",
+        "codex_composer_placeholder", "codex_composer_control",
+        "codex_approval_control", "codex_model_selector",
+    ]),
+    "every removed dynamic-response line has a narrow auditable scaffolding reason"
+)
+var conservativeScaffoldingTracker = ReadInterfaceScaffoldingTracker()
+var substantivePeripheralProjection: ReadSemanticContentProjection?
+for index in 0..<6 {
+    substantivePeripheralProjection = conservativeScaffoldingTracker.project(
+        surfaceKey: "chrome-article-pane",
+        bundleIdentifier: "com.google.Chrome",
+        windowTitle: index.isMultiple(of: 2) ? "Article One" : "Article Two",
+        observedContent: "Armani Ferrante\nArticle body \(index)",
+        lines: [
+            ReadOCRLineEvidence(index: 0, text: "Armani Ferrante", confidence: 1,
+                x: 0.1, y: 0.91, width: 0.3, height: 0.03),
+            ReadOCRLineEvidence(index: 1, text: "Article body \(index)", confidence: 1,
+                x: 0.1, y: 0.5, width: 0.5, height: 0.03),
+        ]
+    )
+}
+expect(
+    substantivePeripheralProjection?.content.contains("Armani Ferrante") == true,
+    "generic scaffolding never removes substantive text supported by only two titles"
+)
+var recurringScaffoldingTracker = ReadInterfaceScaffoldingTracker()
+var stableControlProjection: ReadSemanticContentProjection?
+for index in 0..<5 {
+    stableControlProjection = recurringScaffoldingTracker.project(
+        surfaceKey: "fixture-stable-pane",
+        bundleIdentifier: "fixture.app",
+        windowTitle: "Document \(index)",
+        observedContent: "Stable navigation control\nCentral state \(index)",
+        lines: [
+            ReadOCRLineEvidence(index: 0, text: "Stable navigation control", confidence: 1,
+                x: 0.1, y: 0.91, width: 0.3, height: 0.03),
+            ReadOCRLineEvidence(index: 1, text: "Central state \(index)", confidence: 1,
+                x: 0.1, y: 0.5, width: 0.5, height: 0.03),
+        ]
+    )
+}
+expect(
+    stableControlProjection?.content == "Central state 4"
+        && stableControlProjection?.removed.first?.supportingDistinctContentStateCount == 4
+        && stableControlProjection?.removed.first?.supportingDistinctWindowCount == 3,
+    "generic scaffolding requires four prior content states and three prior titles"
+)
+var obsidianScaffoldingTracker = ReadInterfaceScaffoldingTracker()
+let obsidianProjection = obsidianScaffoldingTracker.project(
+    surfaceKey: "obsidian-note-pane",
+    bundleIdentifier: "md.obsidian",
+    windowTitle: "Data - Notes",
+    observedContent: "Body text\n1 backlink 0_\n4,514 words 25,994 characters",
+    lines: [
+        ReadOCRLineEvidence(index: 0, text: "Body text", confidence: 1,
+            x: 0.1, y: 0.5, width: 0.3, height: 0.03),
+        ReadOCRLineEvidence(index: 1, text: "1 backlink 0_", confidence: 1,
+            x: 0.1, y: 0.002, width: 0.2, height: 0.02),
+        ReadOCRLineEvidence(index: 2, text: "4,514 words 25,994 characters", confidence: 1,
+            x: 0.5, y: 0.002, width: 0.3, height: 0.02),
+    ]
+)
+expect(
+    obsidianProjection.content == "Body text"
+        && Set(obsidianProjection.removed.map(\.reason)) == Set([
+            "obsidian_backlink_status", "obsidian_document_statistics",
+        ]),
+    "known Obsidian footer status is removed without generic recurrence"
+)
+var strictCodexTracker = ReadInterfaceScaffoldingTracker()
+let strictCodexProjection = strictCodexTracker.project(
+    surfaceKey: "codex-strict-negative",
+    bundleIdentifier: "com.openai.codex",
+    windowTitle: "Reviewer",
+    observedContent: "You can ask me anything\nThis uses Extra High precision",
+    lines: [
+        ReadOCRLineEvidence(index: 0, text: "You can ask me anything", confidence: 1,
+            x: 0.1, y: 0.12, width: 0.5, height: 0.03),
+        ReadOCRLineEvidence(index: 1, text: "This uses Extra High precision", confidence: 1,
+            x: 0.1, y: 0.04, width: 0.5, height: 0.03),
+    ]
+)
+expect(
+    strictCodexProjection.content
+        == "You can ask me anything\nThis uses Extra High precision",
+    "Codex rules do not remove substantive lines containing broad label fragments"
+)
+expect(
+    isolatedReadNoveltyMicroglyph(
+        "C",
+        lines: [ReadOCRLineEvidence(index: 0, text: "C", confidence: 1,
+            x: 0.5, y: 0.5, width: 0.03, height: 0.04)]
+    ) != nil
+        && isolatedReadNoveltyMicroglyph(
+            "AI",
+            lines: [ReadOCRLineEvidence(index: 0, text: "AI", confidence: 1,
+                x: 0.1, y: 0.5, width: 0.2, height: 0.04)]
+        ) == nil,
+    "only isolated one- or two-character additions with tiny OCR geometry are microglyphs"
 )
 expect(
     isChromiumAuxiliarySurface(
@@ -1450,6 +1628,9 @@ let motivatingSurfaceEvidenceV15 = fixtureRoot.appendingPathComponent(
 let motivatingReductionV15 = fixtureRoot.appendingPathComponent(
     "motivating-reduction-v15"
 )
+let motivatingReductionV16 = fixtureRoot.appendingPathComponent(
+    "motivating-reduction-v16"
+)
 let motivatingMismatchedV12 = fixtureRoot.appendingPathComponent(
     "motivating-mismatched-v12"
 )
@@ -2114,6 +2295,22 @@ writeFixtureJSONL([
         content: "same browser pixels", windowTitle: "Other Fixture"
     ),
     rawScreenFixture(
+        id: "exact-repeat-one", capturedAt: "2026-01-01T00:00:00.800Z",
+        content: "exact repeated semantic state"
+    ),
+    rawScreenFixture(
+        id: "exact-repeat-two", capturedAt: "2026-01-01T00:00:00.900Z",
+        content: "exact repeated semantic state"
+    ),
+    rawScreenFixture(
+        id: "microglyph-before", capturedAt: "2026-01-01T00:00:00.910Z",
+        content: "Showing most recent -"
+    ),
+    rawScreenFixture(
+        id: "microglyph-after", capturedAt: "2026-01-01T00:00:00.920Z",
+        content: "Showing most recent -\nC"
+    ),
+    rawScreenFixture(
         id: "read-before-write", capturedAt: "2026-01-01T00:00:01.000Z",
         content: "alpha\nbeta"
     ),
@@ -2161,6 +2358,10 @@ let surfaceContentByRecordID = [
     "same-pane-return": "shared pane text",
     "browser-title-before": "same browser pixels",
     "browser-title-after": "same browser pixels",
+    "exact-repeat-one": "exact repeated semantic state",
+    "exact-repeat-two": "exact repeated semantic state",
+    "microglyph-before": "Showing most recent -",
+    "microglyph-after": "Showing most recent -\nC",
     "read-before-write": "surface alpha\nsurface beta",
     "read-after-write-began": "surface beta\nsurface gamma",
     "read-containing-active-write": "page text\nthere was a paper about encr",
@@ -2191,8 +2392,14 @@ let motivatingSurfaceRows: [[String: Any]] = motivatingRawRows.enumerated().comp
         "contentSHA256": SHA256.hash(data: Data(content.utf8))
             .map { String(format: "%02x", $0) }.joined(),
         "recognizedLineCount": content.split(separator: "\n").count,
-        "lines": content.split(separator: "\n").map {
-            ["text": String($0), "confidence": 1] as [String: Any]
+        "lines": content.split(separator: "\n").enumerated().map { index, text in
+            var line: [String: Any] = ["text": String(text), "confidence": 1]
+            if recordID == "microglyph-after", String(text) == "C" {
+                line["boundingBox"] = [
+                    "x": 0.504, "y": 0.502, "width": 0.031, "height": 0.039,
+                ]
+            }
+            return line
         },
     ]
 }
@@ -2422,6 +2629,13 @@ _ = try! Phase1SemanticReducer(configuration: .init(
     sourceDirectory: motivatingInput,
     outputDirectory: motivatingReductionV15
 )
+_ = try! Phase1SemanticReducer(configuration: .init(
+    reducerVersion: "phase1-semantic-v16",
+    readSurfaceEvidenceDirectory: motivatingSurfaceEvidenceV15
+)).reduce(
+    sourceDirectory: motivatingInput,
+    outputDirectory: motivatingReductionV16
+)
 let motivatingEvents = readFixtureJSONL(
     motivatingReduction.appendingPathComponent("events.jsonl")
 )
@@ -2436,6 +2650,9 @@ let motivatingV13Events = readFixtureJSONL(
 )
 let motivatingV15Events = readFixtureJSONL(
     motivatingReductionV15.appendingPathComponent("events.jsonl")
+)
+let motivatingV16Events = readFixtureJSONL(
+    motivatingReductionV16.appendingPathComponent("events.jsonl")
 )
 expect(
     motivatingV11Events.first {
@@ -2471,6 +2688,61 @@ expect(
         ($0["sourceRecordIDs"] as? [String]) == ["same-pane-overlap-two"]
     }?["content"] as? String == "same gamma",
     "semantic v15 aligns adjacent pane states even when AX depth changes"
+)
+let motivatingV16Overlap = motivatingV16Events.first {
+    ($0["sourceRecordIDs"] as? [String]) == ["same-pane-overlap-two"]
+}
+expect(
+    motivatingV16Overlap?["content"] as? String == "same beta\nsame gamma"
+        && (motivatingV16Overlap?["readNovelty"] as? [String: Any])?["content"]
+            as? String == "same gamma"
+        && (motivatingV16Overlap?["readNovelty"] as? [String: Any])?["decision"]
+            as? String == "emit_new_content",
+    "semantic v16 preserves complete semantic READ content and records edge novelty separately"
+)
+expect(
+    motivatingV16Events.first {
+        ($0["sourceRecordIDs"] as? [String]) == ["same-pane-return"]
+    }?["content"] as? String == "shared pane text"
+        && (motivatingV16Events.first {
+            ($0["sourceRecordIDs"] as? [String]) == ["same-pane-return"]
+        }?["readNovelty"] as? [String: Any])?["decision"] as? String
+            == "full_state",
+    "semantic v16 resets novelty across an intervening surface"
+)
+expect(
+    motivatingV16Events.first {
+        ($0["sourceRecordIDs"] as? [String]) == ["read-after-write-began"]
+    }?["content"] as? String == "surface beta\nsurface gamma"
+        && (motivatingV16Events.first {
+            ($0["sourceRecordIDs"] as? [String]) == ["read-after-write-began"]
+        }?["readNovelty"] as? [String: Any])?["decision"] as? String
+            == "full_state",
+    "semantic v16 resets novelty at a causal WRITE boundary"
+)
+let motivatingV16ExactRepeat = motivatingV16Events.first {
+    ($0["sourceRecordIDs"] as? [String]) == ["exact-repeat-two"]
+}
+expect(
+    motivatingV16ExactRepeat?["content"] as? String
+        == "exact repeated semantic state"
+        && (motivatingV16ExactRepeat?["readNovelty"] as? [String: Any])?["decision"]
+            as? String == "suppress_no_new_content"
+        && (motivatingV16ExactRepeat?["readNovelty"] as? [String: Any])?["content"]
+            as? String == "",
+    "semantic v16 retains a complete exact-repeat READ while marking its novelty suppressible"
+)
+let motivatingV16Microglyph = motivatingV16Events.first {
+    ($0["sourceRecordIDs"] as? [String]) == ["microglyph-after"]
+}
+expect(
+    motivatingV16Microglyph?["content"] as? String
+        == "Showing most recent -\nC"
+        && (motivatingV16Microglyph?["readNovelty"] as? [String: Any])?["decision"]
+            as? String == "suppress_nonsemantic_microglyph"
+        && (motivatingV16Microglyph?["readNovelty"] as? [String: Any])?["content"]
+            as? String == "",
+    "semantic v16 retains complete microglyph evidence while suppressing it as novelty"
 )
 expect(
     motivatingV15Events.first {

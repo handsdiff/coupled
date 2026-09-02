@@ -374,8 +374,11 @@ public struct Phase1SemanticReducer {
             paneAwareSurfaceIdentity: configuration.reducerVersion
                 == "phase1-semantic-v13"
                 || reducerUsesVisualReadEvidence(configuration.reducerVersion),
-            adjacentCausalDelta: configuration.reducerVersion
-                == "phase1-semantic-v15"
+            mode: configuration.reducerVersion == "phase1-semantic-v16"
+                ? .semanticV16
+                : configuration.reducerVersion == "phase1-semantic-v15"
+                    ? .destructiveV15
+                    : .legacy
         )
         dispositions.append(contentsOf: overlapResult.dispositions)
         var events = overlapResult.events.sorted { $0.rawLine < $1.rawLine }.map(\.event)
@@ -442,6 +445,7 @@ public struct Phase1SemanticReducer {
             "readOverlapOrdering": "READ capturedAt with finalized WRITE beganAt boundaries; raw append order ignored",
             "readOverlapSurfaceIdentity": configuration.reducerVersion
                 == "phase1-semantic-v15"
+                    || configuration.reducerVersion == "phase1-semantic-v16"
                 ? "globally adjacent causal READs with the same app/window, strongly overlapping capture geometry, and compatible AX pane role; AX depth and object identity are supporting evidence only"
                 : configuration.reducerVersion == "phase1-semantic-v13"
                     || configuration.reducerVersion == "phase1-semantic-v14"
@@ -457,6 +461,10 @@ public struct Phase1SemanticReducer {
         }
         if configuration.reducerVersion == "phase1-semantic-v15" {
             reduction["adjacentReadDeltaRule"] = "only globally adjacent causal READ states on a proven compatible surface may align; any WRITE, other surface, browser-title change, geometry change, or uncertain order-preserving alignment resets to the complete current READ"
+        }
+        if configuration.reducerVersion == "phase1-semantic-v16" {
+            reduction["semanticReadRule"] = "immutable observed OCR is projected to complete semantic READ content by a conservative past-only scaffolding rule; exact contiguous edge novelty is recorded separately and never overwrites complete content"
+            reduction["readNoveltyDependencyRule"] = "novel content may be rendered only when its complete predecessor is usable in context; otherwise render the complete semantic READ"
         }
         try reducerWriteJSON(reduction, to: output.appendingPathComponent("reduction.json"))
         return Phase1SemanticReducerResult(
@@ -507,6 +515,12 @@ private struct ReducerVisualReadEvidence {
     let object: [String: Any]
     let lineage: [String]
 }
+
+private enum ReducerReadOverlapMode: Equatable {
+    case legacy
+    case destructiveV15
+    case semanticV16
+}
 private struct ReducerFailure: Error {
     let rule: String
     let reason: String
@@ -514,7 +528,9 @@ private struct ReducerFailure: Error {
 }
 
 private func reducerUsesVisualReadEvidence(_ version: String) -> Bool {
-    version == "phase1-semantic-v14" || version == "phase1-semantic-v15"
+    version == "phase1-semantic-v14"
+        || version == "phase1-semantic-v15"
+        || version == "phase1-semantic-v16"
 }
 
 private func loadReadSurfaceEvidence(
@@ -536,7 +552,7 @@ private func loadReadSurfaceEvidence(
             ? "ax-pane-read-v2"
             : "pointer-local-read-v1"
         expectedReadRecordTypes = ["screen_ocr_observation"]
-    case "phase1-semantic-v14", "phase1-semantic-v15":
+    case "phase1-semantic-v14", "phase1-semantic-v15", "phase1-semantic-v16":
         expectedRuleVersion = rawScreenOCRSchema >= 7
             ? "ax-pane-read-v2"
             : "pointer-local-read-v1"
@@ -546,7 +562,7 @@ private func loadReadSurfaceEvidence(
     default:
         guard configuration.readSurfaceEvidenceDirectory == nil else {
             throw Phase1SemanticReducerError.invalidManifest(
-                "--read-surface-evidence requires phase1-semantic-v11 through phase1-semantic-v15"
+                "--read-surface-evidence requires phase1-semantic-v11 through phase1-semantic-v16"
             )
         }
         return nil
@@ -713,6 +729,10 @@ private func effectiveReadObject(
     let originalContent = stringValue(raw["content"]) ?? ""
     effective["content"] = evidence["content"]
     effective["recognizedLineCount"] = evidence["recognizedLineCount"]
+    // Private reducer input. It is stripped before semantic events are written.
+    // Keeping the line geometry beside the observed OCR lets v16 explain every
+    // scaffolding decision without changing the immutable evidence artifact.
+    effective["_readSurfaceLines"] = evidence["lines"]
     effective["contentWasTruncated"] = false
     for key in [
         "viewportSideCropFraction", "viewportTopCropFraction",
@@ -1996,7 +2016,7 @@ private func applySemanticReadOverlap(
     writeBoundaries: [ReducerWriteBoundary],
     sessionID: String,
     paneAwareSurfaceIdentity: Bool,
-    adjacentCausalDelta: Bool
+    mode: ReducerReadOverlapMode
 ) -> ReducerOverlapResult {
     enum TimelineItem {
         case candidate(Int)
@@ -2026,6 +2046,7 @@ private func applySemanticReadOverlap(
         return left.2 < right.2
     }
     var deduplicator = AdjacentViewportDeduplicator()
+    var scaffoldingTracker = ReadInterfaceScaffoldingTracker()
     var previousCausalRead: ReducerCandidate?
     var accepted = [ReducerCandidate]()
     var dispositions = [ReducerDisposition]()
@@ -2042,7 +2063,140 @@ private func applySemanticReadOverlap(
             accepted.append(candidate)
             continue
         }
-        if adjacentCausalDelta {
+        if mode == .semanticV16 {
+            let observedContent = stringValue(candidate.raw["content"]) ?? ""
+            let lines = reducerReadOCRLines(candidate.raw["_readSurfaceLines"])
+            let bundleIdentifier = stringValue(candidate.raw["bundleIdentifier"]) ?? ""
+            let windowTitle = stringValue(candidate.raw["windowTitle"]) ?? ""
+            let projection = scaffoldingTracker.project(
+                surfaceKey: reducerReadScaffoldingSurfaceKey(candidate.raw),
+                bundleIdentifier: bundleIdentifier,
+                windowTitle: windowTitle,
+                observedContent: observedContent,
+                lines: lines
+            )
+            candidate.event["content"] = projection.content
+            let semanticDetails = reducerSemanticReadDetails(
+                observedContent: observedContent,
+                projection: projection,
+                hadLineEvidence: !lines.isEmpty
+            )
+            if var reduction = candidate.event["reduction"] as? [String: Any] {
+                reduction["semanticReadContent"] = semanticDetails
+                candidate.event["reduction"] = reduction
+            }
+
+            let completeCurrent = candidate
+            let currentEventID = stringValue(candidate.event["eventID"]) ?? ""
+            guard let previous = previousCausalRead,
+                  let surface = adjacentReadSurfaceCompatibility(
+                    previous.raw,
+                    candidate.raw
+                  ) else {
+                candidate.event["readNovelty"] = [
+                    "schemaVersion": 1,
+                    "ruleVersion": "adjacent-causal-read-edge-overlap-v1",
+                    "decision": "full_state",
+                    "reason": previousCausalRead == nil
+                        ? "no_causal_predecessor"
+                        : "surface_changed",
+                    "content": projection.content,
+                    "currentEventID": currentEventID,
+                    "orderingField": "capturedAt",
+                    "orderingTimestamp": candidate.overlapBoundaryAt,
+                ]
+                accepted.append(candidate)
+                previousCausalRead = completeCurrent
+                continue
+            }
+            let previousContent = stringValue(previous.event["content"]) ?? ""
+            let priorEventID = stringValue(previous.event["eventID"]) ?? ""
+            guard let delta = adjacentCausalReadEdgeDelta(
+                previous: previousContent,
+                current: projection.content
+            ) else {
+                candidate.event["readNovelty"] = [
+                    "schemaVersion": 1,
+                    "ruleVersion": "adjacent-causal-read-edge-overlap-v1",
+                    "decision": "retain_full_uncertain",
+                    "reason": "exact_edge_alignment_unproven",
+                    "content": projection.content,
+                    "comparedEventID": priorEventID,
+                    "currentEventID": currentEventID,
+                    "orderingField": "capturedAt",
+                    "orderingTimestamp": candidate.overlapBoundaryAt,
+                    "surface": surface,
+                ]
+                accepted.append(candidate)
+                previousCausalRead = completeCurrent
+                continue
+            }
+            let removedLineIndices = Set(projection.removed.map(\.line.index))
+            if !delta.emittedContent.isEmpty,
+               let microglyph = isolatedReadNoveltyMicroglyph(
+                    delta.emittedContent,
+                    lines: lines,
+                    excludingLineIndices: removedLineIndices
+               ) {
+                var microglyphEvidence: [String: Any] = [
+                    "lineIndex": microglyph.index,
+                    "text": microglyph.text,
+                    "textSHA256": reducerSHA256String(microglyph.text),
+                    "confidence": microglyph.confidence,
+                ]
+                if let x = microglyph.x, let y = microglyph.y,
+                   let width = microglyph.width, let height = microglyph.height {
+                    microglyphEvidence["boundingBox"] = [
+                        "x": x, "y": y, "width": width, "height": height,
+                    ]
+                }
+                candidate.event["readNovelty"] = [
+                    "schemaVersion": 1,
+                    "ruleVersion": "adjacent-causal-read-edge-overlap-v1",
+                    "decision": "suppress_nonsemantic_microglyph",
+                    "reason": "isolated_tiny_ocr_glyph",
+                    "content": "",
+                    "dependsOnEventID": priorEventID,
+                    "currentEventID": currentEventID,
+                    "observedNovelContent": delta.emittedContent,
+                    "microglyphEvidence": microglyphEvidence,
+                    "alignment": delta.alignment,
+                    "overlapCharacterCount": delta.overlapCharacterCount,
+                    "currentCharacterCount": delta.currentCharacterCount,
+                    "novelCharacterCount": delta.emittedContent.count,
+                    "orderingField": "capturedAt",
+                    "orderingTimestamp": candidate.overlapBoundaryAt,
+                    "surface": surface,
+                ]
+                accepted.append(candidate)
+                previousCausalRead = completeCurrent
+                continue
+            }
+            candidate.event["readNovelty"] = [
+                "schemaVersion": 1,
+                "ruleVersion": "adjacent-causal-read-edge-overlap-v1",
+                "decision": delta.emittedContent.isEmpty
+                    ? "suppress_no_new_content"
+                    : "emit_new_content",
+                "reason": delta.emittedContent.isEmpty
+                    ? "complete_semantic_state_repeated"
+                    : "exact_contiguous_edge_overlap",
+                "content": delta.emittedContent,
+                "dependsOnEventID": priorEventID,
+                "currentEventID": currentEventID,
+                "alignment": delta.alignment,
+                "overlapCharacterCount": delta.overlapCharacterCount,
+                "currentCharacterCount": delta.currentCharacterCount,
+                "novelCharacterCount": delta.emittedContent.count,
+                "orderingField": "capturedAt",
+                "orderingTimestamp": candidate.overlapBoundaryAt,
+                "surface": surface,
+            ]
+            accepted.append(candidate)
+            previousCausalRead = completeCurrent
+            continue
+        }
+        if mode == .destructiveV15 {
             let completeCurrent = candidate
             defer { previousCausalRead = completeCurrent }
             guard let previous = previousCausalRead,
@@ -2162,6 +2316,94 @@ private func applySemanticReadOverlap(
         accepted.append(candidate)
     }
     return ReducerOverlapResult(events: accepted, dispositions: dispositions)
+}
+
+private func reducerReadOCRLines(_ value: Any?) -> [ReadOCRLineEvidence] {
+    guard let rows = value as? [[String: Any]] else { return [] }
+    return rows.enumerated().compactMap { index, row in
+        guard let text = stringValue(row["text"]),
+              let confidence = doubleValue(row["confidence"]) else { return nil }
+        let bounds = row["boundingBox"] as? [String: Any]
+        return ReadOCRLineEvidence(
+            index: index,
+            text: text,
+            confidence: confidence,
+            x: doubleValue(bounds?["x"]),
+            y: doubleValue(bounds?["y"]),
+            width: doubleValue(bounds?["width"]),
+            height: doubleValue(bounds?["height"])
+        )
+    }
+}
+
+private func reducerSemanticReadDetails(
+    observedContent: String,
+    projection: ReadSemanticContentProjection,
+    hadLineEvidence: Bool
+) -> [String: Any] {
+    let removed: [[String: Any]] = projection.removed.map { item in
+        var result: [String: Any] = [
+            "lineIndex": item.line.index,
+            "text": item.line.text,
+            "textSHA256": reducerSHA256String(item.line.text),
+            "confidence": item.line.confidence,
+            "reason": item.reason,
+            "supportingDistinctContentStateCount": item.supportingDistinctContentStateCount,
+            "supportingDistinctWindowCount": item.supportingDistinctWindowCount,
+        ]
+        if let x = item.line.x, let y = item.line.y,
+           let width = item.line.width, let height = item.line.height {
+            result["boundingBox"] = [
+                "x": x, "y": y, "width": width, "height": height,
+            ]
+        }
+        return result
+    }
+    return [
+        "schemaVersion": 1,
+        "ruleVersion": "read-interface-scaffolding-v1",
+        "decision": removed.isEmpty
+            ? "retain_observed_content"
+            : "remove_proven_interface_scaffolding",
+        "lineEvidenceAvailable": hadLineEvidence,
+        "observedContentSHA256": reducerSHA256String(observedContent),
+        "semanticContentSHA256": reducerSHA256String(projection.content),
+        "observedCharacterCount": observedContent.count,
+        "semanticCharacterCount": projection.content.count,
+        "removedLineCount": removed.count,
+        "removedLines": removed,
+    ]
+}
+
+/// Past-only scaffolding evidence is scoped to a durable visual surface. The
+/// key intentionally excludes window title and AX object identity: titles vary
+/// with content and Electron recreates equivalent AX objects. Process/window,
+/// selected pane role/method, and coarse normalized geometry prevent evidence
+/// from leaking across unrelated panes while tolerating minute AX jitter.
+private func reducerReadScaffoldingSurfaceKey(_ raw: [String: Any]) -> String {
+    let readSurface = raw["readSurface"] as? [String: Any]
+    let selection = readSurface?["surfaceSelection"] as? [String: Any]
+    let region = selection?["regionOfInterest"] as? [String: Any]
+        ?? readSurface?["regionOfInterest"] as? [String: Any]
+    func coarse(_ value: Any?) -> String {
+        guard let number = doubleValue(value) else { return "-" }
+        return String(
+            format: "%.2f", locale: Locale(identifier: "en_US_POSIX"), number
+        )
+    }
+    let components = [
+        stringValue(raw["bundleIdentifier"]) ?? "-",
+        reducerComparableString(raw["processIdentifier"]),
+        reducerComparableString(raw["windowID"]),
+        stringValue(raw["captureScope"]) ?? "-",
+        stringValue(readSurface?["ruleVersion"]) ?? "-",
+        stringValue(selection?["method"]) ?? "-",
+        stringValue(selection?["selectedRole"]) ?? "-",
+        stringValue(selection?["selectedSubrole"]) ?? "-",
+        coarse(region?["x"]), coarse(region?["y"]),
+        coarse(region?["width"]), coarse(region?["height"]),
+    ].joined(separator: "|")
+    return reducerSHA256String(components)
 }
 
 /// Establishes whether two globally adjacent READ observations can safely be
@@ -2443,6 +2685,7 @@ private func reduceRead(
         "firstEventTimestampNanoseconds", "lastEventTimestampNanoseconds",
         "sourceFrameRecordID", "sourceFrameSequence", "sourceFrameCapturedAt",
         "sourceFrameScreenshotSHA256", "ocrEngine",
+        "_readSurfaceLines",
     ] { event.removeValue(forKey: key) }
     event["schemaVersion"] = 8
     event["kind"] = "read"

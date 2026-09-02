@@ -1,10 +1,6 @@
 import Foundation
 
 /// A conservative, order-preserving delta between two complete OCR states.
-/// The returned text contains only current-state spans that were not already
-/// present in the immediately preceding state. `nil` means that a trustworthy
-/// overlap could not be established and the caller must retain the current
-/// state in full.
 public struct AdjacentCausalReadDelta: Sendable, Equatable {
     public let emittedContent: String
     public let alignment: String
@@ -22,6 +18,11 @@ public struct AdjacentCausalReadDelta: Sendable, Equatable {
         self.overlapCharacterCount = overlapCharacterCount
         self.currentCharacterCount = currentCharacterCount
     }
+}
+
+private struct ReadDeltaCandidate {
+    let ranges: [Range<Int>]
+    let alignment: String
 }
 
 public func adjacentCausalReadDelta(
@@ -50,42 +51,18 @@ public func adjacentCausalReadDelta(
         next.characters,
         maximum: maximumSuffix
     )
-    struct Candidate {
-        let ranges: [Range<Int>]
-        let alignment: String
-    }
-    var candidates = [Candidate]()
+    var candidates = [ReadDeltaCandidate]()
     let boundaryRanges = [
         prefix > 0 ? 0..<prefix : nil,
         suffix > 0 ? (next.characters.count - suffix)..<next.characters.count : nil,
     ].compactMap { $0 }
     if !boundaryRanges.isEmpty {
-        candidates.append(Candidate(
+        candidates.append(ReadDeltaCandidate(
             ranges: boundaryRanges,
             alignment: "same_position_boundaries"
         ))
     }
-
-    let forward = longestSuffixPrefix(
-        source: prior.characters,
-        prefixOf: next.characters
-    )
-    if forward > 0 {
-        candidates.append(Candidate(
-            ranges: [0..<forward],
-            alignment: "prior_suffix_to_current_prefix"
-        ))
-    }
-    let backward = longestSuffixPrefix(
-        source: next.characters,
-        prefixOf: prior.characters
-    )
-    if backward > 0 {
-        candidates.append(Candidate(
-            ranges: [(next.characters.count - backward)..<next.characters.count],
-            alignment: "prior_prefix_to_current_suffix"
-        ))
-    }
+    appendEdgeCandidates(prior: prior, next: next, to: &candidates)
 
     let priorInCurrent = occurrenceOffsets(
         needle: prior.characters,
@@ -94,7 +71,7 @@ public func adjacentCausalReadDelta(
     )
     if priorInCurrent.count == 1 {
         let start = priorInCurrent[0]
-        candidates.append(Candidate(
+        candidates.append(ReadDeltaCandidate(
             ranges: [start..<(start + prior.characters.count)],
             alignment: "prior_state_inside_current"
         ))
@@ -105,16 +82,78 @@ public func adjacentCausalReadDelta(
         limit: 2
     )
     if currentInPrior.count == 1 {
-        candidates.append(Candidate(
+        candidates.append(ReadDeltaCandidate(
             ranges: [0..<next.characters.count],
             alignment: "current_state_inside_prior"
         ))
     }
+    return selectReadDelta(candidates: candidates, prior: prior, next: next)
+}
 
+/// v16's deliberately narrower primitive. Only exact normalized state or a
+/// contiguous suffix/prefix overlap is removable. Internal or same-position
+/// matches remain part of the complete current semantic READ.
+public func adjacentCausalReadEdgeDelta(
+    previous: String,
+    current: String
+) -> AdjacentCausalReadDelta? {
+    let prior = NormalizedReadText(previous)
+    let next = NormalizedReadText(current)
+    guard !prior.characters.isEmpty, !next.characters.isEmpty else { return nil }
+    if prior.characters == next.characters {
+        return AdjacentCausalReadDelta(
+            emittedContent: "",
+            alignment: "exact_state",
+            overlapCharacterCount: next.characters.count,
+            currentCharacterCount: next.characters.count
+        )
+    }
+
+    var candidates = [ReadDeltaCandidate]()
+
+    appendEdgeCandidates(prior: prior, next: next, to: &candidates)
+    return selectReadDelta(candidates: candidates, prior: prior, next: next)
+}
+
+private func appendEdgeCandidates(
+    prior: NormalizedReadText,
+    next: NormalizedReadText,
+    to candidates: inout [ReadDeltaCandidate]
+) {
+    let forward = longestSuffixPrefix(
+        source: prior.characters,
+        prefixOf: next.characters
+    )
+    if forward > 0 {
+        candidates.append(ReadDeltaCandidate(
+            ranges: [0..<forward],
+            alignment: "prior_suffix_to_current_prefix"
+        ))
+    }
+    let backward = longestSuffixPrefix(
+        source: next.characters,
+        prefixOf: prior.characters
+    )
+    if backward > 0 {
+        candidates.append(ReadDeltaCandidate(
+            ranges: [(next.characters.count - backward)..<next.characters.count],
+            alignment: "prior_prefix_to_current_suffix"
+        ))
+    }
+}
+
+private func selectReadDelta(
+    candidates: [ReadDeltaCandidate],
+    prior: NormalizedReadText,
+    next: NormalizedReadText
+) -> AdjacentCausalReadDelta? {
     let ranked = candidates.map { candidate in
         let ranges = mergedRanges(candidate.ranges)
         return (
-            candidate: Candidate(ranges: ranges, alignment: candidate.alignment),
+            candidate: ReadDeltaCandidate(
+                ranges: ranges,
+                alignment: candidate.alignment
+            ),
             overlap: ranges.reduce(0) { $0 + $1.count }
         )
     }.filter { candidate in
