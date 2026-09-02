@@ -77,9 +77,12 @@ It retained 28 promoted frames: 14 causally eligible frames each produced one
 full-window raw OCR observation, while 14 frames whose visual-change interval
 overlapped an active WRITE remained raw-only. Native `ax-pane-read-v2` replay
 produced pane evidence for all 14 visual observations; semantic v14 emitted 14
-visual READs and none contained the Obsidian active-WRITE sentinel. Moving the
-pointer over Chrome's toolbar retained the semantic content anchor and emitted
-Gemini response text rather than toolbar text. The canary also exposed stale
+visual READs. The Obsidian frame captured during the sentinel's original active
+WRITE interval remained raw-only; a later causally valid pre-WRITE frame, after
+that WRITE had completed and immediately before its deletion, did contain the
+then-visible sentinel. Moving the pointer over Chrome's toolbar retained the
+semantic content anchor and emitted Gemini response text rather than toolbar
+text. The canary also exposed stale
 window-title metadata when Chromium reused a CGWindowID across a tab change;
 the monitor now refreshes that window's title and bounds at each completed
 frame. The full build and regression suite pass after that correction. V14
