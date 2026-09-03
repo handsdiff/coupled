@@ -47,7 +47,11 @@ public enum Phase1ReadSourceNormalizer {
         // Preserve the exact pre-v16 representation for sessions that lack
         // schema-7 AX-pane evidence. Their window title is known only as the
         // outer captured window and must not be retroactively reinterpreted.
-        guard ruleVersion == "ax-pane-read-v2" else {
+        guard [
+            "ax-pane-read-v2", "ax-pane-read-v3", "ax-pane-read-v4",
+            "ax-pane-read-v5",
+        ]
+            .contains(ruleVersion) else {
             return Phase1ReadSource(
                 application: rawApplication,
                 surfaceKind: nil,
@@ -187,7 +191,8 @@ private func classifyReadSurface(
     default:
         break
     }
-    if method == "ax_semantic_container" {
+    if method == "ax_semantic_container"
+        || method == "ax_semantic_container_expanded" {
         return ("semantic_container", "selected_ax_semantic_container")
     }
     return ("active_pane", "selected_ax_pane_without_semantic_label")

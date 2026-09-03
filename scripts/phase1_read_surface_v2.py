@@ -142,7 +142,10 @@ def semantic_priority(node: dict[str, Any]) -> tuple[int, str] | None:
     return None
 
 
-def proposal_for_record(record: dict[str, Any]) -> dict[str, Any]:
+def proposal_for_record(
+    record: dict[str, Any], *, rule_version: str = SURFACE_RULE_VERSION,
+    expand_partial_semantic_containers: bool = False,
+) -> dict[str, Any]:
     """Return review-only v1/AX rectangles and one conservative v2 proposal."""
     window = rectangle(record.get("windowBounds") or {})
     pixel_width = require_number(record, "screenshotPixelWidth")
@@ -249,6 +252,36 @@ def proposal_for_record(record: dict[str, Any]) -> dict[str, Any]:
         method = "ax_semantic_container"
         confidence = "high"
         reason = f"semantic_{kind}"
+        if (
+            expand_partial_semantic_containers
+            and kind in {"content_list", "list"}
+            and selected["heightFraction"] < 0.35
+        ):
+            selected_rectangle = selected["screenRectangle"]
+            selected_depth = int(selected["depth"])
+            outer_candidates = [
+                node for node in ancestors
+                if node["screenRectangle"]
+                and int(node["depth"]) > selected_depth
+                and node["containsPointer"]
+                and node["areaFraction"] is not None
+                and node["areaFraction"] <= 0.82
+                and contains_rectangle(node["screenRectangle"], selected_rectangle)
+                and node["screenRectangle"]["height"]
+                    >= selected_rectangle["height"] * 1.75
+                and node["screenRectangle"]["width"]
+                    >= selected_rectangle["width"] * 0.90
+                and node["screenRectangle"]["width"]
+                    <= selected_rectangle["width"] * 1.35
+            ]
+            if outer_candidates:
+                selected = min(
+                    outer_candidates,
+                    key=lambda node: int(node["depth"]),
+                )
+                method = "ax_semantic_container_expanded"
+                confidence = "high"
+                reason = f"semantic_{kind}_expanded_to_containing_pane"
     else:
         geometric_candidates = [
             node for node in ancestors
@@ -310,7 +343,7 @@ def proposal_for_record(record: dict[str, Any]) -> dict[str, Any]:
         "y": round((pointer_y - window["y"]) * pixel_height / window["height"], 4),
     }
     return {
-        "ruleVersion": PROPOSAL_RULE_VERSION,
+        "ruleVersion": rule_version,
         "image": {"width": pixel_width, "height": pixel_height},
         "windowBounds": window,
         "pointer": {

@@ -20,6 +20,19 @@ from phase1_read_surface_v2 import (
     SURFACE_RULE_VERSION as V2_SURFACE_RULE_VERSION,
     surface_region as v2_surface_region,
 )
+from phase1_read_surface_v3 import (
+    SURFACE_RULE_VERSION as V3_SURFACE_RULE_VERSION,
+    surface_region as v3_surface_region,
+)
+from phase1_read_surface_v4 import (
+    SURFACE_RULE_VERSION as V4_SURFACE_RULE_VERSION,
+    surface_region as v4_surface_region,
+)
+from phase1_read_surface_v5 import (
+    SURFACE_RULE_VERSION as V5_SURFACE_RULE_VERSION,
+    surface_region as v5_surface_region,
+    surface_regions as v5_surface_regions,
+)
 
 
 EVIDENCE_SCHEMA_VERSION = 1
@@ -146,14 +159,18 @@ def parse_arguments() -> argparse.Namespace:
     )
     parser.add_argument(
         "--rule-version",
-        choices=["auto", V1_SURFACE_RULE_VERSION, V2_SURFACE_RULE_VERSION],
+        choices=[
+            "auto", V1_SURFACE_RULE_VERSION, V2_SURFACE_RULE_VERSION,
+            V3_SURFACE_RULE_VERSION, V4_SURFACE_RULE_VERSION,
+            V5_SURFACE_RULE_VERSION,
+        ],
         default="auto",
-        help="surface rule; auto selects AX v2 for raw screen schema 7+",
+        help="surface rule; auto selects dual-projection AX v5 for raw screen schema 7+",
     )
     parser.add_argument(
         "--include-visual-observations",
         action="store_true",
-        help="also reconstruct pane OCR for raw visual_ocr_observation records (semantic v14)",
+        help="also reconstruct pane OCR for raw visual_ocr_observation records",
     )
     return parser.parse_args()
 
@@ -182,19 +199,25 @@ def main() -> int:
     rule_version = arguments.rule_version
     if rule_version == "auto":
         rule_version = (
-            V2_SURFACE_RULE_VERSION
+            V5_SURFACE_RULE_VERSION
             if raw_screen_schema >= 7
             else V1_SURFACE_RULE_VERSION
         )
-    if rule_version == V2_SURFACE_RULE_VERSION and raw_screen_schema < 7:
+    if rule_version in {
+        V2_SURFACE_RULE_VERSION, V3_SURFACE_RULE_VERSION,
+        V4_SURFACE_RULE_VERSION, V5_SURFACE_RULE_VERSION,
+    } \
+            and raw_screen_schema < 7:
         raise EvidenceError(
             f"{V2_SURFACE_RULE_VERSION} requires rawScreenOCR schema 7+"
         )
-    surface_selector = (
-        v2_surface_region
-        if rule_version == V2_SURFACE_RULE_VERSION
-        else v1_surface_region
-    )
+    surface_selector = {
+        V1_SURFACE_RULE_VERSION: v1_surface_region,
+        V2_SURFACE_RULE_VERSION: v2_surface_region,
+        V3_SURFACE_RULE_VERSION: v3_surface_region,
+        V4_SURFACE_RULE_VERSION: v4_surface_region,
+        V5_SURFACE_RULE_VERSION: v5_surface_region,
+    }[rule_version]
     raw_rows = load_jsonl(raw_path)
     included_record_types = ["screen_ocr_observation"]
     if arguments.include_visual_observations:
@@ -237,32 +260,50 @@ def main() -> int:
         recorded_screenshot_hash = record.get("screenshotSHA256")
         if actual_screenshot_hash != recorded_screenshot_hash:
             raise EvidenceError(f"screenshot hash differs for {record_id}")
-        region, selection = surface_selector(record)
-        job_id = "surface_" + digest_text(canonical({
-            "recordID": record_id,
-            "screenshotSHA256": recorded_screenshot_hash,
-            "region": region,
-            "ruleVersion": rule_version,
-        }))
-        jobs.append({
-            "jobID": job_id,
-            "imagePath": str(screenshot),
-            "regionOfInterest": region,
-            "sourceRecordID": record_id,
-            "sourceRawLine": raw_line,
-            "sourceSessionID": session_id,
-            "screenshotRelativePath": relative,
-            "screenshotSHA256": recorded_screenshot_hash,
-            "surfaceSelection": selection,
-        })
+        if rule_version == V5_SURFACE_RULE_VERSION:
+            full, comparison, selection = v5_surface_regions(record)
+            regions = [("authoritative_full_pane", full), ("comparison_interior", comparison)]
+        else:
+            region, selection = surface_selector(record)
+            regions = [("authoritative", region)]
+        for projection, region in regions:
+            job_id = "surface_" + digest_text(canonical({
+                "recordID": record_id,
+                "screenshotSHA256": recorded_screenshot_hash,
+                "region": region,
+                "projection": projection,
+                "ruleVersion": rule_version,
+            }))
+            jobs.append({
+                "jobID": job_id,
+                "projection": projection,
+                "imagePath": str(screenshot),
+                "regionOfInterest": region,
+                "sourceRecordID": record_id,
+                "sourceRawLine": raw_line,
+                "sourceSessionID": session_id,
+                "screenshotRelativePath": relative,
+                "screenshotSHA256": recorded_screenshot_hash,
+                "surfaceSelection": selection,
+            })
 
     reusable: dict[str, dict[str, Any]] = {}
+    reusable_by_region: dict[str, dict[str, Any]] = {}
     for reuse_path in arguments.reuse_results:
         for row in load_jsonl(reuse_path.expanduser().resolve()):
             job_id = row.get("jobID") or row.get("evidenceID")
             if isinstance(job_id, str) and not row.get("error"):
                 reusable[job_id] = row
-    missing_jobs = [job for job in jobs if job["jobID"] not in reusable]
+            screenshot_hash = row.get("screenshotSHA256")
+            region = row.get("regionOfInterest")
+            if isinstance(screenshot_hash, str) and isinstance(region, dict):
+                reusable_by_region[canonical([screenshot_hash, region])] = row
+    def reusable_result(job: dict[str, Any]) -> dict[str, Any] | None:
+        return reusable.get(job["jobID"]) or reusable_by_region.get(canonical([
+            job["screenshotSHA256"], job["regionOfInterest"],
+        ]))
+
+    missing_jobs = [job for job in jobs if reusable_result(job) is None]
     recognized: dict[str, dict[str, Any]] = {}
     if missing_jobs:
         with tempfile.TemporaryDirectory(prefix="phase1-read-surface-ocr-") as temporary:
@@ -271,51 +312,77 @@ def main() -> int:
             recognized = {row["jobID"]: row for row in run_ocr(executable, missing_jobs)}
 
     evidence: list[dict[str, Any]] = []
+    jobs_by_source: dict[str, list[dict[str, Any]]] = {}
     for job in jobs:
-        result = reusable.get(job["jobID"]) or recognized[job["jobID"]]
-        if result.get("error"):
-            unresolved.append({
+        jobs_by_source.setdefault(job["sourceRecordID"], []).append(job)
+    for source_id, source_jobs in jobs_by_source.items():
+        results: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
+        failure: tuple[str, dict[str, Any], dict[str, Any]] | None = None
+        for job in source_jobs:
+            result = reusable_result(job) or recognized[job["jobID"]]
+            content = result.get("content")
+            lines = result.get("lines")
+            if result.get("error"):
+                failure = ("ocr_error", job, result)
+                break
+            if not isinstance(content, str) or not content.strip() or not isinstance(lines, list):
+                failure = ("empty_surface_ocr", job, result)
+                break
+            results[job["projection"]] = (job, result)
+        if failure:
+            reason, job, result = failure
+            disposition = {
                 "schemaVersion": EVIDENCE_SCHEMA_VERSION,
                 "ruleVersion": rule_version,
                 "sessionID": session_id,
-                "sourceRecordID": job["sourceRecordID"],
+                "sourceRecordID": source_id,
                 "sourceRawLine": job["sourceRawLine"],
                 "jobID": job["jobID"],
-                "reason": "ocr_error",
-                "error": result["error"],
-            })
+                "reason": reason,
+            }
+            if result.get("error"):
+                disposition["error"] = result["error"]
+            unresolved.append(disposition)
             continue
-        content = result.get("content")
-        lines = result.get("lines")
-        if not isinstance(content, str) or not content.strip() or not isinstance(lines, list):
-            unresolved.append({
-                "schemaVersion": EVIDENCE_SCHEMA_VERSION,
-                "ruleVersion": rule_version,
-                "sessionID": session_id,
-                "sourceRecordID": job["sourceRecordID"],
-                "sourceRawLine": job["sourceRawLine"],
-                "jobID": job["jobID"],
-                "reason": "empty_surface_ocr",
-            })
-            continue
-        evidence.append({
+        authoritative_key = (
+            "authoritative_full_pane"
+            if rule_version == V5_SURFACE_RULE_VERSION else "authoritative"
+        )
+        authoritative_job, authoritative = results[authoritative_key]
+        content = authoritative["content"]
+        lines = authoritative["lines"]
+        evidence_id = "evidence_" + digest_text(canonical([
+            job["jobID"] for job in source_jobs
+        ]))
+        row = {
             "schemaVersion": EVIDENCE_SCHEMA_VERSION,
             "ruleVersion": rule_version,
-            "evidenceID": job["jobID"],
-            "jobID": job["jobID"],
+            "evidenceID": evidence_id,
+            "jobID": authoritative_job["jobID"],
+            "jobIDs": [job["jobID"] for job in source_jobs],
             "sessionID": session_id,
-            "sourceRecordID": job["sourceRecordID"],
-            "sourceRawLine": job["sourceRawLine"],
-            "capturedAt": read_by_id[job["sourceRecordID"]].get("capturedAt"),
-            "screenshotRelativePath": job["screenshotRelativePath"],
-            "screenshotSHA256": job["screenshotSHA256"],
-            "surfaceSelection": job["surfaceSelection"],
-            "regionOfInterest": job["regionOfInterest"],
+            "sourceRecordID": source_id,
+            "sourceRawLine": authoritative_job["sourceRawLine"],
+            "capturedAt": read_by_id[source_id].get("capturedAt"),
+            "screenshotRelativePath": authoritative_job["screenshotRelativePath"],
+            "screenshotSHA256": authoritative_job["screenshotSHA256"],
+            "surfaceSelection": authoritative_job["surfaceSelection"],
+            "regionOfInterest": authoritative_job["regionOfInterest"],
             "content": content,
             "contentSHA256": digest_text(content),
             "recognizedLineCount": len(lines),
             "lines": lines,
-        })
+        }
+        if rule_version == V5_SURFACE_RULE_VERSION:
+            comparison_job, comparison = results["comparison_interior"]
+            row.update({
+                "comparisonRegionOfInterest": comparison_job["regionOfInterest"],
+                "comparisonContent": comparison["content"],
+                "comparisonContentSHA256": digest_text(comparison["content"]),
+                "comparisonRecognizedLineCount": len(comparison["lines"]),
+                "comparisonLines": comparison["lines"],
+            })
+        evidence.append(row)
 
     jobs_path = output / "jobs.jsonl"
     evidence_path = output / "read-surfaces.jsonl"

@@ -760,7 +760,12 @@ public struct CausalDatasetCompiler {
                     "nonSchema7": categoryCounts["legacy_pre_schema7", default: 0],
                 ],
             ]
-            if reduction?.string("reducerVersion") == "phase1-semantic-v16" {
+            if [
+                "phase1-semantic-v16", "phase1-semantic-v17",
+                "phase1-semantic-v18",
+            ].contains(
+                reduction?.string("reducerVersion") ?? ""
+            ) {
                 datasetManifest["semanticReadProjection"] = [
                     "sourceField": "readNovelty",
                     "completeReadRemainsAuthoritative": true,

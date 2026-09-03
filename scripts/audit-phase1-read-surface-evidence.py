@@ -17,6 +17,18 @@ from phase1_read_surface_v2 import (
     SURFACE_RULE_VERSION as V2_SURFACE_RULE_VERSION,
     surface_region as v2_surface_region,
 )
+from phase1_read_surface_v3 import (
+    SURFACE_RULE_VERSION as V3_SURFACE_RULE_VERSION,
+    surface_region as v3_surface_region,
+)
+from phase1_read_surface_v4 import (
+    SURFACE_RULE_VERSION as V4_SURFACE_RULE_VERSION,
+    surface_region as v4_surface_region,
+)
+from phase1_read_surface_v5 import (
+    SURFACE_RULE_VERSION as V5_SURFACE_RULE_VERSION,
+    surface_regions as v5_surface_regions,
+)
 
 
 class AuditError(RuntimeError):
@@ -72,7 +84,11 @@ def main() -> int:
     manifest = load_json(manifest_path)
     rule_version = manifest.get("ruleVersion")
     require(
-        rule_version in {V1_SURFACE_RULE_VERSION, V2_SURFACE_RULE_VERSION},
+        rule_version in {
+            V1_SURFACE_RULE_VERSION, V2_SURFACE_RULE_VERSION,
+            V3_SURFACE_RULE_VERSION, V4_SURFACE_RULE_VERSION,
+            V5_SURFACE_RULE_VERSION,
+        },
         "unsupported rule version",
     )
     source = Path(manifest["source"]["directory"]).resolve()
@@ -84,14 +100,19 @@ def main() -> int:
     if not isinstance(raw_screen_schema, int):
         raw_screen_schema = 0
     require(
-        rule_version != V2_SURFACE_RULE_VERSION or raw_screen_schema >= 7,
-        f"{V2_SURFACE_RULE_VERSION} requires rawScreenOCR schema 7+",
+        rule_version not in {
+            V2_SURFACE_RULE_VERSION, V3_SURFACE_RULE_VERSION,
+            V4_SURFACE_RULE_VERSION, V5_SURFACE_RULE_VERSION,
+        }
+        or raw_screen_schema >= 7,
+        f"{rule_version} requires rawScreenOCR schema 7+",
     )
-    surface_selector = (
-        v2_surface_region
-        if rule_version == V2_SURFACE_RULE_VERSION
-        else v1_surface_region
-    )
+    surface_selector = {
+        V1_SURFACE_RULE_VERSION: v1_surface_region,
+        V2_SURFACE_RULE_VERSION: v2_surface_region,
+        V3_SURFACE_RULE_VERSION: v3_surface_region,
+        V4_SURFACE_RULE_VERSION: v4_surface_region,
+    }.get(rule_version)
     require(sha256(session_path) == manifest["source"]["digestsSHA256"]["session.json"], "session hash differs")
     require(sha256(raw_path) == manifest["source"]["digestsSHA256"]["raw.jsonl"], "raw hash differs")
     for name, path in {
@@ -123,7 +144,26 @@ def main() -> int:
     evidence = load_jsonl(evidence_path)
     unresolved = load_jsonl(unresolved_path)
     require(len({row["jobID"] for row in jobs}) == len(jobs), "duplicate job ID")
-    require(len({row["sourceRecordID"] for row in jobs}) == len(jobs), "duplicate job source")
+    expected_jobs_per_source = 2 if rule_version == V5_SURFACE_RULE_VERSION else 1
+    require(
+        len(jobs) == len({row["sourceRecordID"] for row in jobs})
+            * expected_jobs_per_source,
+        "unexpected jobs per source",
+    )
+    if rule_version == V5_SURFACE_RULE_VERSION:
+        jobs_by_source: dict[str, set[str]] = {}
+        for row in jobs:
+            jobs_by_source.setdefault(str(row["sourceRecordID"]), set()).add(
+                str(row.get("projection"))
+            )
+        require(
+            all(
+                projections
+                == {"authoritative_full_pane", "comparison_interior"}
+                for projections in jobs_by_source.values()
+            ),
+            "v5 source lacks exactly one full-pane and one comparison job",
+        )
     require(len({row["sourceRecordID"] for row in evidence}) == len(evidence), "duplicate evidence source")
 
     jobs_by_id = {row["jobID"]: row for row in jobs}
@@ -134,15 +174,30 @@ def main() -> int:
         )
         record = raw_by_id.get(job["sourceRecordID"])
         require(record is not None, f"job source is missing: {job['sourceRecordID']}")
-        region, selection = surface_selector(record)
+        if rule_version == V5_SURFACE_RULE_VERSION:
+            full, comparison, selection = v5_surface_regions(record)
+            expected_regions = {
+                "authoritative_full_pane": full,
+                "comparison_interior": comparison,
+            }
+            projection = job.get("projection")
+            require(projection in expected_regions, f"invalid projection: {job['jobID']}")
+            region = expected_regions[projection]
+        else:
+            assert surface_selector is not None
+            region, selection = surface_selector(record)
+            projection = "authoritative"
         require(region == job["regionOfInterest"], f"job region differs: {job['jobID']}")
         require(selection == job["surfaceSelection"], f"job selection differs: {job['jobID']}")
-        expected_job_id = "surface_" + digest_text(canonical({
+        identity = {
             "recordID": record["recordID"],
             "screenshotSHA256": record.get("screenshotSHA256"),
             "region": region,
-            "ruleVersion": rule_version,
-        }))
+        }
+        if rule_version == V5_SURFACE_RULE_VERSION:
+            identity["projection"] = projection
+        identity["ruleVersion"] = rule_version
+        expected_job_id = "surface_" + digest_text(canonical(identity))
         require(expected_job_id == job["jobID"], f"job identity differs: {job['jobID']}")
         screenshot = (source / job["screenshotRelativePath"]).resolve()
         require(screenshot.is_file(), f"screenshot is missing: {screenshot}")
@@ -159,6 +214,39 @@ def main() -> int:
         require(digest_text(row["content"]) == row["contentSHA256"], f"content hash differs: {row['jobID']}")
         require(len(row["lines"]) == row["recognizedLineCount"], f"line count differs: {row['jobID']}")
         require("\n".join(line["text"] for line in row["lines"]) == row["content"], f"line content differs: {row['jobID']}")
+        if rule_version == V5_SURFACE_RULE_VERSION:
+            job_ids = row.get("jobIDs")
+            require(
+                isinstance(job_ids, list) and len(job_ids) == 2
+                and set(job_ids).issubset(jobs_by_id),
+                f"v5 evidence jobs differ: {row['jobID']}",
+            )
+            comparison_jobs = [
+                jobs_by_id[job_id] for job_id in job_ids
+                if jobs_by_id[job_id].get("projection") == "comparison_interior"
+            ]
+            require(len(comparison_jobs) == 1, f"comparison job missing: {row['jobID']}")
+            comparison_job = comparison_jobs[0]
+            require(
+                row.get("comparisonRegionOfInterest")
+                    == comparison_job["regionOfInterest"],
+                f"comparison region differs: {row['jobID']}",
+            )
+            require(
+                digest_text(row["comparisonContent"])
+                    == row["comparisonContentSHA256"],
+                f"comparison content hash differs: {row['jobID']}",
+            )
+            require(
+                len(row["comparisonLines"])
+                    == row["comparisonRecognizedLineCount"],
+                f"comparison line count differs: {row['jobID']}",
+            )
+            require(
+                "\n".join(line["text"] for line in row["comparisonLines"])
+                    == row["comparisonContent"],
+                f"comparison line content differs: {row['jobID']}",
+            )
 
     for row in unresolved:
         require(row.get("ruleVersion") == rule_version, "unresolved rule differs")

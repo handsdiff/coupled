@@ -24,6 +24,7 @@ swiftc \
   "$project_dir/Sources/CoupledCore/AdjacentViewportDeduplicator.swift" \
   "$project_dir/Sources/CoupledCore/AdjacentCausalReadDelta.swift" \
   "$project_dir/Sources/CoupledCore/ReadSemanticContent.swift" \
+  "$project_dir/Sources/CoupledCore/ReadImageSimilarity.swift" \
   "$project_dir/Sources/CoupledCore/ViewportCrop.swift" \
   "$project_dir/Sources/CoupledCore/LiveEventLogFormatter.swift" \
   "$project_dir/Sources/CoupledCore/VisualChange.swift" \
@@ -117,9 +118,15 @@ python3 -m py_compile \
   "$project_dir/scripts/check-phase1-human-timing.py" \
   "$project_dir/scripts/phase1_read_surface.py" \
   "$project_dir/scripts/phase1_read_surface_v2.py" \
+  "$project_dir/scripts/phase1_read_surface_v3.py" \
+  "$project_dir/scripts/phase1_read_surface_v4.py" \
+  "$project_dir/scripts/phase1_read_surface_v5.py" \
   "$project_dir/scripts/phase1_read_novelty.py" \
   "$project_dir/scripts/check-phase1-read-surface.py" \
   "$project_dir/scripts/check-phase1-read-surface-v2.py" \
+  "$project_dir/scripts/check-phase1-read-surface-v3.py" \
+  "$project_dir/scripts/check-phase1-read-surface-v4.py" \
+  "$project_dir/scripts/check-phase1-read-surface-v5.py" \
   "$project_dir/scripts/check-phase1-read-novelty.py" \
   "$project_dir/scripts/build-phase1-read-surface-v2-review.py" \
   "$project_dir/scripts/serve-phase1-read-surface-v2-review.py" \
@@ -152,6 +159,9 @@ python3 "$project_dir/scripts/check-phase1-context-window-ablation.py"
 python3 "$project_dir/scripts/check-phase1-human-timing.py"
 python3 "$project_dir/scripts/check-phase1-read-surface.py"
 python3 "$project_dir/scripts/check-phase1-read-surface-v2.py"
+python3 "$project_dir/scripts/check-phase1-read-surface-v3.py"
+python3 "$project_dir/scripts/check-phase1-read-surface-v4.py"
+python3 "$project_dir/scripts/check-phase1-read-surface-v5.py"
 python3 "$project_dir/scripts/check-phase1-read-novelty.py"
 
 if [[ -x "$project_dir/.build/tinker-venv/bin/python" ]]; then

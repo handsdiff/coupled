@@ -1,6 +1,7 @@
 import Foundation
 import CoreGraphics
 import CryptoKit
+import ImageIO
 
 func expect(_ condition: @autoclosure () -> Bool, _ message: String) {
     guard condition() else {
@@ -194,6 +195,77 @@ expect(
         == nil,
     "adjacent causal READ delta conservatively retains an unaligned current state"
 )
+expect(
+    adjacentCausalReadTolerantLineDelta(
+        previous: "Stable first line\nThe older pointer-triggered path-not a failed observation.\nStable final line",
+        current: "Stable first line\nThe older pointer-triggered path—not a failed observation.\nStable final line"
+    )?.emittedContent == "",
+    "tolerant READ alignment suppresses an OCR-only interior punctuation change"
+)
+expect(
+    adjacentCausalReadTolerantLineDelta(
+        previous: "tight feedback loops (Bls in the limit...)\nwould future AI civilizations use currency?",
+        current: "machine intelligence outcompeting humans on accumulation of resources, power, and control\ntight feedback loops (BCls in the limit...)\nwould future AI civilizations use currency?"
+    )?.emittedContent
+        == "machine intelligence outcompeting humans on accumulation of resources, power, and control",
+    "tolerant READ alignment retains a new line while removing anchored OCR variants"
+)
+expect(
+    adjacentCausalReadTolerantLineDelta(
+        previous: "A stable contextual line with enough evidence\nVersion 14 is active\nAnother stable contextual line",
+        current: "A stable contextual line with enough evidence\nVersion 15 is active\nAnother stable contextual line"
+    )?.emittedContent == "Version 15 is active",
+    "short meaningful line changes remain visible even between stable anchors"
+)
+expect(
+    adjacentCausalReadTolerantLineDelta(
+        previous: "The deployment is approved after review",
+        current: "The deployment is unapproved after review"
+    ) == nil,
+    "a lone similar sentence is insufficient evidence for OCR suppression"
+)
+expect(
+    adjacentCausalReadTolerantLineDelta(
+        previous: "stable header line\nsame repeated line\nstable footer line",
+        current: "stable header line\nsame repeated line\nnew information\nsame repeated line\nstable footer line"
+    ) == nil,
+    "ambiguous repeated-line alignment retains the complete current READ"
+)
+expect(
+    adjacentCausalReadReflowDelta(
+        previous: "The same semantic paragraph wraps after this important phrase\nand continues to its stable conclusion.",
+        current: "The same semantic paragraph wraps after this\nimportant phrase and continues to its stable conclusion."
+    )?.emittedContent == "",
+    "reflow comparison ignores OCR line wrapping"
+)
+expect(
+    adjacentCausalReadReflowDelta(
+        previous: "Stable exact context before the heading phase1 semantic reducer and enough exact context after the heading",
+        current: "Stable exact context before the heading phasel semantic reducer and enough exact context after the heading\nA genuinely new sentence is now available."
+    )?.emittedContent == "A genuinely new sentence is now available.",
+    "reflow comparison treats one/ell OCR glyph confusion as sensor noise"
+)
+expect(
+    adjacentCausalReadReflowDelta(
+        previous: "Stable surrounding content proves that thin goverr acc are clipped OCR edge tokens in this paragraph",
+        current: "Stable surrounding content proves that thinking government accrue are clipped OCR edge tokens in this paragraph\nNew conclusion retained"
+    )?.emittedContent == "New conclusion retained",
+    "reflow comparison tolerates clipped OCR words inside strong exact context"
+)
+expect(
+    adjacentCausalReadReflowDelta(
+        previous: "Stable contextual evidence around version 14 remains exactly the same across this observation",
+        current: "Stable contextual evidence around version 15 remains exactly the same across this observation"
+    )?.emittedContent == "15",
+    "reflow comparison keeps a true numeric change"
+)
+expect(
+    adjacentCausalReadReflowDelta(
+        previous: "The deployment is approved after extensive stable review context around the decision",
+        current: "The deployment is unapproved after extensive stable review context around the decision"
+    )?.emittedContent == "unapproved",
+    "reflow comparison keeps a meaningful non-OCR word change"
+)
 var readScaffoldingTracker = ReadInterfaceScaffoldingTracker()
 let firstStreamingProjection = readScaffoldingTracker.project(
     surfaceKey: "codex-fixture-surface",
@@ -299,6 +371,177 @@ expect(
         && stableControlProjection?.removed.first?.supportingDistinctWindowCount == 3,
     "generic scaffolding requires four prior content states and three prior titles"
 )
+var sameWindowFooterTracker = ReadInterfaceScaffoldingTracker()
+var sameWindowFooterProjection: ReadSemanticContentProjection?
+for index in 0..<9 {
+    sameWindowFooterProjection = sameWindowFooterTracker.project(
+        surfaceKey: "fixture-single-window-pane",
+        bundleIdentifier: "fixture.app",
+        windowTitle: "One Durable Window",
+        observedContent: "Central state \(index)\nPersistent footer",
+        lines: [
+            ReadOCRLineEvidence(index: 0, text: "Central state \(index)", confidence: 1,
+                x: 0.1, y: 0.5, width: 0.5, height: 0.03),
+            ReadOCRLineEvidence(index: 1, text: "Persistent footer", confidence: 1,
+                x: 0.1, y: 0.04, width: 0.3, height: 0.03),
+        ]
+    )
+}
+expect(
+    sameWindowFooterProjection?.content == "Central state 8"
+        && sameWindowFooterProjection?.removed.first?.reason
+            == "stable_same_window_bottom_interface_text"
+        && sameWindowFooterProjection?.removed.first?.supportingDistinctContentStateCount
+            == 8
+        && sameWindowFooterProjection?.removed.first?.supportingDistinctWindowCount == 1,
+    "stable same-window bottom chrome is removed after eight distinct content states"
+)
+var prescannedFooterTracker = ReadInterfaceScaffoldingTracker()
+for index in 0..<9 {
+    prescannedFooterTracker.observe(
+        surfaceKey: "fixture-prescanned-pane",
+        bundleIdentifier: "fixture.app",
+        windowTitle: "One Durable Window",
+        lines: [
+            ReadOCRLineEvidence(index: 0, text: "Central state \(index)", confidence: 1,
+                x: 0.1, y: 0.5, width: 0.5, height: 0.03),
+            ReadOCRLineEvidence(index: 1, text: "Persistent footer", confidence: 1,
+                x: 0.1, y: 0.04, width: 0.3, height: 0.03),
+        ]
+    )
+}
+let firstPrescannedProjection = prescannedFooterTracker.project(
+    surfaceKey: "fixture-prescanned-pane",
+    bundleIdentifier: "fixture.app",
+    windowTitle: "One Durable Window",
+    observedContent: "Central state 0\nPersistent footer",
+    lines: [
+        ReadOCRLineEvidence(index: 0, text: "Central state 0", confidence: 1,
+            x: 0.1, y: 0.5, width: 0.5, height: 0.03),
+        ReadOCRLineEvidence(index: 1, text: "Persistent footer", confidence: 1,
+            x: 0.1, y: 0.04, width: 0.3, height: 0.03),
+    ]
+)
+var applicationFooterTracker = ReadInterfaceScaffoldingTracker()
+for index in 0..<16 {
+    applicationFooterTracker.observe(
+        surfaceKey: "resized-pane-\(index)",
+        bundleIdentifier: "fixture.resizable.app",
+        windowTitle: "One Durable Window",
+        lines: [
+            ReadOCRLineEvidence(index: 0, text: "Central state \(index)", confidence: 1,
+                x: 0.1, y: 0.5, width: 0.5, height: 0.03),
+            ReadOCRLineEvidence(index: 1, text: "Persistent resized footer", confidence: 1,
+                x: 0.1, y: 0.04, width: 0.3, height: 0.03),
+        ]
+    )
+}
+let applicationFooterProjection = applicationFooterTracker.project(
+    surfaceKey: "resized-pane-first",
+    bundleIdentifier: "fixture.resizable.app",
+    windowTitle: "One Durable Window",
+    observedContent: "Central state 0\nPersistent resized footer",
+    lines: [
+        ReadOCRLineEvidence(index: 0, text: "Central state 0", confidence: 1,
+            x: 0.1, y: 0.5, width: 0.5, height: 0.03),
+        ReadOCRLineEvidence(index: 1, text: "Persistent resized footer", confidence: 1,
+            x: 0.1, y: 0.04, width: 0.3, height: 0.03),
+    ]
+)
+expect(
+    applicationFooterProjection.content == "Central state 0"
+        && applicationFooterProjection.removed.first?.reason
+            == "stable_application_bottom_interface_text",
+    "strong application-level recurrence survives pane-geometry changes"
+)
+var sessionInterfaceTracker = ReadInterfaceScaffoldingTracker()
+for index in 0..<32 {
+    sessionInterfaceTracker.observe(
+        surfaceKey: "session-pane-\(index % 4)",
+        bundleIdentifier: index.isMultiple(of: 2) ? "fixture.editor" : "fixture.browser",
+        windowTitle: "Window \(index)",
+        lines: [
+            ReadOCRLineEvidence(index: 0, text: "Central state \(index)", confidence: 1,
+                x: 0.1, y: 0.5, width: 0.5, height: 0.03),
+            ReadOCRLineEvidence(index: 1, text: "• Persistent resized control", confidence: 1,
+                x: 0.1, y: Double(index % 6) * 0.1, width: 0.3, height: 0.03),
+        ]
+    )
+}
+let sessionInterfaceProjection = sessionInterfaceTracker.project(
+    surfaceKey: "session-pane-new",
+    bundleIdentifier: "fixture.editor",
+    windowTitle: "Window 0",
+    observedContent: "Central state 0\n› Persistent resized control",
+    lines: [
+        ReadOCRLineEvidence(index: 0, text: "Central state 0", confidence: 1,
+            x: 0.1, y: 0.5, width: 0.5, height: 0.03),
+        ReadOCRLineEvidence(index: 1, text: "› Persistent resized control", confidence: 1,
+            x: 0.1, y: 0.6, width: 0.3, height: 0.03),
+    ]
+)
+expect(
+    sessionInterfaceProjection.content == "Central state 0"
+        && sessionInterfaceProjection.removed.first?.reason
+            == "stable_session_interface_text"
+        && sessionInterfaceProjection.removed.first?
+            .supportingDistinctContentStateCount == 32
+        && sessionInterfaceProjection.removed.first?
+            .supportingDistinctWindowCount == 4,
+    "strong exact session recurrence survives pane, app, position, and UI-bullet changes"
+)
+expect(
+    firstPrescannedProjection.content == "Central state 0"
+        && firstPrescannedProjection.removed.first?.reason
+            == "stable_same_window_bottom_interface_text",
+    "session-level recurrence evidence removes proven chrome from its first occurrence"
+)
+var sameWindowHeadingTracker = ReadInterfaceScaffoldingTracker()
+var sameWindowHeadingProjection: ReadSemanticContentProjection?
+for index in 0..<9 {
+    sameWindowHeadingProjection = sameWindowHeadingTracker.project(
+        surfaceKey: "fixture-single-window-heading",
+        bundleIdentifier: "fixture.app",
+        windowTitle: "One Durable Window",
+        observedContent: "Persistent article heading\nCentral state \(index)",
+        lines: [
+            ReadOCRLineEvidence(index: 0, text: "Persistent article heading", confidence: 1,
+                x: 0.1, y: 0.91, width: 0.3, height: 0.03),
+            ReadOCRLineEvidence(index: 1, text: "Central state \(index)", confidence: 1,
+                x: 0.1, y: 0.5, width: 0.5, height: 0.03),
+        ]
+    )
+}
+expect(
+    sameWindowHeadingProjection?.content.contains("Persistent article heading") == true,
+    "same-window recurrence alone does not remove top document text"
+)
+var vscodeCodexScaffoldingTracker = ReadInterfaceScaffoldingTracker()
+let vscodeCodexScaffolding = vscodeCodexScaffoldingTracker.project(
+    surfaceKey: "fixture-vscode-codex",
+    bundleIdentifier: "com.microsoft.VSCode",
+    windowTitle: "checkpoint.md",
+    observedContent: "New response text\n• Working (20s • esc to interrupt)\n• Ran 4 commands • ctrl + t to view transcript\n› Esk Codex to do anything",
+    lines: [
+        ReadOCRLineEvidence(index: 0, text: "New response text", confidence: 1,
+            x: 0.1, y: 0.5, width: 0.4, height: 0.03),
+        ReadOCRLineEvidence(index: 1, text: "• Working (20s • esc to interrupt)",
+            confidence: 1, x: 0.1, y: 0.3, width: 0.4, height: 0.03),
+        ReadOCRLineEvidence(index: 2,
+            text: "• Ran 4 commands • ctrl + t to view transcript", confidence: 1,
+            x: 0.1, y: 0.2, width: 0.5, height: 0.03),
+        ReadOCRLineEvidence(index: 3, text: "› Esk Codex to do anything", confidence: 1,
+            x: 0.1, y: 0.01, width: 0.4, height: 0.03),
+    ]
+)
+expect(
+    vscodeCodexScaffolding.content == "New response text"
+        && Set(vscodeCodexScaffolding.removed.map(\.reason)) == Set([
+            "codex_progress_status", "codex_transcript_control",
+            "codex_composer_placeholder",
+        ]),
+    "VS Code Codex progress, command status, and composer chrome are not READ content"
+)
 var obsidianScaffoldingTracker = ReadInterfaceScaffoldingTracker()
 let obsidianProjection = obsidianScaffoldingTracker.project(
     surfaceKey: "obsidian-note-pane",
@@ -320,6 +563,26 @@ expect(
             "obsidian_backlink_status", "obsidian_document_statistics",
         ]),
     "known Obsidian footer status is removed without generic recurrence"
+)
+let joinedObsidianFooter = obsidianScaffoldingTracker.project(
+    surfaceKey: "obsidian-note-pane-joined",
+    bundleIdentifier: "md.obsidian",
+    windowTitle: "Data - Notes",
+    observedContent: "Final authored fragment ( 1 backlink 0_ 4,631 words 26,702 characters",
+    lines: [
+        ReadOCRLineEvidence(
+            index: 0,
+            text: "Final authored fragment ( 1 backlink 0_ 4,631 words 26,702 characters",
+            confidence: 1, x: 0.1, y: 0.002, width: 0.8, height: 0.02
+        ),
+    ],
+    allowJoinedLineScaffolding: true
+)
+expect(
+    joinedObsidianFooter.content == "Final authored fragment"
+        && joinedObsidianFooter.removed.map(\.reason)
+            == ["obsidian_joined_footer_status"],
+    "joined Obsidian footer is stripped without removing authored line prefix"
 )
 var strictCodexTracker = ReadInterfaceScaffoldingTracker()
 let strictCodexProjection = strictCodexTracker.project(
@@ -351,6 +614,29 @@ expect(
                 x: 0.1, y: 0.5, width: 0.2, height: 0.04)]
         ) == nil,
     "only isolated one- or two-character additions with tiny OCR geometry are microglyphs"
+)
+expect(
+    isolatedReadNoveltyMicroglyphs(
+        "0\n•\n리",
+        lines: [
+            ReadOCRLineEvidence(index: 0, text: "0", confidence: 1,
+                x: 0.5, y: 0.6, width: 0.02, height: 0.03),
+            ReadOCRLineEvidence(index: 1, text: "•", confidence: 1,
+                x: 0.4, y: 0.5, width: 0.01, height: 0.02),
+            ReadOCRLineEvidence(index: 2, text: "리", confidence: 1,
+                x: 0.3, y: 0.4, width: 0.02, height: 0.03),
+        ]
+    )?.count == 2
+        && isolatedReadNoveltyMicroglyphs(
+            "0\nnew content",
+            lines: [
+                ReadOCRLineEvidence(index: 0, text: "0", confidence: 1,
+                    x: 0.5, y: 0.6, width: 0.02, height: 0.03),
+                ReadOCRLineEvidence(index: 1, text: "new content", confidence: 1,
+                    x: 0.2, y: 0.4, width: 0.3, height: 0.03),
+            ]
+        ) == nil,
+    "multiple tiny OCR glyphs are suppressible only when no substantive novelty is mixed in"
 )
 expect(
     isChromiumAuxiliarySurface(
@@ -546,6 +832,41 @@ func fixtureSHA256(_ url: URL) -> String {
         .joined()
 }
 
+func writeFixturePNG(
+    _ url: URL,
+    width: Int,
+    height: Int,
+    horizontalShiftFraction: Double = 0
+) {
+    let colorSpace = CGColorSpaceCreateDeviceRGB()
+    let context = CGContext(
+        data: nil, width: width, height: height,
+        bitsPerComponent: 8, bytesPerRow: width * 4,
+        space: colorSpace,
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    )!
+    context.setFillColor(CGColor(red: 0.94, green: 0.95, blue: 0.96, alpha: 1))
+    context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+    context.setFillColor(CGColor(red: 0.15, green: 0.22, blue: 0.31, alpha: 1))
+    context.fill(CGRect(
+        x: Double(width) * (0.1 + horizontalShiftFraction),
+        y: Double(height) * 0.2,
+        width: Double(width) * 0.8, height: Double(height) * 0.12
+    ))
+    context.setFillColor(CGColor(red: 0.30, green: 0.55, blue: 0.74, alpha: 1))
+    context.fill(CGRect(
+        x: Double(width) * (0.18 + horizontalShiftFraction),
+        y: Double(height) * 0.55,
+        width: Double(width) * 0.5, height: Double(height) * 0.2
+    ))
+    let image = context.makeImage()!
+    let destination = CGImageDestinationCreateWithURL(
+        url as CFURL, "public.png" as CFString, 1, nil
+    )!
+    CGImageDestinationAddImage(destination, image, nil)
+    expect(CGImageDestinationFinalize(destination), "fixture PNG is writable")
+}
+
 func observation(
     _ value: String,
     at timestamp: String,
@@ -662,6 +983,26 @@ func writeEvent(
 
 let fixtureRoot = FileManager.default.temporaryDirectory
     .appendingPathComponent("coupled-causal-check-\(UUID().uuidString)")
+try! FileManager.default.createDirectory(
+    at: fixtureRoot, withIntermediateDirectories: true
+)
+let imageSimilarityOne = fixtureRoot.appendingPathComponent("similarity-1x.png")
+let imageSimilarityTwo = fixtureRoot.appendingPathComponent("similarity-2x.png")
+let imageSimilarityShifted = fixtureRoot.appendingPathComponent("similarity-shifted.png")
+writeFixturePNG(imageSimilarityOne, width: 320, height: 200)
+writeFixturePNG(imageSimilarityTwo, width: 640, height: 400)
+writeFixturePNG(
+    imageSimilarityShifted, width: 640, height: 400,
+    horizontalShiftFraction: 0.04
+)
+expect(
+    (try! normalizedReadImageSSIM(imageSimilarityOne, imageSimilarityTwo)) > 0.995,
+    "resolution-normalized image similarity recognizes one visual state"
+)
+expect(
+    (try! normalizedReadImageSSIM(imageSimilarityOne, imageSimilarityShifted)) > 0.99,
+    "image similarity tolerates narrow capture-origin translation"
+)
 let fixtureInput = fixtureRoot.appendingPathComponent("input")
 let fixtureOutput = fixtureRoot.appendingPathComponent("output")
 try! FileManager.default.createDirectory(at: fixtureInput, withIntermediateDirectories: true)
@@ -1314,11 +1655,17 @@ expect(
 // WRITE-overlapped frame cannot become a READ even if an OCR record references it.
 let visualReadInput = fixtureRoot.appendingPathComponent("visual-read-input")
 let visualReadReduction = fixtureRoot.appendingPathComponent("visual-read-reduction")
+let visualReadReductionV18 = fixtureRoot.appendingPathComponent(
+    "visual-read-reduction-v18"
+)
 let visualReadTamperedReduction = fixtureRoot.appendingPathComponent(
     "visual-read-tampered-reduction"
 )
 let visualReadSurfaceEvidence = fixtureRoot.appendingPathComponent(
     "visual-read-surface-evidence"
+)
+let visualReadSurfaceEvidenceV5 = fixtureRoot.appendingPathComponent(
+    "visual-read-surface-evidence-v5"
 )
 let visualScreenshots = visualReadInput.appendingPathComponent("screenshots")
 try! FileManager.default.createDirectory(
@@ -1332,7 +1679,7 @@ try! jsonData([
     ],
 ], pretty: true).write(to: visualReadInput.appendingPathComponent("session.json"))
 let visualScreenshotURL = visualScreenshots.appendingPathComponent("visual-frame.png")
-try! Data("stable visual frame bytes".utf8).write(to: visualScreenshotURL)
+writeFixturePNG(visualScreenshotURL, width: 1000, height: 800)
 let visualScreenshotSHA = fixtureSHA256(visualScreenshotURL)
 let visualBounds: [String: Any] = [
     "x": 0, "y": 0, "width": 1000, "height": 800,
@@ -1383,7 +1730,9 @@ func visualFrameFixture(
 }
 func visualOCRFixture(
     id: String, frameID: String, sequence: Int, capturedAt: String,
-    content: String = "same visible words"
+    content: String = "same visible words",
+    evidenceReason: String = "visual_change_settled",
+    triggerTypes: [String] = ["visual_change_settled"]
 ) -> [String: Any] {
     [
         "schemaVersion": 1, "recordType": "visual_ocr_observation",
@@ -1392,10 +1741,10 @@ func visualOCRFixture(
         "sourceFrameSequence": sequence,
         "sourceFrameCapturedAt": capturedAt,
         "sourceFrameScreenshotSHA256": visualScreenshotSHA,
-        "evidenceReason": "visual_change_settled", "settledAt": capturedAt,
+        "evidenceReason": evidenceReason, "settledAt": capturedAt,
         "capturedAt": capturedAt, "surfaceResolvedAt": capturedAt,
         "firstActivityAt": capturedAt, "lastActivityAt": capturedAt,
-        "readDelaySeconds": 1, "triggerTypes": ["visual_change_settled"],
+        "readDelaySeconds": 1, "triggerTypes": triggerTypes,
         "eventCount": 1, "content": content,
         "recognizedLineCount": content.split(separator: "\n").count,
         "contentWasTruncated": false,
@@ -1431,11 +1780,15 @@ let coincidentPointerRead: [String: Any] = [
     "readDelaySeconds": 1, "triggerTypes": ["pointer_moved"],
     "eventCount": 1, "content": "same visible words",
     "recognizedLineCount": 1, "contentWasTruncated": false,
+    "screenshotRelativePath": "screenshots/visual-frame.png",
+    "screenshotSHA256": visualScreenshotSHA,
+    "screenshotPixelWidth": 1000, "screenshotPixelHeight": 800,
     "windowBounds": visualBounds, "captureBounds": visualBounds,
     "x": 500, "y": 400, "displayID": 1, "displayBounds": visualBounds,
     "windowID": 7, "windowTitle": "Fixture", "appName": "Fixture",
     "bundleIdentifier": "fixture.app", "processIdentifier": 42,
     "triggerSurface": visualSurface,
+    "accessibilitySurface": visualAccessibilitySurface,
 ]
 let progressiveFrame = visualFrameFixture(
     id: "visual-frame-progressive", sequence: 2,
@@ -1465,11 +1818,67 @@ let suppressedOCR = visualOCRFixture(
     id: "visual-ocr-write-overlap", frameID: "visual-frame-write-overlap",
     sequence: 4, capturedAt: "2026-01-01T00:00:02.000Z"
 )
+func materialReadBoundaryFixture(
+    id: String, at: String, triggerType: String
+) -> [String: Any] {
+    [
+        "schemaVersion": 1, "recordType": "read_candidate_suppression",
+        "recordID": id, "sessionID": "visual-read-session",
+        "observedAt": at, "firstActivityAt": at, "lastActivityAt": at,
+        "triggerTypes": [triggerType], "reason": "fixture_boundary",
+    ]
+}
+let clickBoundary = materialReadBoundaryFixture(
+    id: "click-boundary", at: "2026-01-01T00:00:01.100Z",
+    triggerType: "click"
+)
+let scrollBoundary = materialReadBoundaryFixture(
+    id: "scroll-boundary", at: "2026-01-01T00:00:01.200Z",
+    triggerType: "scroll"
+)
+let activationBoundary = materialReadBoundaryFixture(
+    id: "activation-boundary", at: "2026-01-01T00:00:01.300Z",
+    triggerType: "application_activated"
+)
+let preWriteFrame = visualFrameFixture(
+    id: "visual-frame-pre-write", sequence: 5,
+    capturedAt: "2026-01-01T00:00:01.650Z"
+)
+let preWriteOCR = visualOCRFixture(
+    id: "visual-ocr-pre-write", frameID: "visual-frame-pre-write",
+    sequence: 5, capturedAt: "2026-01-01T00:00:01.650Z",
+    content: "same visible words\ncompleted response",
+    evidenceReason: "pre_write_visual_checkpoint",
+    triggerTypes: ["pre_write_visual_checkpoint"]
+)
+let passiveCompletionFrame = visualFrameFixture(
+    id: "visual-frame-passive-completion", sequence: 6,
+    capturedAt: "2026-01-01T00:00:02.200Z"
+)
+let passiveCompletionOCR = visualOCRFixture(
+    id: "visual-ocr-passive-completion",
+    frameID: "visual-frame-passive-completion", sequence: 6,
+    capturedAt: "2026-01-01T00:00:02.200Z",
+    content: "completed response\nfinal answer\npassive continuation"
+)
+let passiveFinalFrame = visualFrameFixture(
+    id: "visual-frame-passive-final", sequence: 7,
+    capturedAt: "2026-01-01T00:00:02.400Z"
+)
+let passiveFinalOCR = visualOCRFixture(
+    id: "visual-ocr-passive-final", frameID: "visual-frame-passive-final",
+    sequence: 7, capturedAt: "2026-01-01T00:00:02.400Z",
+    content: "completed response\nfinal answer\npassive continuation\npassive final"
+)
 writeFixtureJSONL(
     [
         visualFrame, visualOCR, coincidentPointerRead,
         progressiveFrame, progressiveOCR, scrolledFrame, scrolledOCR,
         suppressedFrame, suppressedOCR,
+        clickBoundary, scrollBoundary, activationBoundary,
+        preWriteFrame, preWriteOCR,
+        passiveCompletionFrame, passiveCompletionOCR,
+        passiveFinalFrame, passiveFinalOCR,
     ],
     to: visualReadInput.appendingPathComponent("raw.jsonl")
 )
@@ -1495,28 +1904,23 @@ let visualEvidenceSelection: [String: Any] = [
     "isV1Fallback": false, "regionOfInterest": visualEvidenceRegion,
 ]
 let visualEvidenceRows: [[String: Any]] = [
-    ("visual-ocr-1", 2, "same visible words"),
-    ("pointer-read-1", 3, "same visible words"),
-    ("visual-ocr-progressive", 5, "same visible words\ncompleted response"),
-    ("visual-ocr-scrolled", 7, "completed response\nfinal answer"),
-    ("visual-ocr-write-overlap", 9, "same visible words"),
-].map { recordID, rawLine, content in
+    ("visual-ocr-1", 2, "2026-01-01T00:00:01.000Z", "same visible words"),
+    ("pointer-read-1", 3, "2026-01-01T00:00:01.200Z", "same visible words"),
+    ("visual-ocr-progressive", 5, "2026-01-01T00:00:01.500Z", "same visible words\ncompleted response"),
+    ("visual-ocr-scrolled", 7, "2026-01-01T00:00:01.800Z", "completed response\nfinal answer"),
+    ("visual-ocr-write-overlap", 9, "2026-01-01T00:00:02.000Z", "same visible words"),
+    ("visual-ocr-pre-write", 14, "2026-01-01T00:00:01.650Z", "same visible words\ncompleted response"),
+    ("visual-ocr-passive-completion", 16, "2026-01-01T00:00:02.200Z", "completed response\nfinal answer\npassive continuation"),
+    ("visual-ocr-passive-final", 18, "2026-01-01T00:00:02.400Z", "completed response\nfinal answer\npassive continuation\npassive final"),
+].map { recordID, rawLine, capturedAt, content in
     let evidenceID = "fixture-surface-\(recordID)"
     return [
         "schemaVersion": 1, "ruleVersion": "ax-pane-read-v2",
         "evidenceID": evidenceID, "jobID": evidenceID,
         "sessionID": "visual-read-session", "sourceRecordID": recordID,
         "sourceRawLine": rawLine,
-        "capturedAt": rawLine == 2
-            ? "2026-01-01T00:00:01.000Z"
-            : rawLine == 3
-                ? "2026-01-01T00:00:01.200Z"
-                : rawLine == 5
-                    ? "2026-01-01T00:00:01.500Z"
-                    : rawLine == 7
-                        ? "2026-01-01T00:00:01.800Z"
-                        : "2026-01-01T00:00:02.000Z",
-        "screenshotSHA256": rawLine == 3 ? NSNull() : visualScreenshotSHA,
+        "capturedAt": capturedAt,
+        "screenshotSHA256": visualScreenshotSHA,
         "regionOfInterest": visualEvidenceRegion,
         "surfaceSelection": visualEvidenceSelection,
         "content": content,
@@ -1544,9 +1948,9 @@ try! jsonData([
         ],
     ],
     "counts": [
-        "rawRecords": 9, "screenObservations": 1,
-        "visualObservations": 4, "readObservations": 5,
-        "evidence": 5, "unresolved": 0,
+        "rawRecords": 18, "screenObservations": 1,
+        "visualObservations": 7, "readObservations": 8,
+        "evidence": 8, "unresolved": 0,
     ],
     "artifacts": [
         "digestsSHA256": [
@@ -1575,9 +1979,9 @@ expect(
         && visualReadEvents[0]["provenance"] as? String
             == "visual_change_screen_ocr"
         && visualReadEvents[0]["sourceRecordIDs"] as? [String]
-            == ["visual-frame-scrolled", "visual-ocr-scrolled"]
+            == ["visual-frame-passive-final", "visual-ocr-passive-final"]
         && visualReadEvents[0]["content"] as? String
-            == "completed response\nfinal answer",
+            == "completed response\nfinal answer\npassive continuation\npassive final",
     "v14 emits only the final viewport while preserving earlier raw evidence"
 )
 expect(
@@ -1589,6 +1993,139 @@ expect(
         $0["reason"] as? String == "superseded_dynamic_surface_state"
     },
     "v14 rejects exact duplicates, superseded prefixes, and active-WRITE-overlapped visual observations"
+)
+try! FileManager.default.createDirectory(
+    at: visualReadSurfaceEvidenceV5, withIntermediateDirectories: true
+)
+let visualV5JobsURL = visualReadSurfaceEvidenceV5.appendingPathComponent(
+    "jobs.jsonl"
+)
+let visualV5RowsURL = visualReadSurfaceEvidenceV5.appendingPathComponent(
+    "read-surfaces.jsonl"
+)
+let visualV5UnresolvedURL = visualReadSurfaceEvidenceV5.appendingPathComponent(
+    "unresolved.jsonl"
+)
+writeFixtureJSONL([], to: visualV5JobsURL)
+let visualV5ComparisonRegion: [String: Any] = [
+    "x": 0.1, "y": 0.275, "width": 0.8, "height": 0.45,
+]
+let visualV5Rows: [[String: Any]] = visualEvidenceRows.map { row in
+    var value = row
+    let content = value["content"] as! String
+    let lines: [[String: Any]] = content.split(separator: "\n")
+        .enumerated().map { index, text in
+            [
+                "text": String(text), "confidence": 1.0,
+                "boundingBox": [
+                    "x": 0.1, "y": 0.7 - Double(index) * 0.08,
+                    "width": 0.8, "height": 0.05,
+                ],
+            ]
+        }
+    value["ruleVersion"] = "ax-pane-read-v5"
+    value["recognizedLineCount"] = lines.count
+    value["lines"] = lines
+    value["comparisonRegionOfInterest"] = visualV5ComparisonRegion
+    value["comparisonContent"] = content
+    value["comparisonContentSHA256"] = SHA256.hash(data: Data(content.utf8))
+        .map { String(format: "%02x", $0) }.joined()
+    value["comparisonRecognizedLineCount"] = lines.count
+    value["comparisonLines"] = lines
+    var selection = value["surfaceSelection"] as! [String: Any]
+    selection["ruleVersion"] = "ax-pane-read-v5"
+    selection["comparisonRegionOfInterest"] = visualV5ComparisonRegion
+    selection["paneCrop"] = [
+        "stage": "comparison_only_before_ocr",
+        "topFraction": 0.2, "bottomFraction": 0.2,
+    ]
+    value["surfaceSelection"] = selection
+    return value
+}
+writeFixtureJSONL(visualV5Rows, to: visualV5RowsURL)
+writeFixtureJSONL([], to: visualV5UnresolvedURL)
+try! jsonData([
+    "schemaVersion": 1, "ruleVersion": "ax-pane-read-v5",
+    "sessionID": "visual-read-session",
+    "ruleSelection": [
+        "includedRecordTypes": [
+            "screen_ocr_observation", "visual_ocr_observation",
+        ],
+    ],
+    "source": [
+        "digestsSHA256": [
+            "session.json": fixtureSHA256(
+                visualReadInput.appendingPathComponent("session.json")
+            ),
+            "raw.jsonl": fixtureSHA256(visualRawURL),
+        ],
+    ],
+    "counts": [
+        "rawRecords": 18, "screenObservations": 1,
+        "visualObservations": 7, "readObservations": 8,
+        "evidence": 8, "unresolved": 0,
+    ],
+    "artifacts": [
+        "digestsSHA256": [
+            "jobs.jsonl": fixtureSHA256(visualV5JobsURL),
+            "read-surfaces.jsonl": fixtureSHA256(visualV5RowsURL),
+            "unresolved.jsonl": fixtureSHA256(visualV5UnresolvedURL),
+        ],
+    ],
+], pretty: true).write(
+    to: visualReadSurfaceEvidenceV5.appendingPathComponent(
+        "read-surface-evidence.json"
+    )
+)
+_ = try! Phase1SemanticReducer(configuration: .init(
+    reducerVersion: "phase1-semantic-v18",
+    readSurfaceEvidenceDirectory: visualReadSurfaceEvidenceV5
+)).reduce(
+    sourceDirectory: visualReadInput, outputDirectory: visualReadReductionV18
+)
+let visualReadV18Events = readFixtureJSONL(
+    visualReadReductionV18.appendingPathComponent("events.jsonl")
+)
+let visualReadV18Unresolved = readFixtureJSONL(
+    visualReadReductionV18.appendingPathComponent("unresolved.jsonl")
+)
+expect(
+    visualReadV18Events.count == 4
+        && visualReadV18Events.map { $0["content"] as? String } == [
+            "same visible words",
+            "same visible words\ncompleted response",
+            "same visible words\ncompleted response",
+            "completed response\nfinal answer\npassive continuation\npassive final",
+        ]
+        && Set(visualReadV18Events[0]["sourceRecordIDs"] as? [String] ?? [])
+            == Set([
+                "visual-frame-1", "visual-ocr-1", "pointer-read-1",
+            ])
+        && Set(visualReadV18Events[3]["sourceRecordIDs"] as? [String] ?? [])
+            == Set([
+                "visual-frame-scrolled", "visual-ocr-scrolled",
+                "visual-frame-passive-completion",
+                "visual-ocr-passive-completion",
+                "visual-frame-passive-final", "visual-ocr-passive-final",
+            ]),
+    "v18 reconciles equivalent sensors, preserves material-action boundaries, and keeps only the final state of an uninterrupted passive interval"
+)
+expect(
+    visualReadV18Unresolved.contains {
+        $0["reason"] as? String == "superseded_equivalent_sensor_observation"
+    } && visualReadV18Unresolved.filter {
+        $0["reason"] as? String == "superseded_dynamic_surface_state"
+    }.count == 2,
+    "v18 preserves explicit dispositions for reconciled and superseded observations"
+)
+let visualReadV18Manifest = try! JSONSerialization.jsonObject(
+    with: Data(contentsOf: visualReadReductionV18.appendingPathComponent(
+        "reduction.json"
+    ))
+) as! [String: Any]
+expect(
+    visualReadV18Manifest["dynamicReadBoundaryCount"] as? Int == 4,
+    "v18 binds click, scroll, activation, and pre-WRITE boundaries into reduction"
 )
 try! Data("tampered visual frame bytes".utf8).write(to: visualScreenshotURL)
 _ = try! Phase1SemanticReducer(configuration: .init(
@@ -1630,6 +2167,9 @@ let motivatingReductionV15 = fixtureRoot.appendingPathComponent(
 )
 let motivatingReductionV16 = fixtureRoot.appendingPathComponent(
     "motivating-reduction-v16"
+)
+let motivatingReductionV17 = fixtureRoot.appendingPathComponent(
+    "motivating-reduction-v17"
 )
 let motivatingMismatchedV12 = fixtureRoot.appendingPathComponent(
     "motivating-mismatched-v12"
@@ -2311,6 +2851,14 @@ writeFixtureJSONL([
         content: "Showing most recent -\nC"
     ),
     rawScreenFixture(
+        id: "ocr-noise-before", capturedAt: "2026-01-01T00:00:00.930Z",
+        content: "stable alpha context line\nThe older pointer-triggered path-not a failed observation.\nstable omega context line"
+    ),
+    rawScreenFixture(
+        id: "ocr-noise-after", capturedAt: "2026-01-01T00:00:00.940Z",
+        content: "stable alpha context line\nThe older pointer-triggered path—not a failed observation.\nstable omega context line"
+    ),
+    rawScreenFixture(
         id: "read-before-write", capturedAt: "2026-01-01T00:00:01.000Z",
         content: "alpha\nbeta"
     ),
@@ -2362,6 +2910,8 @@ let surfaceContentByRecordID = [
     "exact-repeat-two": "exact repeated semantic state",
     "microglyph-before": "Showing most recent -",
     "microglyph-after": "Showing most recent -\nC",
+    "ocr-noise-before": "stable alpha context line\nThe older pointer-triggered path-not a failed observation.\nstable omega context line",
+    "ocr-noise-after": "stable alpha context line\nThe older pointer-triggered path—not a failed observation.\nstable omega context line",
     "read-before-write": "surface alpha\nsurface beta",
     "read-after-write-began": "surface beta\nsurface gamma",
     "read-containing-active-write": "page text\nthere was a paper about encr",
@@ -2636,6 +3186,13 @@ _ = try! Phase1SemanticReducer(configuration: .init(
     sourceDirectory: motivatingInput,
     outputDirectory: motivatingReductionV16
 )
+_ = try! Phase1SemanticReducer(configuration: .init(
+    reducerVersion: "phase1-semantic-v17",
+    readSurfaceEvidenceDirectory: motivatingSurfaceEvidenceV15
+)).reduce(
+    sourceDirectory: motivatingInput,
+    outputDirectory: motivatingReductionV17
+)
 let motivatingEvents = readFixtureJSONL(
     motivatingReduction.appendingPathComponent("events.jsonl")
 )
@@ -2653,6 +3210,9 @@ let motivatingV15Events = readFixtureJSONL(
 )
 let motivatingV16Events = readFixtureJSONL(
     motivatingReductionV16.appendingPathComponent("events.jsonl")
+)
+let motivatingV17Events = readFixtureJSONL(
+    motivatingReductionV17.appendingPathComponent("events.jsonl")
 )
 expect(
     motivatingV11Events.first {
@@ -2743,6 +3303,21 @@ expect(
         && (motivatingV16Microglyph?["readNovelty"] as? [String: Any])?["content"]
             as? String == "",
     "semantic v16 retains complete microglyph evidence while suppressing it as novelty"
+)
+let motivatingV17OCRNoise = motivatingV17Events.first {
+    ($0["sourceRecordIDs"] as? [String]) == ["ocr-noise-after"]
+}
+let motivatingV17OCRNovelty = motivatingV17OCRNoise?["readNovelty"]
+    as? [String: Any]
+let motivatingV17OCRLineAlignment = motivatingV17OCRNovelty?["lineAlignment"]
+    as? [String: Any]
+expect(
+    motivatingV17OCRNoise?["content"] as? String
+        == "stable alpha context line\nThe older pointer-triggered path—not a failed observation.\nstable omega context line"
+        && motivatingV17OCRNovelty?["decision"] as? String
+            == "suppress_no_new_content"
+        && motivatingV17OCRLineAlignment?["fuzzyLineCount"] as? Int == 1,
+    "semantic v17 records an anchored OCR-tolerant line match without changing complete READ authority"
 )
 expect(
     motivatingV15Events.first {
@@ -3064,6 +3639,16 @@ _ = try! CausalDatasetCompiler(configuration: .init(
     sourceDirectory: motivatingInput,
     outputDirectory: motivatingDatasetV16
 )
+let motivatingDatasetV17 = fixtureRoot.appendingPathComponent(
+    "motivating-dataset-v17"
+)
+_ = try! CausalDatasetCompiler(configuration: .init(
+    conversionVersion: "phase1-causal-v16"
+)).compile(
+    inputDirectory: motivatingReductionV17,
+    sourceDirectory: motivatingInput,
+    outputDirectory: motivatingDatasetV17
+)
 let motivatingCompiledV16Events = readFixtureJSONL(
     motivatingDatasetV16.appendingPathComponent("events.jsonl")
 )
@@ -3086,6 +3671,14 @@ expect(
     (motivatingCompiledV16Manifest["semanticReadProjection"]
         as? [String: Any])?["completeReadRemainsAuthoritative"] as? Bool == true,
     "causal v16 declares complete semantic READ authority for shadow novelty"
+)
+let motivatingCompiledV17Manifest = try! JSONSerialization.jsonObject(
+    with: Data(contentsOf: motivatingDatasetV17.appendingPathComponent("dataset.json"))
+) as! [String: Any]
+expect(
+    (motivatingCompiledV17Manifest["semanticReadProjection"]
+        as? [String: Any])?["completeReadRemainsAuthoritative"] as? Bool == true,
+    "causal v16 propagates semantic v17 shadow novelty metadata"
 )
 let motivatingExamples = readFixtureJSONL(
     motivatingDataset.appendingPathComponent("examples.jsonl")

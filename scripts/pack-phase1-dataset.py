@@ -665,7 +665,7 @@ def main() -> int:
             != "readNovelty"
     ):
         raise ValueError(
-            "--dependency-aware-read-novelty requires a compiled semantic-v16 "
+            "--dependency-aware-read-novelty requires a compiled semantic-v16+ "
             "dataset that preserves readNovelty"
         )
     snapshot, resolved_revision = resolve_tokenizer_snapshot(

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Serve the semantic-v16 shadow READ projection for manual review."""
+"""Serve a shadow semantic READ projection for manual review."""
 
 from __future__ import annotations
 
@@ -50,6 +50,43 @@ def source_ids(row: dict[str, Any]) -> tuple[str, ...]:
     return tuple(str(value) for value in row.get("sourceRecordIDs", []) if value)
 
 
+def numeric(value: Any) -> float | None:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    return None
+
+
+def normalized_point(
+    x: Any, y: Any, bounds: dict[str, Any] | None,
+) -> dict[str, float] | None:
+    if not isinstance(bounds, dict):
+        return None
+    values = [numeric(value) for value in (
+        x, y, bounds.get("x"), bounds.get("y"),
+        bounds.get("width"), bounds.get("height"),
+    )]
+    if any(value is None for value in values):
+        return None
+    point_x, point_y, left, top, width, height = values
+    if width <= 0 or height <= 0:
+        return None
+    return {
+        "x": (point_x - left) / width,
+        "y": (point_y - top) / height,
+    }
+
+
+def top_origin_region(value: Any) -> dict[str, float] | None:
+    """Convert a Vision bottom-origin normalized ROI to CSS top-origin geometry."""
+    if not isinstance(value, dict):
+        return None
+    values = [numeric(value.get(key)) for key in ("x", "y", "width", "height")]
+    if any(item is None for item in values):
+        return None
+    x, y, width, height = values
+    return {"x": x, "y": 1 - y - height, "width": width, "height": height}
+
+
 class ReviewStore:
     def __init__(
         self, baseline: Path, candidate: Path, surfaces: Path, source: Path,
@@ -67,8 +104,13 @@ class ReviewStore:
         candidate_manifest = load_json(self.candidate / "reduction.json")
         if base_manifest.get("reducerVersion") != "phase1-semantic-v14":
             raise ReviewError("baseline must be phase1-semantic-v14")
-        if candidate_manifest.get("reducerVersion") != "phase1-semantic-v16":
-            raise ReviewError("candidate must be phase1-semantic-v16")
+        candidate_version = candidate_manifest.get("reducerVersion")
+        if candidate_version not in {
+            "phase1-semantic-v16", "phase1-semantic-v17",
+            "phase1-semantic-v18",
+        }:
+            raise ReviewError("candidate must be phase1-semantic-v16, v17, or v18")
+        self.candidate_version = str(candidate_version)
         for directory, manifest in (
             (self.baseline, base_manifest), (self.candidate, candidate_manifest)
         ):
@@ -106,11 +148,15 @@ class ReviewStore:
             and row.get("recordID") and row.get("sourceFrameRecordID")
         }
 
-        base_reads = {
-            source_ids(row): row
-            for row in load_jsonl(self.baseline / "events.jsonl")
+        base_read_rows = [
+            row for row in load_jsonl(self.baseline / "events.jsonl")
             if row.get("kind") == "read"
-        }
+        ]
+        base_reads = {source_ids(row): row for row in base_read_rows}
+        base_reads_by_source: dict[str, list[dict[str, Any]]] = {}
+        for base_row in base_read_rows:
+            for source_id in source_ids(base_row):
+                base_reads_by_source.setdefault(source_id, []).append(base_row)
         candidate_reads = [
             row for row in load_jsonl(self.candidate / "events.jsonl")
             if row.get("kind") == "read"
@@ -181,7 +227,18 @@ class ReviewStore:
         self.images: dict[str, tuple[Path, str]] = {}
         for row in candidate_reads:
             ids = source_ids(row)
-            baseline_row = base_reads.get(ids)
+            baseline_candidates = {
+                str(item.get("eventID")): item
+                for source_id in ids
+                for item in base_reads_by_source.get(source_id, [])
+            }
+            baseline_row = base_reads.get(ids) or (
+                max(
+                    baseline_candidates.values(),
+                    key=lambda item: int(item.get("sequence", 0)),
+                )
+                if baseline_candidates else None
+            )
             surface = next((evidence[item] for item in reversed(ids) if item in evidence), {})
             observed = str(surface.get("content", row.get("content", "")))
             semantic = str(row.get("content", ""))
@@ -189,7 +246,8 @@ class ReviewStore:
             removed = details.get("removedLines", [])
             novelty = row.get("readNovelty", {})
             predecessor = candidate_by_id.get(str(novelty.get("dependsOnEventID", "")))
-            image_key = ""
+            image_keys: list[dict[str, Any]] = []
+            seen_image_hashes: set[str] = set()
             for source_id in ids:
                 raw_id = frame_by_ocr.get(source_id, source_id)
                 raw = raw_by_id.get(raw_id, {})
@@ -197,10 +255,81 @@ class ReviewStore:
                 expected_hash = raw.get("screenshotSHA256")
                 if isinstance(relative, str) and isinstance(expected_hash, str):
                     path = (self.source / relative).resolve()
-                    if self.source in path.parents and path.is_file():
-                        image_key = str(row["eventID"])
+                    if (
+                        self.source in path.parents and path.is_file()
+                        and expected_hash not in seen_image_hashes
+                    ):
+                        seen_image_hashes.add(expected_hash)
+                        image_key = f"{row['eventID']}:{len(image_keys)}"
                         self.images[image_key] = (path, expected_hash)
-                        break
+                        image_keys.append({
+                            "key": image_key,
+                            "sourceRecordID": source_id,
+                            "capturedAt": raw.get("capturedAt"),
+                            "recordType": raw.get("recordType"),
+                            "pixelWidth": raw.get("screenshotPixelWidth"),
+                            "pixelHeight": raw.get("screenshotPixelHeight"),
+                        })
+            image_by_source = {
+                str(item.get("sourceRecordID")): item for item in image_keys
+            }
+            pane_evidence: list[dict[str, Any]] = []
+            for source_id in ids:
+                surface_evidence = evidence.get(source_id)
+                if not isinstance(surface_evidence, dict):
+                    continue
+                selection = surface_evidence.get("surfaceSelection")
+                if not isinstance(selection, dict):
+                    selection = {}
+                ocr = raw_by_id.get(source_id, {})
+                frame = raw_by_id.get(frame_by_ocr.get(source_id, ""), {})
+                point_record = frame if frame else ocr
+                bounds = ocr.get("windowBounds")
+                if not isinstance(bounds, dict):
+                    frame_surface = frame.get("surface") if frame else None
+                    bounds = (
+                        frame_surface.get("windowBounds")
+                        if isinstance(frame_surface, dict) else None
+                    )
+                image = image_by_source.get(source_id, {})
+                pane_evidence.append({
+                    "sourceRecordID": source_id,
+                    "imageKey": image.get("key"),
+                    "recordType": ocr.get("recordType"),
+                    "pane": top_origin_region(selection.get("regionOfInterest")),
+                    "comparison": top_origin_region(
+                        selection.get("comparisonRegionOfInterest")
+                    ),
+                    "semanticPoint": normalized_point(
+                        ocr.get("x", point_record.get("x")),
+                        ocr.get("y", point_record.get("y")),
+                        bounds,
+                    ),
+                    "rawPointer": normalized_point(
+                        point_record.get("rawInteractionX", ocr.get("x")),
+                        point_record.get("rawInteractionY", ocr.get("y")),
+                        bounds,
+                    ),
+                    "semanticPointReason": (
+                        ocr.get("semanticContentPointReason")
+                        or frame.get("semanticContentPointReason")
+                    ),
+                    "method": selection.get("method"),
+                    "confidence": selection.get("confidence"),
+                    "reason": selection.get("reason"),
+                    "ruleVersion": (
+                        selection.get("ruleVersion")
+                        or surface_evidence.get("ruleVersion")
+                    ),
+                    "selectedDepth": selection.get("selectedDepth"),
+                    "selectedRole": selection.get("selectedRole"),
+                    "selectedSubrole": selection.get("selectedSubrole"),
+                    "isV1Fallback": selection.get("isV1Fallback"),
+                    "regionOfInterest": selection.get("regionOfInterest"),
+                    "comparisonRegionOfInterest": selection.get(
+                        "comparisonRegionOfInterest"
+                    ),
+                })
             scaffolding_changed = bool(removed)
             novelty_decision = str(novelty.get("decision", "missing"))
             changed = scaffolding_changed or novelty_decision in {
@@ -232,7 +361,14 @@ class ReviewStore:
                 "capturedAt": row.get("capturedAt") or row.get("availableAt"),
                 "application": row.get("appName") or row.get("bundleIdentifier"),
                 "windowTitle": row.get("windowTitle"),
-                "sequence": row.get("sequence"),
+                # Keep review labels stable when a candidate reducer removes an
+                # earlier non-event. Users refer to these source-aligned IDs
+                # while comparing successive shadow projections.
+                "sequence": (
+                    baseline_row.get("sequence") if baseline_row
+                    else row.get("sequence")
+                ),
+                "candidateSequence": row.get("sequence"),
                 "baselineSequence": baseline_row.get("sequence") if baseline_row else None,
                 "sourceRecordIDs": list(ids),
                 "priorCompleteSemantic": predecessor.get("content", "") if predecessor else "",
@@ -243,7 +379,15 @@ class ReviewStore:
                 "novelty": novelty,
                 "semanticDetails": details,
                 "baselineContent": baseline_row.get("content", "") if baseline_row else "",
-                "imageKey": image_key,
+                "imageKey": image_keys[-1]["key"] if image_keys else "",
+                "images": image_keys,
+                "paneEvidence": pane_evidence,
+                "observationReconciliation": row.get("reduction", {}).get(
+                    "observationReconciliation"
+                ),
+                "dynamicVisualConsolidation": row.get("reduction", {}).get(
+                    "dynamicVisualConsolidation"
+                ),
                 "modelOccurrences": occurrences,
                 "modelRenderingCounts": dict(sorted(rendering_counts.items())),
                 "modelChanged": model_changed,
@@ -253,15 +397,20 @@ class ReviewStore:
         self.rows = rows
         self.by_id = {row["id"]: row for row in rows}
         decisions = Counter(str(row["novelty"].get("decision", "missing")) for row in rows)
+        pane_methods = Counter(
+            str(item.get("method") or "missing")
+            for row in rows for item in row.get("paneEvidence", [])
+        )
         self.summary = {
-            "status": "semantic_v16_shadow_review_only_not_training_authority",
+            "status": "semantic_read_shadow_review_only_not_training_authority",
             "baselineVersion": "phase1-semantic-v14",
-            "candidateVersion": "phase1-semantic-v16",
+            "candidateVersion": self.candidate_version,
             "sourceRawSHA256": base_raw,
             "readCount": len(rows),
             "changedReadCount": sum(bool(row["changed"]) for row in rows),
             "scaffoldingChangedReadCount": sum(bool(row["removedScaffolding"]) for row in rows),
             "noveltyDecisions": dict(sorted(decisions.items())),
+            "paneSelectionMethods": dict(sorted(pane_methods.items())),
             "packing": packing_summary,
         }
 
@@ -276,19 +425,162 @@ class ReviewStore:
             removed = row.get("removedScaffolding", [])
             value["scaffoldingCount"] = len(removed)
             value["genericScaffoldingCount"] = sum(
-                item.get("reason") == "stable_peripheral_interface_text"
+                item.get("reason") in {
+                    "stable_peripheral_interface_text",
+                    "stable_same_window_bottom_interface_text",
+                    "stable_application_bottom_interface_text",
+                    "stable_session_interface_text",
+                }
                 for item in removed
             )
             value["noveltyDecision"] = row.get("novelty", {}).get("decision", "missing")
+            panes = row.get("paneEvidence", [])
+            selected_pane = panes[-1] if panes else {}
+            value["paneMethod"] = selected_pane.get("method") or "missing"
+            value["paneConfidence"] = selected_pane.get("confidence") or "missing"
+            value["paneReason"] = selected_pane.get("reason") or "missing"
             result.append(value)
         return result
 
 
-HTML = r'''<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Coupled · semantic and model-facing READ review</title><style>
-:root{color-scheme:light dark;font:13px/1.45 ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:Canvas;color:CanvasText}*{box-sizing:border-box}body{margin:0}.shell{display:grid;grid-template-columns:330px minmax(0,1fr);min-height:100vh}.side{border-right:1px solid color-mix(in srgb,CanvasText 18%,transparent);padding:16px;position:sticky;top:0;height:100vh;overflow:auto}.main{padding:22px;min-width:0}.muted{opacity:.62}.stats{display:flex;gap:6px;flex-wrap:wrap;margin:10px 0}.tag{padding:3px 7px;border-radius:999px;background:color-mix(in srgb,CanvasText 8%,Canvas)}select,input,button{font:inherit;color:CanvasText;background:Canvas;border:1px solid color-mix(in srgb,CanvasText 22%,transparent);border-radius:7px;padding:7px}.filters{display:grid;gap:7px;margin:12px 0}.items{display:grid;gap:4px}.item{text-align:left;background:transparent}.item.active{border-color:Highlight;background:color-mix(in srgb,Highlight 18%,Canvas)}.item small{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:.65}.top{display:flex;align-items:center;gap:7px;flex-wrap:wrap}.top h1{font-size:21px;margin:0 auto 0 0}.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px}.panel{border:1px solid color-mix(in srgb,CanvasText 16%,transparent);border-radius:9px;min-width:0;overflow:hidden}.panel h2{font-size:14px;margin:0;padding:10px 12px;border-bottom:1px solid color-mix(in srgb,CanvasText 14%,transparent)}pre{margin:0;padding:12px;white-space:pre-wrap;overflow-wrap:anywhere;max-height:430px;overflow:auto;font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;background:color-mix(in srgb,CanvasText 4%,Canvas)}img{display:block;max-width:100%;max-height:520px;margin:auto}.wide{grid-column:1/-1}.changed{color:#c06400}.empty{padding:70px;text-align:center;opacity:.6}@media(max-width:900px){.shell{display:block}.side{position:static;height:auto;border-right:0;border-bottom:1px solid color-mix(in srgb,CanvasText 18%,transparent)}.grid{grid-template-columns:1fr}.wide{grid-column:auto}}</style>
-<div class="shell"><aside class="side"><b>Semantic → model-facing READ review</b><div id="meta" class="muted"></div><div id="stats" class="stats"></div><div class="filters"><select id="scope"><option value="model-changed">Model-facing text changed</option><option value="fallback">Full/truncated fallback</option><option value="changed">Any semantic change</option><option value="scaffolding">Any scaffolding removal</option><option value="generic">Generic scaffolding only</option><option value="novel">Emitted novelty only</option><option value="suppressed">Suppressed repeats/artifacts</option><option value="">All READs</option></select><select id="app"><option value="">All applications</option></select><input id="search" placeholder="Search #, window, or app"></div><div id="items" class="items"></div></aside><main id="main" class="main"></main></div>
-<script>const $=x=>document.getElementById(x),esc=s=>String(s??'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));let rows=[],filtered=[],index=0;function inScope(r,s){if(!s)return true;if(s==='model-changed')return r.modelChanged;if(s==='fallback')return r.modelFallback;if(s==='changed')return r.changed;if(s==='scaffolding')return r.scaffoldingCount>0;if(s==='generic')return r.genericScaffoldingCount>0;if(s==='novel')return r.noveltyDecision==='emit_new_content';if(s==='suppressed')return r.noveltyDecision.startsWith('suppress_');return false}function apply(){const scope=$('scope').value,a=$('app').value,q=$('search').value.toLowerCase();filtered=rows.filter(r=>inScope(r,scope)&&(!a||r.application===a)&&(!q||(r.sequence+' '+r.windowTitle+' '+r.application).toLowerCase().includes(q)));index=Math.min(index,Math.max(0,filtered.length-1));list();show()}function list(){$('items').innerHTML=filtered.map((r,i)=>`<button class="item ${i===index?'active':''}" data-i="${i}"><b class="${r.changed||r.modelChanged?'changed':''}">#${r.sequence} ${r.modelChanged?'model text shortened':r.modelFallback?'full text retained':r.changed?'cleaned':'unchanged'}</b><small>${esc(r.application)} · ${esc(r.windowTitle)}</small><small>${esc(r.capturedAt)}</small></button>`).join('');document.querySelectorAll('.item').forEach(b=>b.onclick=()=>{index=+b.dataset.i;list();show()})}function renderingLabel(g){if(g.decision==='render_empty_adjacent_repeat')return['EXACT REPEAT REMOVED',`The cleaned READ in panel 4 exactly repeats panel 1. It contributes no new text in ${g.count} later training context${g.count===1?'':'s'}.`,'[No new READ text]'];if(g.decision==='render_novel_content')return['NEW TEXT ONLY',`The immediately preceding READ is present in all ${g.count} training context${g.count===1?'':'s'}, so only the non-repeated text below is included.`,g.modelFacingContent||'[No new READ text]'];if(g.decision==='render_complete_dependency_unavailable')return['FULL CURRENT READ RETAINED',`The preceding READ is outside ${g.count} packed training context${g.count===1?'':'s'}, so removing overlap would lose information.`,g.modelFacingContent||'[No READ text]'];if(g.decision==='render_complete_uncertain_microglyph')return['FULL CURRENT READ RETAINED',`A tiny OCR difference was uncertain in ${g.count} training context${g.count===1?'':'s'}, so nothing was removed.`,g.modelFacingContent||'[No READ text]'];if(g.decision==='retain_existing_truncated_state')return['NORMAL 32K CONTEXT TRUNCATION',`This was the oldest retained READ in ${g.count} training context${g.count===1?'':'s'} and was shortened only to fit the 32K limit—not by overlap removal.`,g.modelFacingContent||'[No retained READ text]'];return['FULL CURRENT READ',`The complete cleaned READ is included in ${g.count} training context${g.count===1?'':'s'}.`,g.modelFacingContent||'[No READ text]']}function renderings(items){if(!items.length)return 'This READ is not retained in any reviewed training example.';const groups=new Map();for(const x of items){const key=JSON.stringify([x.decision,x.dependencyAvailable,x.contentTruncated,x.modelFacingContent]);if(!groups.has(key))groups.set(key,{...x,count:0});groups.get(key).count++}return [...groups.values()].map((g,i)=>{const [title,why,text]=renderingLabel(g);return `${groups.size>1?`CASE ${i+1}\n`:''}${title}\n${why}\n\nTEXT GIVEN TO THE MODEL:\n${text}`}).join('\n\n────────────────────────────────────────\n\n')}async function show(){const s=filtered[index];if(!s){$('main').innerHTML='<div class="empty">No matching READs</div>';return}const r=await(await fetch('/api/read?id='+encodeURIComponent(s.id))).json();const removed=(r.removedScaffolding||[]).map(x=>`[${x.reason}] ${x.text}`).join('\n');$('main').innerHTML=`<div class="top"><h1>#${r.sequence} ${esc(r.application)} · ${esc(r.windowTitle)}</h1><span class="tag">${esc(r.novelty.decision)}</span><span class="tag">removed ${r.removedScaffolding.length} UI lines</span></div><div class="muted">${esc(r.capturedAt)} · ${esc(r.sourceRecordIDs.join(', '))}</div><div class="grid">${r.imageKey?`<section class="panel wide"><h2>Captured screen evidence</h2><img src="/api/image?id=${encodeURIComponent(r.imageKey)}"></section>`:''}<section class="panel"><h2>1 · Previous cleaned READ</h2><pre>${esc(r.priorCompleteSemantic||'—')}</pre></section><section class="panel"><h2>2 · Raw OCR from the screen</h2><pre>${esc(r.observedOCR||'—')}</pre></section><section class="panel"><h2>3 · Interface text removed</h2><pre>${esc(removed||'—')}</pre></section><section class="panel"><h2>4 · Current cleaned READ (always preserved)</h2><pre>${esc(r.completeSemantic||'—')}</pre></section><section class="panel wide"><h2>5 · New text after removing adjacent overlap</h2><pre>${esc(r.novelContent||'[No new READ text]')}</pre></section><section class="panel wide"><h2>6 · What the model receives</h2><pre>${esc(renderings(r.modelOccurrences||[]))}</pre></section><section class="panel wide"><h2>Technical audit details</h2><pre>${esc(JSON.stringify({novelty:r.novelty,semantic:r.semanticDetails,modelRenderingCounts:r.modelRenderingCounts},null,2))}</pre></section></div>`}Promise.all([fetch('/api/summary').then(r=>r.json()),fetch('/api/index').then(r=>r.json())]).then(([s,x])=>{rows=x;const p=s.packing;$('meta').textContent=`${s.baselineVersion} → ${s.candidateVersion}${p?' → '+p.packerVersion:''} · shadow only`;$('stats').innerHTML=`<span class="tag">READs ${s.readCount}</span><span class="tag changed">changed ${s.changedReadCount}</span><span class="tag">scaffolding ${s.scaffoldingChangedReadCount}</span>${p?`<span class="tag">model tokens removed ${p.tokensRemoved.toLocaleString()}</span>`:''}`;[...new Set(rows.map(r=>r.application).filter(Boolean))].sort().forEach(v=>$('app').insertAdjacentHTML('beforeend',`<option>${esc(v)}</option>`));$('scope').onchange=$('app').onchange=$('search').oninput=()=>{index=0;apply()};apply()}).catch(e=>$('main').textContent=e.stack||e)</script>'''
+HTML = r'''<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Coupled · READ before/after review</title>
+<style>
+:root{color-scheme:light dark;font:13px/1.45 ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:Canvas;color:CanvasText}
+*{box-sizing:border-box}body{margin:0}.shell{display:grid;grid-template-columns:330px minmax(0,1fr);min-height:100vh}
+.side{border-right:1px solid color-mix(in srgb,CanvasText 18%,transparent);padding:16px;position:sticky;top:0;height:100vh;overflow:auto}
+.main{padding:22px;min-width:0}.muted{opacity:.62}.stats{display:flex;gap:6px;flex-wrap:wrap;margin:10px 0}
+.tag{padding:3px 7px;border-radius:999px;background:color-mix(in srgb,CanvasText 8%,Canvas)}
+select,input,button{font:inherit;color:CanvasText;background:Canvas;border:1px solid color-mix(in srgb,CanvasText 22%,transparent);border-radius:7px;padding:7px}
+.filters{display:grid;gap:7px;margin:12px 0}.items{display:grid;gap:4px}.item{text-align:left;background:transparent}
+.item.active{border-color:Highlight;background:color-mix(in srgb,Highlight 18%,Canvas)}
+.item small{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:.65}
+.top{display:flex;align-items:center;gap:7px;flex-wrap:wrap}.top h1{font-size:21px;margin:0 auto 0 0}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px}
+.panel{border:1px solid color-mix(in srgb,CanvasText 16%,transparent);border-radius:9px;min-width:0;overflow:hidden}
+.panel h2{font-size:14px;margin:0;padding:10px 12px;border-bottom:1px solid color-mix(in srgb,CanvasText 14%,transparent)}
+pre{margin:0;padding:12px;white-space:pre-wrap;overflow-wrap:anywhere;max-height:540px;overflow:auto;font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;background:color-mix(in srgb,CanvasText 4%,Canvas)}
+img{display:block;max-width:100%;max-height:560px;margin:auto}.wide{grid-column:1/-1}.changed{color:#c06400}.empty{padding:70px;text-align:center;opacity:.6}
+.shot+.shot{border-top:1px solid color-mix(in srgb,CanvasText 12%,transparent)}.shotmeta{padding:7px 10px}
+.shotstage{position:relative;width:100%;margin:auto;line-height:0;background:#050607;overflow:hidden}
+.shotstage img{display:block;width:100%;height:auto;max-height:none;margin:0}
+.overlay{position:absolute;pointer-events:none;z-index:4}
+.overlay.pane{border:3px solid #22c55e;background:rgba(34,197,94,.035)}
+.overlay.comparison{border:2px dashed #38bdf8;background:rgba(56,189,248,.025);z-index:5}
+.point{position:absolute;width:13px;height:13px;border-radius:50%;transform:translate(-50%,-50%);pointer-events:none;z-index:8}
+.point.semantic{background:#fde047;border:2px solid #111;box-shadow:0 0 0 2px #fde047}
+.point.raw{background:transparent;border:2px solid #fb923c;box-shadow:0 0 0 1px #111;z-index:7}
+.paneinfo{padding:9px 10px;border-top:1px solid color-mix(in srgb,CanvasText 12%,transparent);font:11px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace}
+.paneinfo .primary{font-weight:650}.paneinfo .fallback{color:#fb923c}.paneinfo .high{color:#22c55e}
+.legend{display:flex;gap:13px;flex-wrap:wrap;padding:7px 10px;border-top:1px solid color-mix(in srgb,CanvasText 12%,transparent);font-size:11px}
+.legend i{display:inline-block;width:14px;height:9px;margin-right:5px;vertical-align:middle}
+.legend .lpane{border:2px solid #22c55e}.legend .lcomparison{border:2px dashed #38bdf8}
+.legend .lsemantic{width:9px;height:9px;border-radius:50%;background:#fde047}.legend .lraw{width:9px;height:9px;border-radius:50%;border:2px solid #fb923c}
+@media(max-width:900px){.shell{display:block}.side{position:static;height:auto;border-right:0;border-bottom:1px solid color-mix(in srgb,CanvasText 18%,transparent)}.grid{grid-template-columns:1fr}.wide{grid-column:auto}}
+</style>
+<div class="shell">
+  <aside class="side">
+    <b>READ before/after review</b>
+    <div id="meta" class="muted"></div>
+    <div id="stats" class="stats"></div>
+    <div class="filters">
+      <select id="scope">
+        <option value="changed">Changed READs</option>
+        <option value="model-changed">Adjacent overlap removed</option>
+        <option value="scaffolding">Interface text removed</option>
+        <option value="">All READs</option>
+      </select>
+      <select id="app"><option value="">All applications</option></select>
+      <select id="pane"><option value="">All pane-selection methods</option></select>
+      <input id="search" placeholder="Search #, window, or app">
+    </div>
+    <div id="items" class="items"></div>
+  </aside>
+  <main id="main" class="main"></main>
+</div>
+<script>
+const $=x=>document.getElementById(x);
+const esc=s=>String(s??'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+let rows=[],filtered=[],index=0;
+function inScope(r,s){
+  if(!s)return true;
+  if(s==='model-changed')return r.modelChanged;
+  if(s==='changed')return r.changed||r.modelChanged;
+  if(s==='scaffolding')return r.scaffoldingCount>0;
+  return false;
+}
+function currentRead(r){
+  if(['suppress_no_new_content','suppress_nonsemantic_microglyph'].includes(r.novelty.decision))return '[No new READ text]';
+  return r.novelContent||r.completeSemantic||'[No new READ text]';
+}
+function outcomeLabel(r){
+  if(['suppress_no_new_content','suppress_nonsemantic_microglyph'].includes(r.novelty.decision))return 'No newly available text';
+  if(r.novelty.decision==='emit_new_content'){
+    const n=r.novelty.lineAlignment?.matchedLineCount;
+    return n?`New text retained · ${n} repeated line${n===1?'':'s'} removed`:'New text retained · repeated text removed';
+  }
+  if(r.novelty.decision==='retain_full_uncertain')return 'Full READ retained · comparison uncertain';
+  return 'Full READ retained · new surface or boundary';
+}
+function pct(v){return (Math.max(-.02,Math.min(1.02,Number(v)||0))*100).toFixed(4)+'%'}
+function rect(value,kind){
+  if(!value)return '';
+  return `<div class="overlay ${kind}" style="left:${pct(value.x)};top:${pct(value.y)};width:${pct(value.width)};height:${pct(value.height)}"></div>`;
+}
+function point(value,kind,title){
+  if(!value)return '';
+  return `<div class="point ${kind}" title="${esc(title)}" style="left:${pct(value.x)};top:${pct(value.y)}"></div>`;
+}
+function samePoint(a,b){return a&&b&&Math.abs(a.x-b.x)<.001&&Math.abs(a.y-b.y)<.001}
+function paneSummary(p){
+  if(!p)return '<div class="paneinfo fallback">No pane-selection evidence for this sensor record.</div>';
+  const role=[p.selectedRole,p.selectedSubrole].filter(Boolean).join(' / ')||'none';
+  const cssClass=p.isV1Fallback?'fallback':(p.confidence==='high'?'high':'');
+  const pointReason=p.semanticPointReason?` · anchor ${esc(p.semanticPointReason)}`:'';
+  return `<div class="paneinfo"><div class="primary ${cssClass}">${esc(p.ruleVersion)} · ${esc(p.method||'unknown')} · ${esc(p.confidence||'unknown')}</div><div>${esc(p.reason||'no reason')} · AX ${esc(role)}${p.selectedDepth==null?'':` · depth ${esc(p.selectedDepth)}`}${pointReason}</div><div class="muted">source ${esc(p.sourceRecordID)} · ROI ${esc(JSON.stringify(p.regionOfInterest||null))}</div></div>`;
+}
+function imagePanels(r){
+  const values=r.images||[],panes=r.paneEvidence||[];
+  if(!values.length)return '';
+  return `<section class="panel wide"><h2>Raw screenshot${values.length===1?'':'s'} · exact pane selection and pointer evidence</h2>${values.map((item,i)=>{
+    const p=panes.find(value=>value.imageKey===item.key)||panes.find(value=>value.sourceRecordID===item.sourceRecordID);
+    const raw=p?.rawPointer,semantic=p?.semanticPoint;
+    const rawMarker=raw&&!samePoint(raw,semantic)?point(raw,'raw','Raw physical pointer'):'';
+    return `<div class="shot"><div class="muted shotmeta">${i+1}/${values.length} · ${esc(item.capturedAt)} · ${esc(item.recordType)} · ${esc(item.pixelWidth)}×${esc(item.pixelHeight)}</div><div class="shotstage"><img src="/api/image?id=${encodeURIComponent(item.key)}">${rect(p?.pane,'pane')}${rect(p?.comparison,'comparison')}${rawMarker}${point(semantic,'semantic','Semantic point used for AX pane selection')}</div>${paneSummary(p)}<div class="legend"><span><i class="lpane"></i>selected pane / authoritative OCR</span><span><i class="lcomparison"></i>comparison crop</span><span><i class="lsemantic"></i>semantic point</span><span><i class="lraw"></i>raw pointer when different</span></div></div>`;
+  }).join('')}</section>`;
+}
+function apply(){
+  const scope=$('scope').value,a=$('app').value,p=$('pane').value,q=$('search').value.toLowerCase();
+  filtered=rows.filter(r=>inScope(r,scope)&&(!a||r.application===a)&&(!p||r.paneMethod===p)&&(!q||(r.sequence+' '+r.windowTitle+' '+r.application+' '+r.paneMethod+' '+r.paneReason).toLowerCase().includes(q)));
+  index=Math.min(index,Math.max(0,filtered.length-1));list();show();
+}
+function list(){
+  $('items').innerHTML=filtered.map((r,i)=>`<button class="item ${i===index?'active':''}" data-i="${i}"><b class="${r.changed||r.modelChanged?'changed':''}">#${r.sequence}</b><small>${esc(r.application)} · ${esc(r.windowTitle)}</small><small>${esc(r.paneMethod)} · ${esc(r.paneConfidence)}</small><small>${esc(r.capturedAt)}</small></button>`).join('');
+  document.querySelectorAll('.item').forEach(b=>b.onclick=()=>{index=+b.dataset.i;location.hash=filtered[index].id;list();show()});
+}
+async function show(){
+  const s=filtered[index];
+  if(!s){$('main').innerHTML='<div class="empty">No matching READs</div>';return}
+  const r=await(await fetch('/api/read?id='+encodeURIComponent(s.id))).json();
+  const recon=r.observationReconciliation?` · reconciled ${r.observationReconciliation.memberObservationIDs?.length||0} sensor observations`:'';
+  const dynamic=r.dynamicVisualConsolidation?` · settled ${r.dynamicVisualConsolidation.memberCount} dynamic states to the final state`:'';
+  const currentSequence=r.candidateSequence!==r.sequence?` · current semantic event #${r.candidateSequence}`:'';
+  $('main').innerHTML=`<div class="top"><h1>Review #${r.sequence} ${esc(r.application)} · ${esc(r.windowTitle)}</h1><span class="tag">${esc(outcomeLabel(r))}</span><span class="tag">${index+1} of ${filtered.length}</span></div><div class="muted">stable baseline label #${r.sequence}${esc(currentSequence)} · ${esc(r.capturedAt)} · cases are chronological within the selected filter${esc(recon)}${esc(dynamic)}</div><div class="grid">${imagePanels(r)}<section class="panel"><h2>Before · Original READ</h2><pre>${esc(r.baselineContent||'[No READ in the original version]')}</pre></section><section class="panel"><h2>After · Newly available READ text</h2><pre>${esc(currentRead(r))}</pre></section></div>`;
+}
+Promise.all([fetch('/api/summary').then(r=>r.json()),fetch('/api/index').then(r=>r.json())]).then(([s,x])=>{
+  rows=x;
+  $('meta').textContent=`${s.baselineVersion} → ${s.candidateVersion} · shadow review`;
+  $('stats').innerHTML=`<span class="tag">READs ${s.readCount}</span><span class="tag changed">changed ${s.changedReadCount}</span>`;
+  [...new Set(rows.map(r=>r.application).filter(Boolean))].sort().forEach(v=>$('app').insertAdjacentHTML('beforeend',`<option>${esc(v)}</option>`));
+  [...new Set(rows.map(r=>r.paneMethod).filter(Boolean))].sort().forEach(v=>$('pane').insertAdjacentHTML('beforeend',`<option>${esc(v)}</option>`));
+  $('scope').onchange=$('app').onchange=$('pane').onchange=$('search').oninput=()=>{index=0;apply()};apply();
+  const requested=decodeURIComponent(location.hash.slice(1));
+  const requestedIndex=filtered.findIndex(r=>r.id===requested||String(r.sequence)===requested);
+  if(requestedIndex>=0){index=requestedIndex;list();show()}
+}).catch(e=>$('main').textContent=e.stack||e);
+</script>'''
 
 
 def handler(store: ReviewStore) -> type[BaseHTTPRequestHandler]:
@@ -357,7 +649,10 @@ def main() -> int:
         print(json.dumps(store.summary, sort_keys=True))
         return 0
     server = ThreadingHTTPServer((arguments.host, arguments.port), handler(store))
-    print(f"Semantic READ v16 review: http://{arguments.host}:{arguments.port}")
+    print(
+        f"Semantic READ {store.candidate_version} review: "
+        f"http://{arguments.host}:{arguments.port}"
+    )
     try:
         server.serve_forever()
     except KeyboardInterrupt:
