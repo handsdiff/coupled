@@ -542,6 +542,32 @@ expect(
         ]),
     "VS Code Codex progress, command status, and composer chrome are not READ content"
 )
+var recoveredPaneScaffoldingTracker = ReadInterfaceScaffoldingTracker()
+let recoveredPaneScaffolding = recoveredPaneScaffoldingTracker.project(
+    surfaceKey: "fixture-vscode-recovered-pane",
+    bundleIdentifier: "com.microsoft.VSCode",
+    windowTitle: "checkpoint.md",
+    observedContent: "working tor 15s\nDeciding on final state snapshot approach\non\ninc\nan",
+    lines: [
+        ReadOCRLineEvidence(index: 0, text: "working tor 15s", confidence: 1,
+            x: 0.16, y: 0.97, width: 0.12, height: 0.023),
+        ReadOCRLineEvidence(index: 1, text: "Deciding on final state snapshot approach",
+            confidence: 1, x: 0.16, y: 0.88, width: 0.32, height: 0.03),
+        ReadOCRLineEvidence(index: 2, text: "on", confidence: 1,
+            x: 0, y: 0.46, width: 0.019, height: 0.02),
+        ReadOCRLineEvidence(index: 3, text: "inc", confidence: 1,
+            x: 0, y: 0.21, width: 0.020, height: 0.02),
+        ReadOCRLineEvidence(index: 4, text: "an", confidence: 1,
+            x: 0, y: 0.09, width: 0.019, height: 0.02),
+    ]
+)
+expect(
+    recoveredPaneScaffolding.content == "Deciding on final state snapshot approach"
+        && Set(recoveredPaneScaffolding.removed.map(\.reason)) == Set([
+            "codex_progress_status", "clipped_pane_edge_microtext",
+        ]),
+    "recovered pane removes OCR-confused progress chrome and clipped edge fragments"
+)
 var obsidianScaffoldingTracker = ReadInterfaceScaffoldingTracker()
 let obsidianProjection = obsidianScaffoldingTracker.project(
     surfaceKey: "obsidian-note-pane",

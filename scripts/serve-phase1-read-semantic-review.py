@@ -137,6 +137,7 @@ class ReviewStore:
         evidence = {
             str(row["sourceRecordID"]): row for row in load_jsonl(evidence_path)
         }
+        unresolved_surface_rows = load_jsonl(self.surfaces / "unresolved.jsonl")
         raw_rows = load_jsonl(self.source / "raw.jsonl")
         raw_by_id = {
             str(row["recordID"]): row for row in raw_rows if row.get("recordID")
@@ -300,10 +301,15 @@ class ReviewStore:
                     "comparison": top_origin_region(
                         selection.get("comparisonRegionOfInterest")
                     ),
-                    "semanticPoint": normalized_point(
-                        ocr.get("x", point_record.get("x")),
-                        ocr.get("y", point_record.get("y")),
-                        bounds,
+                    "semanticPoint": (
+                        selection.get("semanticPointNormalizedTop")
+                        if isinstance(
+                            selection.get("semanticPointNormalizedTop"), dict
+                        ) else normalized_point(
+                            ocr.get("x", point_record.get("x")),
+                            ocr.get("y", point_record.get("y")),
+                            bounds,
+                        )
                     ),
                     "rawPointer": normalized_point(
                         point_record.get("rawInteractionX", ocr.get("x")),
@@ -329,6 +335,8 @@ class ReviewStore:
                     "comparisonRegionOfInterest": selection.get(
                         "comparisonRegionOfInterest"
                     ),
+                    "recovery": selection.get("recovery"),
+                    "resolution": selection.get("resolution"),
                 })
             scaffolding_changed = bool(removed)
             novelty_decision = str(novelty.get("decision", "missing"))
@@ -392,6 +400,132 @@ class ReviewStore:
                 "modelRenderingCounts": dict(sorted(rendering_counts.items())),
                 "modelChanged": model_changed,
                 "modelFallback": model_fallback,
+                "unresolved": False,
+                "unresolvedReason": None,
+            })
+
+        represented_source_ids = {
+            source_id for row in rows for source_id in row["sourceRecordIDs"]
+        }
+        for unresolved in unresolved_surface_rows:
+            source_id = str(unresolved.get("sourceRecordID") or "")
+            if not source_id or source_id in represented_source_ids:
+                continue
+            raw_id = frame_by_ocr.get(source_id, source_id)
+            raw = raw_by_id.get(source_id, {})
+            frame = raw_by_id.get(raw_id, {}) if raw_id != source_id else {}
+            screenshot_record = frame or raw
+            relative = screenshot_record.get("screenshotRelativePath")
+            expected_hash = screenshot_record.get("screenshotSHA256")
+            image_keys: list[dict[str, Any]] = []
+            if isinstance(relative, str) and isinstance(expected_hash, str):
+                path = (self.source / relative).resolve()
+                if self.source in path.parents and path.is_file():
+                    image_key = f"unresolved:{source_id}:0"
+                    self.images[image_key] = (path, expected_hash)
+                    image_keys.append({
+                        "key": image_key,
+                        "sourceRecordID": source_id,
+                        "capturedAt": raw.get("capturedAt")
+                            or screenshot_record.get("capturedAt"),
+                        "recordType": raw.get("recordType"),
+                        "pixelWidth": screenshot_record.get(
+                            "screenshotPixelWidth"
+                        ),
+                        "pixelHeight": screenshot_record.get(
+                            "screenshotPixelHeight"
+                        ),
+                    })
+            selection = unresolved.get("surfaceSelection")
+            if not isinstance(selection, dict):
+                selection = {}
+            bounds = raw.get("windowBounds")
+            if not isinstance(bounds, dict):
+                surface = screenshot_record.get("surface")
+                bounds = (
+                    surface.get("windowBounds")
+                    if isinstance(surface, dict) else None
+                )
+            pane_evidence = [{
+                "sourceRecordID": source_id,
+                "imageKey": image_keys[0]["key"] if image_keys else None,
+                "recordType": raw.get("recordType"),
+                "pane": top_origin_region(selection.get("regionOfInterest")),
+                "comparison": top_origin_region(
+                    selection.get("comparisonRegionOfInterest")
+                ),
+                "semanticPoint": (
+                    selection.get("semanticPointNormalizedTop")
+                    if isinstance(
+                        selection.get("semanticPointNormalizedTop"), dict
+                    ) else normalized_point(
+                        raw.get("x", screenshot_record.get("x")),
+                        raw.get("y", screenshot_record.get("y")),
+                        bounds,
+                    )
+                ),
+                "rawPointer": normalized_point(
+                    screenshot_record.get("rawInteractionX", raw.get("x")),
+                    screenshot_record.get("rawInteractionY", raw.get("y")),
+                    bounds,
+                ),
+                "semanticPointReason": raw.get("semanticContentPointReason")
+                    or screenshot_record.get("semanticContentPointReason"),
+                "method": selection.get("method") or "unresolved",
+                "confidence": selection.get("confidence") or "unresolved",
+                "reason": unresolved.get("reason"),
+                "ruleVersion": unresolved.get("ruleVersion"),
+                "selectedDepth": selection.get("selectedDepth"),
+                "selectedRole": selection.get("selectedRole"),
+                "selectedSubrole": selection.get("selectedSubrole"),
+                "isV1Fallback": False,
+                "regionOfInterest": selection.get("regionOfInterest"),
+                "comparisonRegionOfInterest": selection.get(
+                    "comparisonRegionOfInterest"
+                ),
+                "recovery": selection.get("recovery"),
+                "resolution": "unresolved",
+            }]
+            baseline_candidates = base_reads_by_source.get(source_id, [])
+            baseline_row = max(
+                baseline_candidates,
+                key=lambda item: int(item.get("sequence", 0)),
+            ) if baseline_candidates else None
+            reason = str(unresolved.get("reason") or "unresolved")
+            rows.append({
+                "id": f"unresolved:{source_id}",
+                "changed": True,
+                "capturedAt": raw.get("capturedAt")
+                    or screenshot_record.get("capturedAt"),
+                "application": raw.get("appName")
+                    or raw.get("bundleIdentifier"),
+                "windowTitle": raw.get("windowTitle"),
+                "sequence": baseline_row.get("sequence") if baseline_row
+                    else f"raw {unresolved.get('sourceRawLine')}",
+                "candidateSequence": None,
+                "baselineSequence": baseline_row.get("sequence")
+                    if baseline_row else None,
+                "sourceRecordIDs": [source_id],
+                "priorCompleteSemantic": "",
+                "observedOCR": str(raw.get("content") or ""),
+                "removedScaffolding": [],
+                "completeSemantic": "",
+                "novelContent": "",
+                "novelty": {"decision": "unresolved_pane"},
+                "semanticDetails": {},
+                "baselineContent": baseline_row.get("content", "")
+                    if baseline_row else str(raw.get("content") or ""),
+                "imageKey": image_keys[0]["key"] if image_keys else "",
+                "images": image_keys,
+                "paneEvidence": pane_evidence,
+                "observationReconciliation": None,
+                "dynamicVisualConsolidation": None,
+                "modelOccurrences": [],
+                "modelRenderingCounts": {},
+                "modelChanged": False,
+                "modelFallback": False,
+                "unresolved": True,
+                "unresolvedReason": reason,
             })
         rows.sort(key=lambda row: (str(row.get("capturedAt") or ""), row["id"]))
         self.rows = rows
@@ -406,18 +540,26 @@ class ReviewStore:
             "baselineVersion": "phase1-semantic-v14",
             "candidateVersion": self.candidate_version,
             "sourceRawSHA256": base_raw,
-            "readCount": len(rows),
-            "changedReadCount": sum(bool(row["changed"]) for row in rows),
+            "readCount": len(candidate_reads),
+            "reviewObservationCount": len(rows),
+            "changedReadCount": sum(
+                bool(row["changed"]) and not bool(row.get("unresolved"))
+                for row in rows
+            ),
             "scaffoldingChangedReadCount": sum(bool(row["removedScaffolding"]) for row in rows),
             "noveltyDecisions": dict(sorted(decisions.items())),
             "paneSelectionMethods": dict(sorted(pane_methods.items())),
             "packing": packing_summary,
+            "unresolvedPaneObservationCount": sum(
+                bool(row.get("unresolved")) for row in rows
+            ),
         }
 
     def index(self) -> list[dict[str, Any]]:
         keys = (
             "id", "changed", "capturedAt", "application", "windowTitle",
             "sequence", "modelChanged", "modelFallback", "modelRenderingCounts",
+            "unresolved", "unresolvedReason",
         )
         result = []
         for row in self.rows:
@@ -473,7 +615,7 @@ img{display:block;max-width:100%;max-height:560px;margin:auto}.wide{grid-column:
 .point.semantic{background:#fde047;border:2px solid #111;box-shadow:0 0 0 2px #fde047}
 .point.raw{background:transparent;border:2px solid #fb923c;box-shadow:0 0 0 1px #111;z-index:7}
 .paneinfo{padding:9px 10px;border-top:1px solid color-mix(in srgb,CanvasText 12%,transparent);font:11px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace}
-.paneinfo .primary{font-weight:650}.paneinfo .fallback{color:#fb923c}.paneinfo .high{color:#22c55e}
+.paneinfo .primary{font-weight:650}.paneinfo .fallback{color:#fb923c}.paneinfo .high{color:#22c55e}.paneinfo .unresolved{color:#ef4444}
 .legend{display:flex;gap:13px;flex-wrap:wrap;padding:7px 10px;border-top:1px solid color-mix(in srgb,CanvasText 12%,transparent);font-size:11px}
 .legend i{display:inline-block;width:14px;height:9px;margin-right:5px;vertical-align:middle}
 .legend .lpane{border:2px solid #22c55e}.legend .lcomparison{border:2px dashed #38bdf8}
@@ -490,6 +632,7 @@ img{display:block;max-width:100%;max-height:560px;margin:auto}.wide{grid-column:
         <option value="changed">Changed READs</option>
         <option value="model-changed">Adjacent overlap removed</option>
         <option value="scaffolding">Interface text removed</option>
+        <option value="unresolved">Unresolved / excluded panes</option>
         <option value="">All READs</option>
       </select>
       <select id="app"><option value="">All applications</option></select>
@@ -509,13 +652,16 @@ function inScope(r,s){
   if(s==='model-changed')return r.modelChanged;
   if(s==='changed')return r.changed||r.modelChanged;
   if(s==='scaffolding')return r.scaffoldingCount>0;
+  if(s==='unresolved')return r.unresolved;
   return false;
 }
 function currentRead(r){
+  if(r.unresolved)return `[Excluded from semantic READ: ${r.unresolvedReason}]`;
   if(['suppress_no_new_content','suppress_nonsemantic_microglyph'].includes(r.novelty.decision))return '[No new READ text]';
   return r.novelContent||r.completeSemantic||'[No new READ text]';
 }
 function outcomeLabel(r){
+  if(r.unresolved)return `Excluded · ${r.unresolvedReason}`;
   if(['suppress_no_new_content','suppress_nonsemantic_microglyph'].includes(r.novelty.decision))return 'No newly available text';
   if(r.novelty.decision==='emit_new_content'){
     const n=r.novelty.lineAlignment?.matchedLineCount;
@@ -539,7 +685,9 @@ function paneSummary(p){
   const role=[p.selectedRole,p.selectedSubrole].filter(Boolean).join(' / ')||'none';
   const cssClass=p.isV1Fallback?'fallback':(p.confidence==='high'?'high':'');
   const pointReason=p.semanticPointReason?` · anchor ${esc(p.semanticPointReason)}`:'';
-  return `<div class="paneinfo"><div class="primary ${cssClass}">${esc(p.ruleVersion)} · ${esc(p.method||'unknown')} · ${esc(p.confidence||'unknown')}</div><div>${esc(p.reason||'no reason')} · AX ${esc(role)}${p.selectedDepth==null?'':` · depth ${esc(p.selectedDepth)}`}${pointReason}</div><div class="muted">source ${esc(p.sourceRecordID)} · ROI ${esc(JSON.stringify(p.regionOfInterest||null))}</div></div>`;
+  const resolutionClass=p.resolution==='unresolved'?'unresolved':cssClass;
+  const recovery=p.recovery?.sourceRecordID?` · recovered from ${esc(p.recovery.sourceRecordID)}`:'';
+  return `<div class="paneinfo"><div class="primary ${resolutionClass}">${esc(p.ruleVersion)} · ${esc(p.method||'unknown')} · ${esc(p.confidence||'unknown')}</div><div>${esc(p.reason||'no reason')} · AX ${esc(role)}${p.selectedDepth==null?'':` · depth ${esc(p.selectedDepth)}`}${pointReason}${recovery}</div><div class="muted">source ${esc(p.sourceRecordID)} · ROI ${esc(JSON.stringify(p.regionOfInterest||null))}</div></div>`;
 }
 function imagePanels(r){
   const values=r.images||[],panes=r.paneEvidence||[];
@@ -572,7 +720,7 @@ async function show(){
 Promise.all([fetch('/api/summary').then(r=>r.json()),fetch('/api/index').then(r=>r.json())]).then(([s,x])=>{
   rows=x;
   $('meta').textContent=`${s.baselineVersion} → ${s.candidateVersion} · shadow review`;
-  $('stats').innerHTML=`<span class="tag">READs ${s.readCount}</span><span class="tag changed">changed ${s.changedReadCount}</span>`;
+  $('stats').innerHTML=`<span class="tag">READs ${s.readCount}</span><span class="tag changed">changed ${s.changedReadCount}</span><span class="tag">unresolved ${s.unresolvedPaneObservationCount}</span>`;
   [...new Set(rows.map(r=>r.application).filter(Boolean))].sort().forEach(v=>$('app').insertAdjacentHTML('beforeend',`<option>${esc(v)}</option>`));
   [...new Set(rows.map(r=>r.paneMethod).filter(Boolean))].sort().forEach(v=>$('pane').insertAdjacentHTML('beforeend',`<option>${esc(v)}</option>`));
   $('scope').onchange=$('app').onchange=$('pane').onchange=$('search').oninput=()=>{index=0;apply()};apply();

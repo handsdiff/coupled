@@ -49,7 +49,7 @@ public enum Phase1ReadSourceNormalizer {
         // outer captured window and must not be retroactively reinterpreted.
         guard [
             "ax-pane-read-v2", "ax-pane-read-v3", "ax-pane-read-v4",
-            "ax-pane-read-v5",
+            "ax-pane-read-v5", "ax-pane-read-v6",
         ]
             .contains(ruleVersion) else {
             return Phase1ReadSource(

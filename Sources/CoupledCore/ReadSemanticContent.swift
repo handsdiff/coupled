@@ -389,6 +389,13 @@ private func knownScaffoldingReason(
 ) -> String? {
     let text = line.normalizedText
     let lowered = text.lowercased()
+    if text.count <= 3,
+       text.contains(where: { $0.isLetter || $0.isNumber }),
+       let x = line.x, let width = line.width, let height = line.height,
+       width <= 0.025, height <= 0.04,
+       x <= 0.002 || x + width >= 0.998 {
+        return "clipped_pane_edge_microtext"
+    }
     if bundleIdentifier == "md.obsidian",
        (line.centerY ?? 1) <= 0.04 {
         if lowered.range(
@@ -420,7 +427,7 @@ private func knownScaffoldingReason(
         return "codex_composer_placeholder"
     }
     if lowered.range(
-        of: #"^(working|worked) for [0-9]+(?:\.[0-9]+)?[smh](?: [0-9]+[smh])?\s*>?$"#,
+        of: #"^(working|worked) (?:for|tor) [0-9]+(?:\.[0-9]+)?[smh](?: [0-9]+[smh])?\s*>?$"#,
         options: .regularExpression
     ) != nil {
         return "codex_progress_status"

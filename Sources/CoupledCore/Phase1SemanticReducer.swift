@@ -153,13 +153,29 @@ public struct Phase1SemanticReducer {
                     ))
                 }
             case "screen_ocr_observation":
+                let screenRecordID = stringValue(object["recordID"]) ?? ""
+                if readSurfaceEvidence?.ruleVersion == "ax-pane-read-v6",
+                   readSurfaceEvidence?.bySourceRecordID[screenRecordID] == nil {
+                    dispositions.append(ReducerDisposition(
+                        line: record.line,
+                        object: reducerUnresolved(
+                            sessionID: sessionID, raw: object,
+                            line: record.line, kind: "read",
+                            rule: "read_surface_resolution_v6",
+                            reason: readSurfaceEvidence?
+                                .unresolvedReasonBySourceRecordID[screenRecordID]
+                                ?? "read_surface_evidence_missing"
+                        )
+                    ))
+                    continue
+                }
                 let effectiveObject = effectiveReadObject(
                     object,
                     evidence: readSurfaceEvidence?.bySourceRecordID[
-                        stringValue(object["recordID"]) ?? ""
+                        screenRecordID
                     ],
                     unresolvedReason: readSurfaceEvidence?.unresolvedReasonBySourceRecordID[
-                        stringValue(object["recordID"]) ?? ""
+                        screenRecordID
                     ],
                     ruleVersion: readSurfaceEvidence?.ruleVersion
                 )
@@ -483,7 +499,10 @@ public struct Phase1SemanticReducer {
             "previewAuthority": false,
         ]
         if let readSurfaceEvidence {
-            reduction["readSurfaceRule"] = "hash-verified \(readSurfaceEvidence.ruleVersion) evidence before causal overlap; unresolved evidence falls back to collector OCR"
+            reduction["readSurfaceRule"] = readSurfaceEvidence.ruleVersion
+                == "ax-pane-read-v6"
+                ? "hash-verified ax-pane-read-v6 evidence before causal overlap; unresolved pane observations remain raw evidence and are excluded from semantic READs"
+                : "hash-verified \(readSurfaceEvidence.ruleVersion) evidence before causal overlap; unresolved evidence falls back to collector OCR"
         }
         if configuration.reducerVersion == "phase1-semantic-v15" {
             reduction["adjacentReadDeltaRule"] = "only globally adjacent causal READ states on a proven compatible surface may align; any WRITE, other surface, browser-title change, geometry change, or uncertain order-preserving alignment resets to the complete current READ"
@@ -650,7 +669,7 @@ private func loadReadSurfaceEvidence(
         ]
     case "phase1-semantic-v18":
         expectedRuleVersions = rawScreenOCRSchema >= 7
-            ? ["ax-pane-read-v5"]
+            ? ["ax-pane-read-v5", "ax-pane-read-v6"]
             : ["pointer-local-read-v1"]
         expectedReadRecordTypes = [
             "screen_ocr_observation", "visual_ocr_observation",
@@ -749,7 +768,8 @@ private func loadReadSurfaceEvidence(
                 "invalid or duplicate read-surface evidence at line \(row.line)"
             )
         }
-        if evidenceRuleVersion == "ax-pane-read-v5" {
+        if ["ax-pane-read-v5", "ax-pane-read-v6"]
+            .contains(evidenceRuleVersion) {
             guard let comparison = object["comparisonContent"] as? String,
                   !comparison.isEmpty,
                   stringValue(object["comparisonContentSHA256"])
@@ -862,7 +882,7 @@ private func effectiveReadObject(
         ?? ruleVersion ?? "unknown"
     effective["captureScope"] = [
         "ax-pane-read-v2", "ax-pane-read-v3", "ax-pane-read-v4",
-        "ax-pane-read-v5",
+        "ax-pane-read-v5", "ax-pane-read-v6",
     ]
         .contains(evidenceRuleVersion)
         ? "active_ax_pane"
@@ -877,7 +897,8 @@ private func effectiveReadObject(
         "originalContentSHA256": reducerSHA256String(originalContent),
         "replacementContentSHA256": evidence["contentSHA256"]!,
     ]
-    if evidenceRuleVersion == "ax-pane-read-v5",
+    if ["ax-pane-read-v5", "ax-pane-read-v6"]
+        .contains(evidenceRuleVersion),
        let comparisonRegion = evidence["comparisonRegionOfInterest"],
        let comparisonHash = evidence["comparisonContentSHA256"] {
         readSurface["comparisonRegionOfInterest"] = comparisonRegion
@@ -3173,7 +3194,7 @@ private func readOverlapPaneIdentity(_ raw: [String: Any]) -> String {
     guard let readSurface = raw["readSurface"] as? [String: Any],
           [
             "ax-pane-read-v2", "ax-pane-read-v3", "ax-pane-read-v4",
-            "ax-pane-read-v5",
+            "ax-pane-read-v5", "ax-pane-read-v6",
           ].contains(
             stringValue(readSurface["ruleVersion"]) ?? ""
           ) else {

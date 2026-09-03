@@ -1,4 +1,4 @@
-# Coupled checkpoint — 2026-09-02
+# Coupled checkpoint — 2026-09-03
 
 This is a snapshot of the current project state, not a changelog. Superseded
 designs, failed runs, and intermediate results belong in Git history:
@@ -74,14 +74,26 @@ evidence. A WRITE or ordinary user-triggered READ ends the run. The semantic
 projection therefore does not synthesize a full response from transient text
 that was never visible at once.
 
-Semantic v15 is currently a shadow candidate, not the active baseline. It keeps
-v14's raw-evidence, visual-frame, active-WRITE, and final-viewport rules inside
-one reducer pass, then replaces line-set overlap with an order-preserving delta
-between globally adjacent causal READ states. A WRITE, another surface, changed
-window title, materially changed pane geometry, incompatible pane role, or
-uncertain alignment retains the complete current READ. AX object identity and
-ancestor depth are audit evidence rather than hard pane identity. This candidate
-must pass side-by-side human review before the default changes from v14.
+The current review candidate is `ax-pane-read-v6` plus
+`phase1-semantic-v18`; neither is promoted merely by generating this artifact.
+Pane v6 resolves each observation in capture-time order from either a
+trustworthy current AX pane or the last compatible pane proven in the same
+application process and window. Current browser document surfaces and repeated
+bounded content panes can establish a new anchor. Application chrome can reuse
+that anchor, but a failed content probe cannot reuse it merely because the
+window ID matches. Pane memory never crosses applications, processes, or
+windows. If neither current nor compatible prior AX evidence is available, the
+observation remains explicit unresolved evidence and produces no semantic READ;
+the old pointer crop and full-window OCR never become silent authority.
+
+Pane-v6 OCR keeps the complete selected pane as authoritative content. Its 20%
+vertical inset is comparison-only. Semantic v18 then removes only proven
+interface scaffolding, reconciles duplicate pointer/visual observations,
+records adjacent order-preserving novelty without destroying complete READ
+state, and consolidates passive dynamic responses to the last visible viewport.
+Clicks, scrolls, activation/focus changes, and pre-WRITE checkpoints remain hard
+consolidation boundaries. Packer v8 renders a READ delta only when its required
+predecessor survives context packing; otherwise it renders the complete state.
 
 The focused `phase1-visual-read-promotion-canary-1` is complete and immutable.
 It retained 28 promoted frames: 14 causally eligible frames each produced one
@@ -120,17 +132,18 @@ canonical edit is the minimum contiguous BEFORE→AFTER transition. Cursor
 coordinates never bias the diff, there is no synthetic deletion fallback, and
 ambiguous evidence remains unresolved rather than inferred from keystrokes.
 
-Semantic v13 selects the active AX-defined READ panel from the retained
-full-window evidence, re-runs OCR there, and applies overlap removal only within
-the same normalized pane. Causal v16 derives compact logical WRITE destinations
-and READ sources while preserving the original evidence. Proven VS Code terminal
-focus no longer inherits a background editor filename. A schema-7 READ names a
-main surface or active pane only from its contemporaneous AX selection; a
-subpane does not inherit an outer window title that may describe a background
-document. OCR content and surrounding events are not used to guess identity.
-Pre-schema-7 READ serialization remains unchanged. Shell-versus-agent WRITE
-identity remains `unknown` unless direct evidence or an explicit manifest-pinned
-local mapping proves it.
+The active pane-v2/semantic-v14 baseline selects an AX-defined READ panel from
+the retained full-window evidence. The pane-v6/semantic-v18 review candidate
+applies the stricter stateful pane policy above before any semantic
+deduplication. Causal v16 derives compact logical WRITE destinations and READ
+sources while preserving the original evidence. Proven VS Code terminal focus
+no longer inherits a background editor filename. A schema-7 READ names a main
+surface or active pane only from its AX selection; a subpane does not inherit an
+outer window title that may describe a background document. OCR content and
+surrounding events are not used to guess identity. Pre-schema-7 READ
+serialization remains unchanged. Shell-versus-agent WRITE identity remains
+`unknown` unless direct evidence or an explicit manifest-pinned local mapping
+proves it.
 
 Episode v9 groups faithful micro-WRITEs into closed compositions. Duplicate or
 unchanged READs do not split an episode; a novel causal READ, outside WRITE,
@@ -233,32 +246,29 @@ latency projection, not proof that a live router knew the destination then.
   causally available mid-composition; the normalized self-authorship fix kept
   `ensure you keep memory usage within reason` as one episode. All closed-
   episode and packing audits passed.
-- A later immutable clone through `2026-09-02T18:20:34.197Z` covers roughly
-  95 minutes: 3,027 raw records and 857 replayable AX-pane observations with
-  zero unresolved OCR results. Canonical replay produced 629 semantic READs,
-  87 micro-WRITEs, 68 closed episodes, and 42 loss-bearing closed-composition
-  targets; every source micro-WRITE was absorbed and none remain in model-
-  facing history. Semantic, causal, episode, and packed artifacts were replayed
-  independently and were byte-identical at every model-relevant boundary.
-  The full 42-example 32K pack is retained for manual review. Point-in-time
-  primitive construction now accepts an explicit immutable `--raw-session`
-  and verifies its digest against causal lineage, so a same-session live
-  journal can continue safely beside the audit snapshot.
-- Shadow semantic-v15 replay of that same immutable clone is deterministic and
-  leaves all 87 semantic WRITEs byte-identical apart from shifted sequence
-  numbers. It retains 622 READs: 238 receive an order-preserving content delta,
-  eight adjacent states contain no new content and are suppressed, 72 uncertain
-  alignments conservatively retain the full current READ, and one causally
-  useful pointer-interrupted visual state is restored. Downstream reconstruction
-  produces 67 closed episodes and 41 loss-bearing targets. The only target
-  membership change combines two adjacent Obsidian fragments into the single
-  question `pane extraction -> event demarcation -> causality -> event
-  consolidation -> conditioning -> tokenization + packing?`; this remains
-  shadow evidence pending manual review.
-- `phase1-ordinary-work-2026-09-02-1` remains live. It is the first
-  ordinary-work session capable of semantic v14 replay; no v14 interpretation
-  is performed online, and the complete session must still be finalized after
-  collection stops.
+- The immutable clone through `2026-09-02T18:20:34.197Z` covers roughly 95
+  minutes and contains 3,027 raw records. Pane v6 reviewed all 857 eligible
+  screen/visual observations: 841 produced hash-bound full-pane and
+  comparison-only OCR evidence, while 16 remained explicit unresolved
+  dispositions. None used the old v1 crop as authoritative content. Of the 841
+  resolved observations, 45 safely reused an earlier pane from the same
+  application process and window; current AX evidence resolved the remainder.
+- Semantic-v18 replay over that pane-v6 evidence produced 578 READs, 87 WRITEs,
+  and 368 non-event dispositions. Two independent replays were byte-identical
+  (`events.jsonl` SHA-256
+  `b658ddbff2fc87c6f413c30dd3eb8afb2f6b24aa56faf3cc8ac8d8fd2e3e8a06`).
+  Causal v16 retained all 665 events, yielded 77 eligible micro-WRITE examples
+  and 10 target exclusions, and had zero context exclusions or rejections.
+  The 32K Qwen pack contains the same 77 examples and five grounded paste
+  actions. Pane, causal, packing, and repository-wide audits pass.
+- Known production cases now behave as intended: material click/scroll/
+  activation/pre-WRITE boundaries remain separate; adjacent overlapping READs
+  retain full semantic states while packing removes only proven repeated
+  content; the previously truncated Chrome and VS Code panes use complete AX
+  regions; repeated Codex composer/model footer text is removed; and the
+  pane-577 gibberish is reduced to the legitimate visible status detail
+  `Deciding on final state snapshot approach`. The 16 unresolved observations
+  are displayed separately in the review UI rather than hidden.
 - `phase1-visual-read-promotion-canary-1` was stopped cleanly and reduced
   separately as a candidate-v14 validation trace; it does not alter the frozen
   semantic-v13 corpus.
@@ -284,20 +294,19 @@ Missing evidence stays unknown; these limits do not authorize guesses.
 
 ## Next step
 
-1. Review the immutable September 2 v14→v15 READ-delta comparison and the full
-   41-target shadow corpus. Promote v15 only if the emitted deltas and sole
-   episode-membership change are faithful.
-2. Let the continuing September 2 ordinary-work session finish, then finalize
-   it through pane evidence and the approved semantic reducer. Combine compatible
-   episode shards chronologically at packing time without duplicating full
-   cumulative contexts.
-3. Manually audit READ surfaces, WRITE destinations, episode boundaries,
-   unresolved records, exclusions, model-visible histories, and targets.
-4. If no recurrent material error appears, freeze the untouched corpus, timing,
-   contexts, routes, decoding, packing, cost/latency, and score-before-update
-   contracts.
-5. Score each new chronological block before appending it once to the preceding
-   personalized checkpoint. Preserve exact inputs and outputs for rescoring.
+1. Manually review the pane-v6/semantic-v18 before/after UI, with particular
+   attention to current AX panes, recovered prior panes, the 14 unresolved
+   observations, browser chrome, VS Code editor/terminal transitions, passive
+   AI responses, material-action boundaries, and the named production cases.
+2. If that review finds no systematic false or incoherent READs, promote pane
+   v6, semantic v18, and dependency-aware pack v8 together; regenerate the
+   immutable multi-session episode corpus from raw evidence.
+3. Audit READ surfaces, WRITE destinations, closed-episode boundaries,
+   unresolved records, model-visible histories, loss-bearing targets, causal
+   masks, and packing before freezing the new corpus.
+4. Resume chronological score-before-update training only after that corpus
+   passes. Preserve exact inputs, outputs, routes, timing, and costs for later
+   rescoring.
 
 First determine whether the cleaner data improves content prediction. Do not
 build the Phase 2 router merely to make the offline result look complete.

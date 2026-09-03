@@ -33,6 +33,11 @@ from phase1_read_surface_v5 import (
     surface_region as v5_surface_region,
     surface_regions as v5_surface_regions,
 )
+from phase1_read_surface_v6 import (
+    SURFACE_RULE_VERSION as V6_SURFACE_RULE_VERSION,
+    PaneResolver as V6PaneResolver,
+    surface_regions_from_review as v6_surface_regions_from_review,
+)
 
 
 EVIDENCE_SCHEMA_VERSION = 1
@@ -119,22 +124,38 @@ def compile_ocr(source: Path, output: Path) -> None:
     )
 
 
-def run_ocr(executable: Path, jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def run_ocr(
+    executable: Path, jobs: list[dict[str, Any]], *, batch_size: int = 16,
+) -> list[dict[str, Any]]:
     if not jobs:
         return []
-    completed = subprocess.run(
-        [str(executable)],
-        input="".join(canonical(job) + "\n" for job in jobs),
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
-    if completed.returncode != 0:
-        raise EvidenceError(
-            f"surface OCR failed with {completed.returncode}: {completed.stderr.strip()}"
+    rows: list[dict[str, Any]] = []
+    for offset in range(0, len(jobs), batch_size):
+        batch = jobs[offset:offset + batch_size]
+        completed = subprocess.run(
+            [str(executable)],
+            input="".join(canonical(job) + "\n" for job in batch),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
         )
-    rows = [json.loads(line) for line in completed.stdout.splitlines() if line.strip()]
+        if completed.returncode != 0:
+            raise EvidenceError(
+                "surface OCR failed for batch "
+                f"{offset // batch_size + 1} with {completed.returncode}: "
+                f"{completed.stderr.strip()}"
+            )
+        batch_rows = [
+            json.loads(line) for line in completed.stdout.splitlines()
+            if line.strip()
+        ]
+        if len(batch_rows) != len(batch):
+            raise EvidenceError(
+                f"surface OCR returned {len(batch_rows)} rows for "
+                f"{len(batch)} jobs in batch {offset // batch_size + 1}"
+            )
+        rows.extend(batch_rows)
     if len(rows) != len(jobs):
         raise EvidenceError(f"surface OCR returned {len(rows)} rows for {len(jobs)} jobs")
     return rows
@@ -162,10 +183,10 @@ def parse_arguments() -> argparse.Namespace:
         choices=[
             "auto", V1_SURFACE_RULE_VERSION, V2_SURFACE_RULE_VERSION,
             V3_SURFACE_RULE_VERSION, V4_SURFACE_RULE_VERSION,
-            V5_SURFACE_RULE_VERSION,
+            V5_SURFACE_RULE_VERSION, V6_SURFACE_RULE_VERSION,
         ],
         default="auto",
-        help="surface rule; auto selects dual-projection AX v5 for raw screen schema 7+",
+        help="surface rule; auto selects stateful dual-projection AX v6 for raw screen schema 7+",
     )
     parser.add_argument(
         "--include-visual-observations",
@@ -199,13 +220,14 @@ def main() -> int:
     rule_version = arguments.rule_version
     if rule_version == "auto":
         rule_version = (
-            V5_SURFACE_RULE_VERSION
+            V6_SURFACE_RULE_VERSION
             if raw_screen_schema >= 7
             else V1_SURFACE_RULE_VERSION
         )
     if rule_version in {
         V2_SURFACE_RULE_VERSION, V3_SURFACE_RULE_VERSION,
         V4_SURFACE_RULE_VERSION, V5_SURFACE_RULE_VERSION,
+        V6_SURFACE_RULE_VERSION,
     } \
             and raw_screen_schema < 7:
         raise EvidenceError(
@@ -217,7 +239,7 @@ def main() -> int:
         V3_SURFACE_RULE_VERSION: v3_surface_region,
         V4_SURFACE_RULE_VERSION: v4_surface_region,
         V5_SURFACE_RULE_VERSION: v5_surface_region,
-    }[rule_version]
+    }.get(rule_version)
     raw_rows = load_jsonl(raw_path)
     included_record_types = ["screen_ocr_observation"]
     if arguments.include_visual_observations:
@@ -229,6 +251,13 @@ def main() -> int:
         row["recordID"]: row for row in read_rows
         if isinstance(row.get("recordID"), str)
     }
+    v6_reviews = (
+        V6PaneResolver().resolve_records([
+            (raw_line, row) for raw_line, row in enumerate(raw_rows, 1)
+            if row.get("recordType") in included_record_types
+        ])
+        if rule_version == V6_SURFACE_RULE_VERSION else {}
+    )
 
     jobs: list[dict[str, Any]] = []
     unresolved: list[dict[str, Any]] = []
@@ -260,10 +289,43 @@ def main() -> int:
         recorded_screenshot_hash = record.get("screenshotSHA256")
         if actual_screenshot_hash != recorded_screenshot_hash:
             raise EvidenceError(f"screenshot hash differs for {record_id}")
-        if rule_version == V5_SURFACE_RULE_VERSION:
+        if rule_version == V6_SURFACE_RULE_VERSION:
+            review = v6_reviews.get(record_id)
+            resolved = (
+                v6_surface_regions_from_review(review)
+                if isinstance(review, dict) else None
+            )
+            if resolved is None:
+                proposal = (
+                    review.get("proposal", {}) if isinstance(review, dict) else {}
+                )
+                unresolved.append({
+                    "schemaVersion": EVIDENCE_SCHEMA_VERSION,
+                    "ruleVersion": rule_version,
+                    "sessionID": session_id,
+                    "sourceRecordID": record_id,
+                    "sourceRawLine": raw_line,
+                    "reason": proposal.get(
+                        "reason", "pane_resolution_evidence_missing"
+                    ),
+                    "surfaceSelection": {
+                        key: proposal[key] for key in (
+                            "method", "confidence", "reason", "resolution",
+                            "physicalPointerClassification", "attemptedSelection",
+                        ) if key in proposal
+                    },
+                })
+                continue
+            full, comparison, selection = resolved
+            regions = [
+                ("authoritative_full_pane", full),
+                ("comparison_interior", comparison),
+            ]
+        elif rule_version == V5_SURFACE_RULE_VERSION:
             full, comparison, selection = v5_surface_regions(record)
             regions = [("authoritative_full_pane", full), ("comparison_interior", comparison)]
         else:
+            assert surface_selector is not None
             region, selection = surface_selector(record)
             regions = [("authoritative", region)]
         for projection, region in regions:
@@ -298,6 +360,21 @@ def main() -> int:
             region = row.get("regionOfInterest")
             if isinstance(screenshot_hash, str) and isinstance(region, dict):
                 reusable_by_region[canonical([screenshot_hash, region])] = row
+            comparison_region = row.get("comparisonRegionOfInterest")
+            comparison_content = row.get("comparisonContent")
+            comparison_lines = row.get("comparisonLines")
+            if (
+                isinstance(screenshot_hash, str)
+                and isinstance(comparison_region, dict)
+                and isinstance(comparison_content, str)
+                and isinstance(comparison_lines, list)
+            ):
+                reusable_by_region[canonical([
+                    screenshot_hash, comparison_region,
+                ])] = {
+                    "content": comparison_content,
+                    "lines": comparison_lines,
+                }
     def reusable_result(job: dict[str, Any]) -> dict[str, Any] | None:
         return reusable.get(job["jobID"]) or reusable_by_region.get(canonical([
             job["screenshotSHA256"], job["regionOfInterest"],
@@ -346,7 +423,9 @@ def main() -> int:
             continue
         authoritative_key = (
             "authoritative_full_pane"
-            if rule_version == V5_SURFACE_RULE_VERSION else "authoritative"
+            if rule_version in {
+                V5_SURFACE_RULE_VERSION, V6_SURFACE_RULE_VERSION,
+            } else "authoritative"
         )
         authoritative_job, authoritative = results[authoritative_key]
         content = authoritative["content"]
@@ -373,7 +452,7 @@ def main() -> int:
             "recognizedLineCount": len(lines),
             "lines": lines,
         }
-        if rule_version == V5_SURFACE_RULE_VERSION:
+        if rule_version in {V5_SURFACE_RULE_VERSION, V6_SURFACE_RULE_VERSION}:
             comparison_job, comparison = results["comparison_interior"]
             row.update({
                 "comparisonRegionOfInterest": comparison_job["regionOfInterest"],

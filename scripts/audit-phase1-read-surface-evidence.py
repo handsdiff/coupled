@@ -29,6 +29,11 @@ from phase1_read_surface_v5 import (
     SURFACE_RULE_VERSION as V5_SURFACE_RULE_VERSION,
     surface_regions as v5_surface_regions,
 )
+from phase1_read_surface_v6 import (
+    SURFACE_RULE_VERSION as V6_SURFACE_RULE_VERSION,
+    PaneResolver as V6PaneResolver,
+    surface_regions_from_review as v6_surface_regions_from_review,
+)
 
 
 class AuditError(RuntimeError):
@@ -87,7 +92,7 @@ def main() -> int:
         rule_version in {
             V1_SURFACE_RULE_VERSION, V2_SURFACE_RULE_VERSION,
             V3_SURFACE_RULE_VERSION, V4_SURFACE_RULE_VERSION,
-            V5_SURFACE_RULE_VERSION,
+            V5_SURFACE_RULE_VERSION, V6_SURFACE_RULE_VERSION,
         },
         "unsupported rule version",
     )
@@ -103,6 +108,7 @@ def main() -> int:
         rule_version not in {
             V2_SURFACE_RULE_VERSION, V3_SURFACE_RULE_VERSION,
             V4_SURFACE_RULE_VERSION, V5_SURFACE_RULE_VERSION,
+            V6_SURFACE_RULE_VERSION,
         }
         or raw_screen_schema >= 7,
         f"{rule_version} requires rawScreenOCR schema 7+",
@@ -140,17 +146,27 @@ def main() -> int:
         if row.get("recordType") in included_record_types
         and isinstance(row.get("recordID"), str)
     }
+    v6_reviews = (
+        V6PaneResolver().resolve_records([
+            (line, row) for line, row in enumerate(raw_rows, 1)
+            if row.get("recordType") in included_record_types
+        ])
+        if rule_version == V6_SURFACE_RULE_VERSION else {}
+    )
     jobs = load_jsonl(jobs_path)
     evidence = load_jsonl(evidence_path)
     unresolved = load_jsonl(unresolved_path)
     require(len({row["jobID"] for row in jobs}) == len(jobs), "duplicate job ID")
-    expected_jobs_per_source = 2 if rule_version == V5_SURFACE_RULE_VERSION else 1
+    dual_projection = rule_version in {
+        V5_SURFACE_RULE_VERSION, V6_SURFACE_RULE_VERSION,
+    }
+    expected_jobs_per_source = 2 if dual_projection else 1
     require(
         len(jobs) == len({row["sourceRecordID"] for row in jobs})
             * expected_jobs_per_source,
         "unexpected jobs per source",
     )
-    if rule_version == V5_SURFACE_RULE_VERSION:
+    if dual_projection:
         jobs_by_source: dict[str, set[str]] = {}
         for row in jobs:
             jobs_by_source.setdefault(str(row["sourceRecordID"]), set()).add(
@@ -174,7 +190,23 @@ def main() -> int:
         )
         record = raw_by_id.get(job["sourceRecordID"])
         require(record is not None, f"job source is missing: {job['sourceRecordID']}")
-        if rule_version == V5_SURFACE_RULE_VERSION:
+        if rule_version == V6_SURFACE_RULE_VERSION:
+            review = v6_reviews.get(str(record.get("recordID")))
+            resolved = (
+                v6_surface_regions_from_review(review)
+                if isinstance(review, dict) else None
+            )
+            require(resolved is not None, f"job source is unresolved: {job['jobID']}")
+            assert resolved is not None
+            full, comparison, selection = resolved
+            expected_regions = {
+                "authoritative_full_pane": full,
+                "comparison_interior": comparison,
+            }
+            projection = job.get("projection")
+            require(projection in expected_regions, f"invalid projection: {job['jobID']}")
+            region = expected_regions[projection]
+        elif rule_version == V5_SURFACE_RULE_VERSION:
             full, comparison, selection = v5_surface_regions(record)
             expected_regions = {
                 "authoritative_full_pane": full,
@@ -194,7 +226,7 @@ def main() -> int:
             "screenshotSHA256": record.get("screenshotSHA256"),
             "region": region,
         }
-        if rule_version == V5_SURFACE_RULE_VERSION:
+        if dual_projection:
             identity["projection"] = projection
         identity["ruleVersion"] = rule_version
         expected_job_id = "surface_" + digest_text(canonical(identity))
@@ -214,7 +246,22 @@ def main() -> int:
         require(digest_text(row["content"]) == row["contentSHA256"], f"content hash differs: {row['jobID']}")
         require(len(row["lines"]) == row["recognizedLineCount"], f"line count differs: {row['jobID']}")
         require("\n".join(line["text"] for line in row["lines"]) == row["content"], f"line content differs: {row['jobID']}")
-        if rule_version == V5_SURFACE_RULE_VERSION:
+        if rule_version == V6_SURFACE_RULE_VERSION:
+            selection = row.get("surfaceSelection", {})
+            require(selection.get("resolved") is True, "v6 evidence is not resolved")
+            require(
+                selection.get("method") != "v1_fallback"
+                and selection.get("isV1Fallback") is False,
+                "v6 promoted the pointer crop to authoritative evidence",
+            )
+            if selection.get("method") == "recovered_prior_ax_pane":
+                recovery = selection.get("recovery", {})
+                require(
+                    recovery.get("sameCanonicalWindow") is True
+                    and isinstance(recovery.get("sourceRecordID"), str),
+                    "v6 recovered pane lacks same-window lineage",
+                )
+        if dual_projection:
             job_ids = row.get("jobIDs")
             require(
                 isinstance(job_ids, list) and len(job_ids) == 2
@@ -251,6 +298,17 @@ def main() -> int:
     for row in unresolved:
         require(row.get("ruleVersion") == rule_version, "unresolved rule differs")
         require(row.get("sessionID") == manifest.get("sessionID"), "unresolved session differs")
+        if rule_version == V6_SURFACE_RULE_VERSION and row.get("reason") in {
+            "no_trustworthy_current_or_prior_ax_pane",
+            "window_identity_unavailable_for_pane_recovery",
+        }:
+            review = v6_reviews.get(str(row.get("sourceRecordID")))
+            require(
+                isinstance(review, dict)
+                and review.get("proposal", {}).get("resolved") is False
+                and review.get("proposal", {}).get("regionOfInterest") is None,
+                "v6 unresolved pane unexpectedly has an authoritative region",
+            )
 
     disposition_ids = {row["sourceRecordID"] for row in evidence} | {
         row["sourceRecordID"] for row in unresolved
