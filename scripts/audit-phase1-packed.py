@@ -35,8 +35,14 @@ def main() -> int:
     if manifest.get("schemaVersion") != 4 or manifest.get("packerVersion") not in {
         "phase1-token-pack-v4", "phase1-token-pack-v5", "phase1-token-pack-v6",
         "phase1-token-pack-v7", "phase1-token-pack-v8", "phase1-token-pack-v9",
+        "phase1-token-pack-v10",
     }:
-        raise ValueError("auditor requires phase1-token-pack-v4 through v9")
+        raise ValueError("auditor requires phase1-token-pack-v4 through v10")
+    if manifest.get("packerVersion") == "phase1-token-pack-v10" and (
+        manifest.get("source", {}).get("reducerVersion")
+            != "phase1-semantic-v21"
+    ):
+        raise ValueError("phase1-token-pack-v10 requires phase1-semantic-v21")
     packed_path = directory / "packed-examples.jsonl"
     expected = manifest["artifactDigestsSHA256"]["packed-examples.jsonl"]
     if sha256(packed_path) != expected:
@@ -44,7 +50,7 @@ def main() -> int:
     context_plans: dict[str, dict] = {}
     if manifest["packerVersion"] in {
         "phase1-token-pack-v5", "phase1-token-pack-v6", "phase1-token-pack-v7",
-        "phase1-token-pack-v8", "phase1-token-pack-v9",
+        "phase1-token-pack-v8", "phase1-token-pack-v9", "phase1-token-pack-v10",
     }:
         plans_path = directory / "context-plans.jsonl"
         expected_plans = manifest["artifactDigestsSHA256"].get("context-plans.jsonl")
@@ -85,7 +91,7 @@ def main() -> int:
         "task_instruction_plus_history_plus_conditioning_query"
         if manifest["packerVersion"] in {
             "phase1-token-pack-v6", "phase1-token-pack-v7", "phase1-token-pack-v8",
-            "phase1-token-pack-v9",
+            "phase1-token-pack-v9", "phase1-token-pack-v10",
         }
         else "history_plus_conditioning_query_only"
     )
@@ -150,7 +156,7 @@ def main() -> int:
                 raise ValueError(f"line {line_number}: instruction/history/query token counts disagree")
             if manifest["packerVersion"] in {
                 "phase1-token-pack-v6", "phase1-token-pack-v7", "phase1-token-pack-v8",
-                "phase1-token-pack-v9",
+                "phase1-token-pack-v9", "phase1-token-pack-v10",
             }:
                 instruction_ids = inputs[:instruction_count]
                 if (
@@ -239,11 +245,15 @@ def main() -> int:
                     if not (
                         manifest["packerVersion"] in {
                             "phase1-token-pack-v8", "phase1-token-pack-v9",
+                            "phase1-token-pack-v10",
                         }
                         and rendering.get("decision") in {
                             "render_novel_content", "render_empty_adjacent_repeat",
                             "render_grounded_stable_interior",
                             "render_empty_proven_no_novelty",
+                            "render_contiguous_novel_content",
+                            "render_empty_high_precision_ambiguity",
+                            "render_empty_low_information_change",
                         }
                         and json.loads(span["packedSerialized"]).get("kind") == "read"
                         and isinstance(
@@ -261,6 +271,7 @@ def main() -> int:
                     if not (
                         manifest["packerVersion"] in {
                             "phase1-token-pack-v8", "phase1-token-pack-v9",
+                            "phase1-token-pack-v10",
                         }
                         and rendering.get("schemaVersion") == 1
                         and rendering.get("rendererVersion")
@@ -270,11 +281,14 @@ def main() -> int:
                     decision = rendering.get("decision")
                     if decision in {
                         "render_novel_content", "render_grounded_stable_interior",
+                        "render_contiguous_novel_content",
                     }:
                         read_rendering_counts["novelContentRendered"] += 1
                     elif decision in {
                         "render_empty_adjacent_repeat",
                         "render_empty_proven_no_novelty",
+                        "render_empty_high_precision_ambiguity",
+                        "render_empty_low_information_change",
                     }:
                         read_rendering_counts["adjacentRepeatContentSuppressed"] += 1
                     elif decision == "render_complete_dependency_unavailable":
@@ -321,6 +335,7 @@ def main() -> int:
                 raise ValueError(f"line {line_number}: discarded token count disagrees")
             if manifest["packerVersion"] in {
                 "phase1-token-pack-v8", "phase1-token-pack-v9",
+                "phase1-token-pack-v10",
             }:
                 selected_count = record.get("modelInputTokenCountAfterContextSelection")
                 if not (
@@ -368,6 +383,7 @@ def main() -> int:
 
             if manifest["packerVersion"] in {
                 "phase1-token-pack-v8", "phase1-token-pack-v9",
+                "phase1-token-pack-v10",
             }:
                 read_rendering_counts["tokensRemoved"] += (
                     record["modelInputTokenCountAfterContextSelection"] - input_count
@@ -394,16 +410,30 @@ def main() -> int:
         if manifest["counts"].get(key) != value:
             raise ValueError(f"manifest count disagrees: {key}")
     if manifest["packerVersion"] in {
-        "phase1-token-pack-v8", "phase1-token-pack-v9",
+        "phase1-token-pack-v8", "phase1-token-pack-v9", "phase1-token-pack-v10",
     }:
         novelty_contract = manifest.get("packing", {}).get("readNoveltyRendering", {})
-        if not (
+        shared_contract_valid = (
             novelty_contract.get("enabled") is True
             and novelty_contract.get("status") == "shadow_opt_in"
             and novelty_contract.get("missingDependencyFallback")
                 == "retain complete current READ"
+        )
+        historical_policy_valid = manifest["packerVersion"] in {
+            "phase1-token-pack-v8", "phase1-token-pack-v9",
+        } and novelty_contract.get("uncertainMicroglyphPolicy") == (
+            "retain complete current READ"
+        )
+        v10_policy_valid = manifest["packerVersion"] == "phase1-token-pack-v10" and (
+            novelty_contract.get("requiredReducerVersion")
+                == "phase1-semantic-v21"
             and novelty_contract.get("uncertainMicroglyphPolicy")
-                == "retain complete current READ"
+                == "render an empty READ when the reducer proves a low-information adjacent change"
+            and novelty_contract.get("ambiguousAdjacentDifferencePolicy")
+                == "render an empty READ when substantial overlap exists without one contiguous novel region"
+        )
+        if not shared_contract_valid or not (
+            historical_policy_valid or v10_policy_valid
         ):
             raise ValueError("dependency-aware READ novelty contract is incomplete")
         if (

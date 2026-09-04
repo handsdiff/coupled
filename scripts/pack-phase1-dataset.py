@@ -42,7 +42,7 @@ except ImportError as error:
 
 
 PACKER_VERSION = "phase1-token-pack-v7"
-DEPENDENCY_AWARE_PACKER_VERSION = "phase1-token-pack-v9"
+DEPENDENCY_AWARE_PACKER_VERSION = "phase1-token-pack-v10"
 DEFAULT_TOKENIZER = "Qwen/Qwen3.5-9B-Base"
 DEFAULT_PASTE_MARKER = "<|paste|>"
 DEFAULT_TASK_INSTRUCTION = (
@@ -639,7 +639,7 @@ def main() -> int:
         "--dependency-aware-read-novelty",
         action="store_true",
         help=(
-            "shadow v9: render semantic READ novelty only when its exact "
+            "shadow v10: render semantic READ novelty only when its exact "
             "complete predecessor survives context packing"
         ),
     )
@@ -659,14 +659,20 @@ def main() -> int:
         raise ValueError(f"output already exists: {output}; use a fresh directory")
 
     source_manifest, examples, events_by_id = require_compiled_dataset(source)
+    source_reducer_version = source_manifest.get("source", {}).get(
+        "reducerVersion"
+    )
     if (
         arguments.dependency_aware_read_novelty
-        and source_manifest.get("semanticReadProjection", {}).get("sourceField")
-            != "readNovelty"
+        and (
+            source_manifest.get("semanticReadProjection", {}).get("sourceField")
+                != "readNovelty"
+            or source_reducer_version != "phase1-semantic-v21"
+        )
     ):
         raise ValueError(
-            "--dependency-aware-read-novelty requires a compiled semantic-v16+ "
-            "dataset that preserves readNovelty"
+            "--dependency-aware-read-novelty packer v10 requires a compiled "
+            "phase1-semantic-v21 dataset that preserves readNovelty"
         )
     snapshot, resolved_revision = resolve_tokenizer_snapshot(
         arguments.tokenizer, arguments.revision, arguments.local_files_only
@@ -968,6 +974,7 @@ def main() -> int:
                 "directory": str(source),
                 "conversionVersion": source_manifest["conversionVersion"],
                 "sessionID": source_manifest["sessionID"],
+                "reducerVersion": source_reducer_version,
                 "digestsSHA256": {
                     "dataset.json": sha256(source / "dataset.json"),
                     "examples.jsonl": sha256(source / "examples.jsonl"),
@@ -1062,10 +1069,12 @@ def main() -> int:
                 "enabled": True,
                 "status": "shadow_opt_in",
                 "rendererVersion": READ_NOVELTY_RENDERER_VERSION,
+                "requiredReducerVersion": "phase1-semantic-v21",
                 "selectionUsesCompleteReadTokens": True,
                 "dependencyRule": "render novelty only when dependsOnEventID is retained as a complete reconstructable READ state",
                 "missingDependencyFallback": "retain complete current READ",
-                "uncertainMicroglyphPolicy": "retain complete current READ",
+                "uncertainMicroglyphPolicy": "render an empty READ when the reducer proves a low-information adjacent change",
+                "ambiguousAdjacentDifferencePolicy": "render an empty READ when substantial overlap exists without one contiguous novel region",
                 "exactAdjacentRepeatRepresentation": "retain READ record with empty content",
                 "completeSemanticReadRemainsSourceAuthority": True,
             }

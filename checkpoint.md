@@ -316,15 +316,41 @@ latency projection, not proof that a live router knew the destination then.
   1,690,731 model-input tokens, removes 543,841 proven repeated READ tokens, and
   is 6,115 tokens smaller than the semantic-v18/packer-v8 baseline. The reviewed
   event-622 garble is absent from model input, and event 386 retains `20. Jul`.
-- Known production cases in the September 2 v20 candidate now behave as
-  intended: material click/scroll/
-  activation/pre-WRITE boundaries remain separate; adjacent overlapping READs
-  retain full semantic states while packing removes only proven repeated
-  content; the previously truncated Chrome and VS Code panes use complete AX
-  regions; repeated Codex composer/model footer text is removed; and the
-  pane-577 gibberish is reduced to the legitimate visible status detail
-  `Deciding on final state snapshot approach`. The 16 unresolved observations
-  are displayed separately in the review UI rather than hidden.
+- Semantic-v21 is the high-precision model-facing READ candidate over the same
+  immutable September 2 evidence. It preserves every v20 complete semantic
+  READ and WRITE, but no longer serializes v20's disconnected token patchwork.
+  Exact/equivalent adjacent states render empty; one proven contiguous change
+  renders that authoritative span; a substantial state change without a safe
+  overlap retains the complete cleaned pane; and a difference with at least
+  two-thirds proven repetition but no coherent novel region renders empty.
+  Comparison/inset OCR may corroborate or veto a proposed peripheral span but
+  can never originate model-facing words. If an exact alignment is rejected,
+  the reducer tries one ordered OCR-tolerant contiguous line block and then
+  falls back to the full state unless substantial repetition is independently
+  proven. This prevents a one-character OCR error at a scroll boundary from
+  silently deleting a large new section.
+- Two semantic-v21 full replays were byte-for-byte identical:
+  `events.jsonl` SHA-256
+  `24b3bfa3b95781f1f9d22a59a93eb54617525197985b957ae81284e6b0d1d02b`,
+  `unresolved.jsonl` SHA-256
+  `876780e3da1ce91df76cc9fb37f365323261d3ffc35acfb8221ab44159f76387`,
+  and `reduction.json` SHA-256
+  `a6d085c41ca73f1fe531bb6f8c26805e29573b4f9bcd6c383527881ef3ffd332`.
+  Counts remain 575 READs, 87 WRITEs, and 371 non-event dispositions. The READ
+  projection contains 38 contiguous novel spans, 402 complete states, 82
+  high-overlap ambiguous suppressions, and 53 equivalent/no-content
+  suppressions. Every WRITE object and all 77 causal target strings,
+  conditioning queries, and masks remain unchanged.
+- Packer v10 is bound to semantic-v21 and rejects older reducer artifacts. Its
+  audited 77-example Qwen 32K pack contains five grounded paste actions,
+  1,702,199 model-input tokens, and removes 532,373 repeated READ tokens.
+  Known patchwork/repeated cases at semantic event lines 10, 81, 238, 351,
+  364, 366, 395, 457, 470, 577, and 639 render empty; the coherent additions at
+  lines 442 and 469 remain. The large Obsidian scroll transition at line 409 is
+  conservatively retained after its exact overlap proposal fails grounding.
+  The separate line-531 cross-window screenshot attribution case remains the
+  explicitly deferred limitation. The 16 unresolved pane observations remain
+  visible separately rather than being hidden.
 - `phase1-visual-read-promotion-canary-1` was stopped cleanly and reduced
   separately as a candidate-v14 validation trace; it does not alter the frozen
   semantic-v13 corpus.
@@ -350,12 +376,13 @@ Missing evidence stays unknown; these limits do not authorize guesses.
 
 ## Next step
 
-1. Manually review the pane-v7/semantic-v20 before/after UI, with particular
+1. Manually review the pane-v7/semantic-v21 before/after UI, with particular
    attention to current AX panes, recovered prior panes, the 16 unresolved
    observations, browser chrome, VS Code editor/terminal transitions, passive
-   AI responses, material-action boundaries, and the named production cases.
+   AI responses, material-action boundaries, complete-state fallbacks, bounded
+   ambiguous suppressions, and the named production cases.
 2. If that review finds no remaining material issue beyond the explicitly
-   deferred screen-occlusion case, apply the same pane-v7/semantic-v20 rules to
+   deferred screen-occlusion case, apply the same pane-v7/semantic-v21 rules to
    the untouched September 3 session and inspect its new edge cases before any
    canonical-corpus promotion.
 3. Audit READ surfaces, WRITE destinations, closed-episode boundaries,

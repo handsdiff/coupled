@@ -14,13 +14,14 @@ import json
 from typing import Any, Callable
 
 
-RENDERER_VERSION = "dependency-aware-read-novelty-v2"
+RENDERER_VERSION = "dependency-aware-read-novelty-v3"
 
 POSITIVE_NOVELTY_DECISIONS = {
     "emit_new_content": "render_novel_content",
     "emit_stable_interior_after_clipped_boundary": (
         "render_grounded_stable_interior"
     ),
+    "emit_contiguous_new_content": "render_contiguous_novel_content",
 }
 EMPTY_NOVELTY_DECISIONS = {
     "suppress_no_new_content": "render_empty_adjacent_repeat",
@@ -30,6 +31,10 @@ EMPTY_NOVELTY_DECISIONS = {
     "suppress_cross_projection_ocr_disagreement": (
         "render_empty_proven_no_novelty"
     ),
+    "suppress_ambiguous_adjacent_difference": (
+        "render_empty_high_precision_ambiguity"
+    ),
+    "suppress_nonsemantic_microglyph": "render_empty_low_information_change",
 }
 
 
@@ -134,14 +139,7 @@ def apply_dependency_aware_read_rendering(
             rendered.append(block)
             continue
 
-        if semantic_decision == "suppress_nonsemantic_microglyph":
-            block["readRendering"] = _rendering(
-                "render_complete_uncertain_microglyph",
-                novelty,
-                dependency_available=dependency_available,
-            )
-            counts["completeFallbackUncertainMicroglyph"] += 1
-        elif semantic_decision in (
+        if semantic_decision in (
             POSITIVE_NOVELTY_DECISIONS.keys() | EMPTY_NOVELTY_DECISIONS.keys()
         ):
             novel_content = novelty.get("content")

@@ -168,6 +168,135 @@ public func adjacentCausalReadEdgeDelta(
     return selectReadDelta(candidates: candidates, prior: prior, next: next)
 }
 
+/// A high-precision adjacent-state delta whose emitted content is always one
+/// contiguous span from the authoritative current observation. Unlike the
+/// older reflow matcher, it never subtracts several disconnected token runs.
+public func adjacentCausalReadContiguousDelta(
+    previous: String,
+    current: String
+) -> AdjacentCausalReadDelta? {
+    let prior = NormalizedReadText(previous)
+    let next = NormalizedReadText(current)
+    guard !prior.characters.isEmpty, !next.characters.isEmpty else { return nil }
+    if prior.characters == next.characters {
+        return AdjacentCausalReadDelta(
+            emittedContent: "",
+            alignment: "exact_state",
+            overlapCharacterCount: next.characters.count,
+            currentCharacterCount: next.characters.count
+        )
+    }
+
+    var candidates = [ReadDeltaCandidate]()
+    let prefix = commonPrefixCount(prior.characters, next.characters)
+    let maximumSuffix = min(
+        prior.characters.count - prefix,
+        next.characters.count - prefix
+    )
+    let suffix = commonSuffixCount(
+        prior.characters, next.characters, maximum: maximumSuffix
+    )
+    let boundaries = [
+        prefix > 0 ? 0..<prefix : nil,
+        suffix > 0 ? (next.characters.count - suffix)..<next.characters.count : nil,
+    ].compactMap { $0 }
+    if !boundaries.isEmpty {
+        candidates.append(ReadDeltaCandidate(
+            ranges: boundaries,
+            alignment: "same_position_contiguous_change"
+        ))
+    }
+    appendEdgeCandidates(prior: prior, next: next, to: &candidates)
+
+    // A current state wholly contained in its predecessor contains no new
+    // model-facing text. The inverse is intentionally not used: removing an
+    // internal prior state from a larger current state would create two
+    // disconnected fragments.
+    let currentInPrior = occurrenceOffsets(
+        needle: next.characters, haystack: prior.characters, limit: 2
+    )
+    if currentInPrior.count == 1 {
+        candidates.append(ReadDeltaCandidate(
+            ranges: [0..<next.characters.count],
+            alignment: "current_state_inside_prior"
+        ))
+    }
+    if let exact = selectReadDelta(candidates: candidates, prior: prior, next: next) {
+        let repeatedFraction = Double(exact.overlapCharacterCount)
+            / Double(max(1, exact.currentCharacterCount))
+        if exact.alignment != "same_position_contiguous_change"
+            || repeatedFraction >= 0.60 {
+            return exact
+        }
+    }
+
+    return adjacentCausalReadContiguousLineDelta(
+        previous: previous, current: current
+    )
+}
+
+/// OCR-tolerant fallback for one contiguous changed line block. Matches must
+/// remain ordered and each side of the changed block must have one consistent
+/// line displacement. Disconnected residues are rejected.
+public func adjacentCausalReadContiguousLineDelta(
+    previous: String,
+    current: String
+) -> AdjacentCausalReadDelta? {
+    let priorLines = normalizedReadLines(previous)
+    let currentLines = normalizedReadLines(current)
+    guard !priorLines.isEmpty, !currentLines.isEmpty else { return nil }
+    let plans = orderedReadLineAlignment(previous: priorLines, current: currentLines)
+    guard plans.count == 1, let plan = plans.first, !plan.matches.isEmpty else {
+        return nil
+    }
+    let fuzzy = plan.matches.filter { $0.previousText != $0.currentText }
+    let exact = plan.matches.filter { $0.previousText == $0.currentText }
+    if !fuzzy.isEmpty {
+        guard !exact.isEmpty,
+              exact.reduce(0, { $0 + $1.currentText.count }) >= 24 else {
+            return nil
+        }
+    }
+    let matchedCurrent = Set(plan.matches.map(\.currentLineIndex))
+    let unmatched = currentLines.indices.filter { !matchedCurrent.contains($0) }
+    if unmatched.isEmpty {
+        return AdjacentCausalReadDelta(
+            emittedContent: "",
+            alignment: "ocr_tolerant_equivalent_lines",
+            overlapCharacterCount: plan.matchedCharacters,
+            currentCharacterCount: currentLines.reduce(0) { $0 + $1.text.count },
+            lineMatches: plan.matches
+        )
+    }
+    guard unmatched.last! - unmatched.first! + 1 == unmatched.count else {
+        return nil
+    }
+    let changed = unmatched.first!...unmatched.last!
+    let before = plan.matches.filter { $0.currentLineIndex < changed.lowerBound }
+    let after = plan.matches.filter { $0.currentLineIndex > changed.upperBound }
+    func hasOneOffset(_ matches: [AdjacentCausalReadLineMatch]) -> Bool {
+        Set(matches.map { $0.currentLineIndex - $0.previousLineIndex }).count <= 1
+    }
+    guard hasOneOffset(before), hasOneOffset(after) else { return nil }
+
+    let overlap = plan.matches.reduce(0) { $0 + $1.currentText.count }
+    let previousCount = priorLines.reduce(0) { $0 + $1.text.count }
+    let currentCount = currentLines.reduce(0) { $0 + $1.text.count }
+    let longest = plan.matches.map { $0.currentText.count }.max() ?? 0
+    let smaller = min(previousCount, currentCount)
+    let currentRepeatedFraction = Double(overlap) / Double(max(1, currentCount))
+    let confident = overlap >= 64 && currentRepeatedFraction >= 0.35
+        && (longest >= 20 || Double(overlap) / Double(max(1, smaller)) >= 0.35)
+    guard confident else { return nil }
+    return AdjacentCausalReadDelta(
+        emittedContent: currentLines[changed].map(\.raw).joined(separator: "\n"),
+        alignment: "ocr_tolerant_contiguous_lines",
+        overlapCharacterCount: overlap,
+        currentCharacterCount: currentCount,
+        lineMatches: plan.matches
+    )
+}
+
 /// A conservative second-stage matcher for adjacent OCR states. Exact
 /// character overlap remains preferable because it can retain a completion
 /// within one OCR line. When that fails, this aligns whole lines in order and

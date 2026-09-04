@@ -196,6 +196,36 @@ expect(
     "adjacent causal READ delta conservatively retains an unaligned current state"
 )
 expect(
+    adjacentCausalReadContiguousDelta(previous: "ABCD", current: "CDEF")?
+        .emittedContent == "EF",
+    "high-precision READ delta keeps one contiguous scroll suffix"
+)
+expect(
+    adjacentCausalReadContiguousDelta(previous: "ABCD", current: "AHJD") == nil,
+    "high-precision READ delta does not over-compress a mostly changed state"
+)
+expect(
+    adjacentCausalReadContiguousDelta(
+        previous: "stable first\nstable second\nstable third",
+        current: "stable first\nnoise one\nstable second\nnoise two\nstable third"
+    ) == nil,
+    "high-precision READ delta rejects disconnected unmatched fragments"
+)
+expect(
+    adjacentCausalReadContiguousDelta(
+        previous: "stable contextual line with enough evidence\nold middle\nstable ending line with enough evidence",
+        current: "stable contextual line with enough evidence\nnew coherent middle\nstable ending line with enough evidence"
+    )?.emittedContent == "new coherent",
+    "high-precision READ delta permits one OCR-line changed block"
+)
+expect(
+    adjacentCausalReadContiguousLineDelta(
+        previous: "• stable overlap starts here\nand continues on this line\nending with resource",
+        current: "• stable overlap starts here\nand continues on this line\nending with resources\n• genuinely new section\nwith substantive new text"
+    )?.emittedContent == "• genuinely new section\nwith substantive new text",
+    "high-precision READ line fallback survives one OCR error at a scroll boundary"
+)
+expect(
     adjacentCausalReadTolerantLineDelta(
         previous: "Stable first line\nThe older pointer-triggered path-not a failed observation.\nStable final line",
         current: "Stable first line\nThe older pointer-triggered path—not a failed observation.\nStable final line"
@@ -1739,6 +1769,9 @@ let visualReadReductionV19 = fixtureRoot.appendingPathComponent(
 let visualReadReductionV20 = fixtureRoot.appendingPathComponent(
     "visual-read-reduction-v20"
 )
+let visualReadReductionV21 = fixtureRoot.appendingPathComponent(
+    "visual-read-reduction-v21"
+)
 let visualReadTamperedReduction = fixtureRoot.appendingPathComponent(
     "visual-read-tampered-reduction"
 )
@@ -2338,6 +2371,19 @@ let visualReadV20Events = readFixtureJSONL(
 expect(
     visualReadV20Events[0]["content"] as? String == "same visible words",
     "v20 retains strongly evidenced clipped-line removal"
+)
+_ = try! Phase1SemanticReducer(configuration: .init(
+    reducerVersion: "phase1-semantic-v21",
+    readSurfaceEvidenceDirectory: visualReadSurfaceEvidenceV19
+)).reduce(
+    sourceDirectory: visualReadInput, outputDirectory: visualReadReductionV21
+)
+let visualReadV21Events = readFixtureJSONL(
+    visualReadReductionV21.appendingPathComponent("events.jsonl")
+)
+expect(
+    visualReadV21Events[0]["content"] as? String == "same visible words",
+    "v21 preserves the complete cleaned semantic READ while changing only model novelty"
 )
 try! Data("tampered visual frame bytes".utf8).write(to: visualScreenshotURL)
 _ = try! Phase1SemanticReducer(configuration: .init(
