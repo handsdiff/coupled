@@ -89,10 +89,18 @@ def top_origin_region(value: Any) -> dict[str, float] | None:
 
 class ReviewStore:
     def __init__(
-        self, baseline: Path, candidate: Path, surfaces: Path, source: Path,
+        self, baseline: Path | None, baseline_preview: Path | None,
+        candidate: Path, surfaces: Path, source: Path,
         compiled: Path | None = None, packed: Path | None = None,
     ):
-        self.baseline = baseline.resolve()
+        if (baseline is None) == (baseline_preview is None):
+            raise ReviewError(
+                "supply exactly one of --baseline or --baseline-preview"
+            )
+        self.baseline = baseline.resolve() if baseline else None
+        self.baseline_preview = (
+            baseline_preview.resolve() if baseline_preview else None
+        )
         self.candidate = candidate.resolve()
         self.surfaces = surfaces.resolve()
         self.source = source.resolve()
@@ -100,10 +108,20 @@ class ReviewStore:
         self.packed = packed.resolve() if packed else None
         if (self.compiled is None) != (self.packed is None):
             raise ReviewError("--compiled and --packed must be supplied together")
-        base_manifest = load_json(self.baseline / "reduction.json")
         candidate_manifest = load_json(self.candidate / "reduction.json")
-        if base_manifest.get("reducerVersion") != "phase1-semantic-v14":
-            raise ReviewError("baseline must be phase1-semantic-v14")
+        if self.baseline is not None:
+            base_manifest = load_json(self.baseline / "reduction.json")
+            if base_manifest.get("reducerVersion") != "phase1-semantic-v14":
+                raise ReviewError("baseline must be phase1-semantic-v14")
+            baseline_version = "phase1-semantic-v14"
+            base_event_path = self.baseline / "events.jsonl"
+        else:
+            base_manifest = None
+            baseline_version = "collector-preview"
+            base_event_path = self.baseline_preview
+            assert base_event_path is not None
+            if not base_event_path.is_file():
+                raise ReviewError(f"baseline preview does not exist: {base_event_path}")
         candidate_version = candidate_manifest.get("reducerVersion")
         if candidate_version not in {
             "phase1-semantic-v16", "phase1-semantic-v17",
@@ -111,17 +129,25 @@ class ReviewStore:
         }:
             raise ReviewError("candidate must be phase1-semantic-v16, v17, or v18")
         self.candidate_version = str(candidate_version)
-        for directory, manifest in (
-            (self.baseline, base_manifest), (self.candidate, candidate_manifest)
-        ):
+        manifest_pairs = [(self.candidate, candidate_manifest)]
+        if self.baseline is not None and base_manifest is not None:
+            manifest_pairs.insert(0, (self.baseline, base_manifest))
+        for directory, manifest in manifest_pairs:
             expected = manifest.get("artifacts", {}).get("digestsSHA256", {})
             for name in ("events.jsonl", "unresolved.jsonl"):
                 if sha256(directory / name) != expected.get(name):
                     raise ReviewError(f"artifact digest differs: {directory}/{name}")
-        base_raw = base_manifest.get("source", {}).get("digestsSHA256", {}).get("raw.jsonl")
         candidate_raw = candidate_manifest.get("source", {}).get("digestsSHA256", {}).get("raw.jsonl")
-        if not base_raw or base_raw != candidate_raw or sha256(self.source / "raw.jsonl") != base_raw:
-            raise ReviewError("baseline, candidate, and source raw journal differ")
+        if not candidate_raw or sha256(self.source / "raw.jsonl") != candidate_raw:
+            raise ReviewError("candidate and source raw journal differ")
+        if base_manifest is not None:
+            base_raw = base_manifest.get("source", {}).get(
+                "digestsSHA256", {}
+            ).get("raw.jsonl")
+            if base_raw != candidate_raw:
+                raise ReviewError("baseline, candidate, and source raw journal differ")
+        else:
+            base_raw = candidate_raw
 
         surface_manifest = load_json(self.surfaces / "read-surface-evidence.json")
         evidence_path = self.surfaces / "read-surfaces.jsonl"
@@ -150,9 +176,19 @@ class ReviewStore:
         }
 
         base_read_rows = [
-            row for row in load_jsonl(self.baseline / "events.jsonl")
+            row for row in load_jsonl(base_event_path)
             if row.get("kind") == "read"
         ]
+        if self.baseline_preview is not None:
+            preview_session_ids = {
+                str(row.get("sessionID")) for row in base_read_rows
+                if row.get("sessionID")
+            }
+            candidate_session_id = str(candidate_manifest.get("sessionID", ""))
+            if preview_session_ids != {candidate_session_id}:
+                raise ReviewError(
+                    "baseline preview and candidate session IDs differ"
+                )
         base_reads = {source_ids(row): row for row in base_read_rows}
         base_reads_by_source: dict[str, list[dict[str, Any]]] = {}
         for base_row in base_read_rows:
@@ -562,7 +598,7 @@ class ReviewStore:
         )
         self.summary = {
             "status": "semantic_read_shadow_review_only_not_training_authority",
-            "baselineVersion": "phase1-semantic-v14",
+            "baselineVersion": baseline_version,
             "candidateVersion": self.candidate_version,
             "sourceRawSHA256": base_raw,
             "readCount": len(candidate_reads),
@@ -754,6 +790,7 @@ async function show(){
 }
 Promise.all([fetch('/api/summary').then(r=>r.json()),fetch('/api/index').then(r=>r.json())]).then(([s,x])=>{
   rows=x;
+  if(!rows.some(r=>r.paneCanonicalized))$('scope').value='changed';
   $('meta').textContent=`${s.baselineVersion} → ${s.candidateVersion} · shadow review`;
   $('stats').innerHTML=`<span class="tag">READs ${s.readCount}</span><span class="tag changed">changed ${s.changedReadCount}</span><span class="tag">unresolved ${s.unresolvedPaneObservationCount}</span>`;
   [...new Set(rows.map(r=>r.application).filter(Boolean))].sort().forEach(v=>$('app').insertAdjacentHTML('beforeend',`<option>${esc(v)}</option>`));
@@ -813,7 +850,12 @@ def handler(store: ReviewStore) -> type[BaseHTTPRequestHandler]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--baseline", required=True, type=Path)
+    baseline_group = parser.add_mutually_exclusive_group(required=True)
+    baseline_group.add_argument("--baseline", type=Path)
+    baseline_group.add_argument(
+        "--baseline-preview", type=Path,
+        help="collector events.preview.jsonl from the same source session",
+    )
     parser.add_argument("--candidate", required=True, type=Path)
     parser.add_argument("--read-surface-evidence", required=True, type=Path)
     parser.add_argument("--source", required=True, type=Path)
@@ -824,7 +866,7 @@ def main() -> int:
     parser.add_argument("--check", action="store_true")
     arguments = parser.parse_args()
     store = ReviewStore(
-        arguments.baseline, arguments.candidate,
+        arguments.baseline, arguments.baseline_preview, arguments.candidate,
         arguments.read_surface_evidence, arguments.source,
         arguments.compiled, arguments.packed,
     )
