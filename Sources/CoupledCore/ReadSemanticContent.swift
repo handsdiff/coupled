@@ -94,12 +94,17 @@ public struct ReadInterfaceScaffoldingTracker: Sendable {
         windowTitle: String,
         observedContent: String,
         lines: [ReadOCRLineEvidence],
-        allowJoinedLineScaffolding: Bool = false
+        allowJoinedLineScaffolding: Bool = false,
+        removeClippedOuterBoundaryLines: Bool = false,
+        additionalRemovalReasons: [Int: String] = [:]
     ) -> ReadSemanticContentProjection {
         guard !lines.isEmpty else {
             return ReadSemanticContentProjection(content: observedContent, removed: [])
         }
         let prior = seenBySurface[surfaceKey] ?? [:]
+        let clippedOuterBoundaryIndices = removeClippedOuterBoundaryLines
+            ? clippedOuterBoundaryLineIndices(lines)
+            : []
         var removed = [RemovedReadScaffoldingLine]()
         var retained = [String]()
         for line in lines {
@@ -129,6 +134,18 @@ public struct ReadInterfaceScaffoldingTracker: Sendable {
                 bundleIdentifier: bundleIdentifier,
                 line: line
             ) {
+                removed.append(RemovedReadScaffoldingLine(
+                    line: line,
+                    reason: reason,
+                    supportingDistinctContentStateCount: 0,
+                    supportingDistinctWindowCount: 0
+                ))
+                continue
+            }
+            if let reason = additionalRemovalReasons[line.index]
+                ?? (clippedOuterBoundaryIndices.contains(line.index)
+                    ? "geometrically_clipped_outer_boundary_line"
+                    : nil) {
                 removed.append(RemovedReadScaffoldingLine(
                     line: line,
                     reason: reason,
@@ -298,6 +315,42 @@ public struct ReadInterfaceScaffoldingTracker: Sendable {
     }
 }
 
+/// Vision can return text for the few visible pixels of a line cut by the
+/// exact top or bottom of an OCR region. Reject only a line that both touches
+/// that boundary and is materially shorter than the ordinary lines in the
+/// same observation. A fully visible first or last line remains authoritative.
+private func clippedOuterBoundaryLineIndices(
+    _ lines: [ReadOCRLineEvidence]
+) -> Set<Int> {
+    let referenceHeights = lines.compactMap { line -> Double? in
+        guard line.confidence >= 0.80,
+              line.normalizedText.count >= 8,
+              let height = line.height,
+              height > 0 else { return nil }
+        return height
+    }.sorted()
+    guard !referenceHeights.isEmpty else { return [] }
+    let middle = referenceHeights.count / 2
+    let median = referenceHeights.count.isMultiple(of: 2)
+        ? (referenceHeights[middle - 1] + referenceHeights[middle]) / 2
+        : referenceHeights[middle]
+    let boundaryTolerance = 0.002
+    return Set(lines.compactMap { line -> Int? in
+        guard let y = line.y, let height = line.height else { return nil }
+        let touchesBoundary = y <= boundaryTolerance
+            || y + height >= 1 - boundaryTolerance
+        // Exact-edge geometry alone is not enough: compact but fully visible
+        // headings and status lines can also touch the crop boundary. A lone
+        // observation is conclusive only when Vision itself reports low
+        // confidence. High-confidence clipping requires the paired-sensor
+        // disagreement rule in semantic v19.
+        guard touchesBoundary,
+              line.confidence < 0.80,
+              height <= median * 0.80 else { return nil }
+        return line.index
+    })
+}
+
 /// Removes only application controls whose meaning is known independently of
 /// session recurrence. This is used when deciding whether two sensor pathways
 /// observed the same state before the full semantic projection is constructed.
@@ -448,7 +501,12 @@ private func knownScaffoldingReason(
         return "codex_composer_placeholder"
     }
     guard centerY <= 0.08 else { return nil }
-    if text == "+" { return "codex_composer_control" }
+    if lowered.range(
+        of: #"^\+\s*[o0©]?$"#,
+        options: .regularExpression
+    ) != nil {
+        return "codex_composer_control"
+    }
     if lowered == "approve for me" { return "codex_approval_control" }
     if lowered == "5.6 sol extra high v" { return "codex_model_selector" }
     return nil

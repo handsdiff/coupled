@@ -279,7 +279,25 @@ latency projection, not proof that a live router knew the destination then.
   actions. Example identities, targets, masks, conditioning queries, and every
   loss-bearing token sequence are unchanged from pane v6. Pane, causal,
   packing, and repository-wide audits pass.
-- Known production cases now behave as intended: material click/scroll/
+- Semantic-v19 is the subsequent clipped-OCR candidate over the same immutable
+  September 2 evidence. It removes a line only when exact pane-edge geometry
+  plus low Vision confidence proves clipping, or when reconciled same-state
+  screen and visual observations disagree on an abnormally short peripheral
+  line. Its independent 20-percent interior OCR is comparison evidence rather
+  than authoritative content; it can suppress false novelty when the full-pane
+  OCR alone claims an interior change. Two clean full replays were byte-for-byte
+  identical (`events.jsonl` SHA-256
+  `1504c22ba45486b1412fb3e93b1e35c8e95f8e73afa5c91475d19e5249fafe26`).
+  Event identities and counts remain 575 READs and 87 WRITEs. Thirty-one READ
+  complete states changed, while every WRITE, all 77 target strings, masks,
+  destination/cursor queries, and target token sequences remained unchanged.
+  The causal-v16 compile and dependency-aware 32K Qwen pack pass with five
+  grounded paste actions and zero context exclusions or rejections. This fixes
+  the reviewed clipped-gibberish cases without incorporating September 3. The
+  separate event-531 cross-window screenshot attribution case is deliberately
+  unchanged and remains an explicit deferred limitation.
+- Known production cases in the September 2 v19 candidate now behave as
+  intended: material click/scroll/
   activation/pre-WRITE boundaries remain separate; adjacent overlapping READs
   retain full semantic states while packing removes only proven repeated
   content; the previously truncated Chrome and VS Code panes use complete AX
@@ -312,13 +330,14 @@ Missing evidence stays unknown; these limits do not authorize guesses.
 
 ## Next step
 
-1. Manually review the pane-v7/semantic-v18 before/after UI, with particular
+1. Manually review the pane-v7/semantic-v19 before/after UI, with particular
    attention to current AX panes, recovered prior panes, the 16 unresolved
    observations, browser chrome, VS Code editor/terminal transitions, passive
    AI responses, material-action boundaries, and the named production cases.
-2. If that review finds no systematic false or incoherent READs, promote pane
-   v6, semantic v18, and dependency-aware pack v8 together; regenerate the
-   immutable multi-session episode corpus from raw evidence.
+2. If that review finds no remaining material issue beyond the explicitly
+   deferred screen-occlusion case, apply the same pane-v7/semantic-v19 rules to
+   the untouched September 3 session and inspect its new edge cases before any
+   canonical-corpus promotion.
 3. Audit READ surfaces, WRITE destinations, closed-episode boundaries,
    unresolved records, model-visible histories, loss-bearing targets, causal
    masks, and packing before freezing the new corpus.

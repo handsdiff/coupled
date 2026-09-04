@@ -90,8 +90,10 @@ public struct Phase1SemanticReducer {
                   let beganAt = stringValue(record.object["beganAt"]) else { return nil }
             return ReducerWriteBoundary(rawLine: record.line, beganAt: beganAt)
         }
-        let dynamicReadBoundaries = configuration.reducerVersion
-            == "phase1-semantic-v18"
+        let usesReconciledSemanticReads = [
+            "phase1-semantic-v18", "phase1-semantic-v19",
+        ].contains(configuration.reducerVersion)
+        let dynamicReadBoundaries = usesReconciledSemanticReads
             ? reducerDynamicReadBoundaries(raw)
             : []
         var seenRawIDs = Set<String>()
@@ -376,8 +378,7 @@ public struct Phase1SemanticReducer {
                 dispositions: []
             )
         dispositions.append(contentsOf: coincidentReadResult.dispositions)
-        let reconciledReadResult = configuration.reducerVersion
-            == "phase1-semantic-v18"
+        let reconciledReadResult = usesReconciledSemanticReads
             ? reconcileEquivalentSensorReads(
                 candidates: coincidentReadResult.events,
                 writeBoundaries: writeOverlapBoundaries,
@@ -397,8 +398,7 @@ public struct Phase1SemanticReducer {
                 writeBoundaries: writeOverlapBoundaries,
                 attentionBoundaries: dynamicReadBoundaries,
                 sessionID: sessionID,
-                includeInterleavedObservations: configuration.reducerVersion
-                    == "phase1-semantic-v18"
+                includeInterleavedObservations: usesReconciledSemanticReads
             )
             : ReducerOverlapResult(
                 events: coincidentReadResult.events,
@@ -412,7 +412,9 @@ public struct Phase1SemanticReducer {
             paneAwareSurfaceIdentity: configuration.reducerVersion
                 == "phase1-semantic-v13"
                 || reducerUsesVisualReadEvidence(configuration.reducerVersion),
-            mode: configuration.reducerVersion == "phase1-semantic-v18"
+            mode: configuration.reducerVersion == "phase1-semantic-v19"
+                ? .semanticV19
+                : configuration.reducerVersion == "phase1-semantic-v18"
                 ? .semanticV18
                 : configuration.reducerVersion == "phase1-semantic-v17"
                 ? .semanticV17
@@ -490,6 +492,7 @@ public struct Phase1SemanticReducer {
                     || configuration.reducerVersion == "phase1-semantic-v16"
                     || configuration.reducerVersion == "phase1-semantic-v17"
                     || configuration.reducerVersion == "phase1-semantic-v18"
+                    || configuration.reducerVersion == "phase1-semantic-v19"
                 ? "globally adjacent causal READs with the same app/window, strongly overlapping capture geometry, and compatible AX pane role; AX depth and object identity are supporting evidence only"
                 : configuration.reducerVersion == "phase1-semantic-v13"
                     || configuration.reducerVersion == "phase1-semantic-v14"
@@ -512,9 +515,12 @@ public struct Phase1SemanticReducer {
         }
         if configuration.reducerVersion == "phase1-semantic-v16"
             || configuration.reducerVersion == "phase1-semantic-v17"
-            || configuration.reducerVersion == "phase1-semantic-v18" {
+            || configuration.reducerVersion == "phase1-semantic-v18"
+            || configuration.reducerVersion == "phase1-semantic-v19" {
             reduction["semanticReadRule"] = configuration.reducerVersion
-                == "phase1-semantic-v18"
+                == "phase1-semantic-v19"
+                ? "full selected-pane OCR is projected to complete semantic READ content by conservative application rules plus session-wide exact-recurrence and clipped-line evidence; reflow-tolerant novelty is recorded separately and never overwrites complete content"
+                : configuration.reducerVersion == "phase1-semantic-v18"
                 ? "full selected-pane OCR is projected to complete semantic READ content by conservative application rules plus session-wide exact-recurrence evidence that can only remove proven interface scaffolding; reflow-tolerant novelty is recorded separately and never overwrites complete content"
                 : "immutable observed OCR is projected to complete semantic READ content by conservative application rules plus session-wide exact-recurrence evidence that can only remove proven interface scaffolding; exact contiguous edge novelty is recorded separately and never overwrites complete content"
             reduction["readNoveltyDependencyRule"] = "novel content may be rendered only when its complete predecessor is usable in context; otherwise render the complete semantic READ"
@@ -522,12 +528,18 @@ public struct Phase1SemanticReducer {
         if configuration.reducerVersion == "phase1-semantic-v17" {
             reduction["adjacentReadNoveltyRule"] = "after exact normalized edge overlap, align OCR lines in order; a fuzzy line may differ by at most two nonnumeric characters, requires at least 24 characters of exact aligned line context, and only matched current lines are removable; ambiguous alignment retains the complete current READ"
         }
-        if configuration.reducerVersion == "phase1-semantic-v18" {
+        if usesReconciledSemanticReads {
             reduction["readObservationRule"] = "same-surface sensor observations are reconciled before semantic novelty; passive visual-response progress is represented by its final causally available state only within an uninterrupted attention interval and never crosses click, post-click, scroll, activation/focus, surface-transition, pre-WRITE, WRITE-onset, or surface boundaries"
             reduction["dynamicReadBoundaryRule"] = "raw material-input intervals are ordered by firstActivityAt/lastActivityAt rather than append order; observations inside or derived from those intervals remain independent READ evidence and cannot participate in passive-state consolidation"
             reduction["dynamicReadBoundaryCount"] = dynamicReadBoundaries.count
-            reduction["readContentAuthority"] = "the complete selected AX pane is authoritative; a 20 percent top/bottom interior projection supports comparison but cannot remove edge content"
+            reduction["readContentAuthority"] = configuration.reducerVersion
+                == "phase1-semantic-v19"
+                ? "the complete selected AX pane is authoritative after removing only geometrically proven clipped OCR lines; a 20 percent top/bottom interior projection supplies independent OCR comparison evidence"
+                : "the complete selected AX pane is authoritative; a 20 percent top/bottom interior projection supports comparison but cannot remove edge content"
             reduction["adjacentReadNoveltyRule"] = "after exact normalized edge overlap, compare complete pane text with reflow-tolerant ordered token alignment; line boundaries are not semantic, numeric changes remain distinct except one/ell and zero/oh OCR glyph equivalence, and uncertain alignment retains the complete current READ"
+            if configuration.reducerVersion == "phase1-semantic-v19" {
+                reduction["clippedOCRRule"] = "remove a line only when it is low-confidence, abnormally short, and touches the exact OCR-region boundary, or when same-state cross-sensor observations materially disagree on an abnormally short lower-boundary line or a wide upper-boundary line; suppress novelty when an independent interior OCR projection proves the claimed interior change absent, plus tiny peripheral projection disagreements"
+            }
         }
         try reducerWriteJSON(reduction, to: output.appendingPathComponent("reduction.json"))
         return Phase1SemanticReducerResult(
@@ -593,6 +605,7 @@ private enum ReducerReadOverlapMode: Equatable {
     case semanticV16
     case semanticV17
     case semanticV18
+    case semanticV19
 }
 private struct ReducerFailure: Error {
     let rule: String
@@ -606,6 +619,7 @@ private func reducerUsesVisualReadEvidence(_ version: String) -> Bool {
         || version == "phase1-semantic-v16"
         || version == "phase1-semantic-v17"
         || version == "phase1-semantic-v18"
+        || version == "phase1-semantic-v19"
 }
 
 /// Returns raw interaction intervals that divide autonomous visual progress
@@ -670,7 +684,7 @@ private func loadReadSurfaceEvidence(
         expectedReadRecordTypes = [
             "screen_ocr_observation", "visual_ocr_observation",
         ]
-    case "phase1-semantic-v18":
+    case "phase1-semantic-v18", "phase1-semantic-v19":
         expectedRuleVersions = rawScreenOCRSchema >= 7
             ? ["ax-pane-read-v5", "ax-pane-read-v6", "ax-pane-read-v7"]
             : ["pointer-local-read-v1"]
@@ -680,7 +694,7 @@ private func loadReadSurfaceEvidence(
     default:
         guard configuration.readSurfaceEvidenceDirectory == nil else {
             throw Phase1SemanticReducerError.invalidManifest(
-                "--read-surface-evidence requires phase1-semantic-v11 through phase1-semantic-v18"
+                "--read-surface-evidence requires phase1-semantic-v11 through phase1-semantic-v19"
             )
         }
         return nil
@@ -2141,6 +2155,11 @@ private func reconcileEquivalentSensorReads(
             let removedIndex = keepCurrent ? priorIndex : currentIndex
             let kept = updated[keptIndex]
             let removed = updated[removedIndex]
+            let unstableClippedLines = containsPossibleProgress
+                ? []
+                : pairedUnstableClippedOCRLineEvidence(
+                    selected: kept.raw, peer: removed.raw
+                )
             var details: [String: Any] = [
                 "policy": containsPossibleProgress
                     ? "cross_sensor_bounded_progress_final_state_v1"
@@ -2158,6 +2177,9 @@ private func reconcileEquivalentSensorReads(
                 "firstCapturedAt": prior.overlapBoundaryAt,
                 "lastCapturedAt": current.overlapBoundaryAt,
             ]
+            if !unstableClippedLines.isEmpty {
+                details["unstableClippedLineEvidence"] = unstableClippedLines
+            }
             if let differences {
                 details["semanticDifferenceAlphanumeric"] = [
                     "forward": differences.forward,
@@ -2191,6 +2213,9 @@ private func reconcileEquivalentSensorReads(
             var reduction = merged.event["reduction"] as? [String: Any] ?? [:]
             reduction["rawLineage"] = uniqueLineage
             reduction["observationReconciliation"] = details
+            if !unstableClippedLines.isEmpty {
+                reduction["unstableClippedOCRLineEvidence"] = unstableClippedLines
+            }
             merged.event["reduction"] = reduction
             updated[keptIndex] = merged
             priorReadIndex = keptIndex
@@ -2465,6 +2490,8 @@ private func semanticReadNoveltyRuleVersion(
     _ mode: ReducerReadOverlapMode
 ) -> String {
     switch mode {
+    case .semanticV19:
+        return "adjacent-causal-read-reflow-overlap-v4"
     case .semanticV18:
         return "adjacent-causal-read-reflow-overlap-v3"
     case .semanticV17:
@@ -2479,7 +2506,7 @@ private func semanticReadUnprovenReason(
     fullDeltaAvailable: Bool
 ) -> String {
     switch mode {
-    case .semanticV18:
+    case .semanticV18, .semanticV19:
         return fullDeltaAvailable
             ? "comparison_interior_alignment_unproven"
             : "conservative_reflow_alignment_unproven"
@@ -2508,6 +2535,108 @@ private func semanticReadComparisonDelta(
     guard let prior = previous.comparisonContent, !prior.isEmpty,
           let next = current.comparisonContent, !next.isEmpty else { return nil }
     return adjacentCausalReadReflowDelta(previous: prior, current: next)
+}
+
+private func normalizedReadFragment(_ value: String) -> String {
+    value.precomposedStringWithCanonicalMapping
+        .split(whereSeparator: \Character.isWhitespace)
+        .joined(separator: " ")
+        .lowercased()
+}
+
+private func readNoveltySupportingLines(
+    novelty: String,
+    lines: [ReadOCRLineEvidence]
+) -> [ReadOCRLineEvidence] {
+    let fragment = normalizedReadFragment(novelty)
+    guard !fragment.isEmpty else { return [] }
+    return lines.filter { line in
+        let content = normalizedReadFragment(line.text)
+        return content == fragment
+            || " \(content) ".contains(" \(fragment) ")
+    }
+}
+
+private func readComparisonVerticalBand(
+    _ raw: [String: Any]
+) -> ClosedRange<Double>? {
+    guard let surface = raw["readSurface"] as? [String: Any],
+          let full = surface["regionOfInterest"] as? [String: Any],
+          let comparison = surface["comparisonRegionOfInterest"]
+            as? [String: Any],
+          let fullY = doubleValue(full["y"]),
+          let fullHeight = doubleValue(full["height"]), fullHeight > 0,
+          let comparisonY = doubleValue(comparison["y"]),
+          let comparisonHeight = doubleValue(comparison["height"])
+    else { return nil }
+    // Region y-coordinates use a top origin while Vision line coordinates use
+    // a bottom origin. Convert the crop's two insets into Vision coordinates.
+    let topInset = (comparisonY - fullY) / fullHeight
+    let bottomInset = (
+        fullY + fullHeight - comparisonY - comparisonHeight
+    ) / fullHeight
+    let lower = max(0, bottomInset)
+    let upper = min(1, 1 - topInset)
+    guard lower <= upper else { return nil }
+    return lower...upper
+}
+
+/// The full-pane and interior OCR passes independently observe the same
+/// pixels. When the complete projection claims novelty inside the interior but
+/// the interior pass proves no change, the claimed novelty is OCR disagreement,
+/// not new information. A second narrow case handles tiny peripheral UI glyphs
+/// when both projections report only low-information disagreement.
+private func readProjectionDisagreementEvidence(
+    current: ReducerCandidate,
+    fullDelta: AdjacentCausalReadDelta,
+    comparisonDelta: AdjacentCausalReadDelta,
+    lines: [ReadOCRLineEvidence]
+) -> [String: Any]? {
+    guard !fullDelta.emittedContent.isEmpty else { return nil }
+    let supportingLines = readNoveltySupportingLines(
+        novelty: fullDelta.emittedContent, lines: lines
+    )
+    guard !supportingLines.isEmpty else { return nil }
+    let comparisonAlphanumericCount = comparisonDelta.emittedContent.reduce(0) {
+        $0 + ($1.isLetter || $1.isNumber ? 1 : 0)
+    }
+    let fullAlphanumericCount = fullDelta.emittedContent.reduce(0) {
+        $0 + ($1.isLetter || $1.isNumber ? 1 : 0)
+    }
+    let band = readComparisonVerticalBand(current.raw)
+    let allInsideComparison = band.map { band in
+        supportingLines.allSatisfy { line in
+            guard let y = line.y, let height = line.height else { return false }
+            return y >= band.lowerBound - 0.005
+                && y + height <= band.upperBound + 0.005
+        }
+    } ?? false
+    let allPeripheral = supportingLines.allSatisfy { line in
+        guard let y = line.y, let height = line.height else { return false }
+        let center = y + height / 2
+        return center <= 0.20 || center >= 0.80
+    }
+    let interiorNoChange = comparisonDelta.emittedContent.isEmpty
+        && allInsideComparison
+    let peripheralLowInformation = fullAlphanumericCount <= 2
+        && comparisonAlphanumericCount <= 1
+        && allPeripheral
+    guard interiorNoChange || peripheralLowInformation else { return nil }
+    return [
+        "reason": interiorNoChange
+            ? "interior_ocr_projection_reports_no_change"
+            : "peripheral_low_information_ocr_disagreement",
+        "fullNovelContent": fullDelta.emittedContent,
+        "fullNovelContentSHA256": reducerSHA256String(fullDelta.emittedContent),
+        "comparisonNovelContent": comparisonDelta.emittedContent,
+        "comparisonNovelContentSHA256": reducerSHA256String(
+            comparisonDelta.emittedContent
+        ),
+        "supportingLineIndices": supportingLines.map(\.index),
+        "supportingLineCount": supportingLines.count,
+        "fullAlphanumericCount": fullAlphanumericCount,
+        "comparisonAlphanumericCount": comparisonAlphanumericCount,
+    ]
 }
 
 private func semanticReadComparisonAudit(
@@ -2546,7 +2675,7 @@ private func addSemanticReadComparisonAudit(
     current: ReducerCandidate,
     delta: AdjacentCausalReadDelta?
 ) {
-    guard mode == .semanticV18 else { return }
+    guard mode == .semanticV18 || mode == .semanticV19 else { return }
     guard let previous else {
         novelty["comparisonProjection"] = [
             "role": "comparison_only",
@@ -2603,6 +2732,7 @@ private func applySemanticReadOverlap(
     var comparisonScaffoldingTracker = ReadInterfaceScaffoldingTracker()
     let usesSemanticReadProjection = mode == .semanticV16
         || mode == .semanticV17 || mode == .semanticV18
+        || mode == .semanticV19
     if usesSemanticReadProjection {
         // Classify recurring interface chrome from the immutable session as a
         // whole, then apply that classification to every READ. This can only
@@ -2617,7 +2747,7 @@ private func applySemanticReadOverlap(
                 windowTitle: stringValue(raw["windowTitle"]) ?? "",
                 lines: reducerReadOCRLines(raw["_readSurfaceLines"])
             )
-            if mode == .semanticV18 {
+            if mode == .semanticV18 || mode == .semanticV19 {
                 comparisonScaffoldingTracker.observe(
                     surfaceKey: reducerReadScaffoldingSurfaceKey(raw)
                         + "|comparison-interior",
@@ -2656,9 +2786,14 @@ private func applySemanticReadOverlap(
                 observedContent: observedContent,
                 lines: lines,
                 allowJoinedLineScaffolding: mode == .semanticV18
+                    || mode == .semanticV19,
+                removeClippedOuterBoundaryLines: mode == .semanticV19,
+                additionalRemovalReasons: mode == .semanticV19
+                    ? reducerAdditionalReadRemovalReasons(candidate.event)
+                    : [:]
             )
             candidate.event["content"] = projection.content
-            if mode == .semanticV18,
+            if (mode == .semanticV18 || mode == .semanticV19),
                let comparisonObserved = candidate.raw["_readComparisonContent"]
                     as? String {
                 let comparisonLines = reducerReadOCRLines(
@@ -2671,14 +2806,18 @@ private func applySemanticReadOverlap(
                     windowTitle: windowTitle,
                     observedContent: comparisonObserved,
                     lines: comparisonLines,
-                    allowJoinedLineScaffolding: true
+                    allowJoinedLineScaffolding: true,
+                    removeClippedOuterBoundaryLines: mode == .semanticV19
                 )
                 candidate.comparisonContent = comparisonProjection.content
                 if var reduction = candidate.event["reduction"] as? [String: Any] {
                     reduction["semanticReadComparison"] = reducerSemanticReadDetails(
                         observedContent: comparisonObserved,
                         projection: comparisonProjection,
-                        hadLineEvidence: !comparisonLines.isEmpty
+                        hadLineEvidence: !comparisonLines.isEmpty,
+                        ruleVersion: mode == .semanticV19
+                            ? "read-interface-scaffolding-v4"
+                            : "read-interface-scaffolding-v3"
                     )
                     candidate.event["reduction"] = reduction
                 }
@@ -2686,7 +2825,10 @@ private func applySemanticReadOverlap(
             let semanticDetails = reducerSemanticReadDetails(
                 observedContent: observedContent,
                 projection: projection,
-                hadLineEvidence: !lines.isEmpty
+                hadLineEvidence: !lines.isEmpty,
+                ruleVersion: mode == .semanticV19
+                    ? "read-interface-scaffolding-v4"
+                    : "read-interface-scaffolding-v3"
             )
             if var reduction = candidate.event["reduction"] as? [String: Any] {
                 reduction["semanticReadContent"] = semanticDetails
@@ -2724,7 +2866,7 @@ private func applySemanticReadOverlap(
             }
             let previousContent = stringValue(previous.event["content"]) ?? ""
             let priorEventID = stringValue(previous.event["eventID"]) ?? ""
-            let delta = mode == .semanticV18
+            let delta = mode == .semanticV18 || mode == .semanticV19
                 ? adjacentCausalReadReflowDelta(
                     previous: previousContent,
                     current: projection.content
@@ -2738,11 +2880,11 @@ private func applySemanticReadOverlap(
                     previous: previousContent,
                     current: projection.content
                 )
-            let comparisonDelta = mode == .semanticV18
+            let comparisonDelta = mode == .semanticV18 || mode == .semanticV19
                 ? semanticReadComparisonDelta(previous: previous, current: candidate)
                 : nil
             guard let delta,
-                  mode != .semanticV18
+                  mode != .semanticV18 && mode != .semanticV19
                     || delta.alignment != "ocr_tolerant_ordered_tokens"
                     || comparisonDelta != nil else {
                 var novelty: [String: Any] = [
@@ -2770,8 +2912,84 @@ private func applySemanticReadOverlap(
                 continue
             }
             let removedLineIndices = Set(projection.removed.map(\.line.index))
+            let removedClippedLineCount = projection.removed.filter {
+                $0.reason == "geometrically_clipped_outer_boundary_line"
+                    || $0.reason == "cross_sensor_unstable_clipped_boundary_line"
+                    || $0.reason
+                        == "cross_sensor_clipped_boundary_neighbor_disagreement"
+            }.count
+            if mode == .semanticV19,
+               removedClippedLineCount > 0,
+               let comparisonDelta {
+                var novelty: [String: Any] = [
+                    "schemaVersion": 1,
+                    "ruleVersion": semanticReadNoveltyRuleVersion(mode),
+                    "decision": comparisonDelta.emittedContent.isEmpty
+                        ? "suppress_clipped_boundary_no_stable_novelty"
+                        : "emit_stable_interior_after_clipped_boundary",
+                    "reason": "clipped_full_projection_uses_independent_interior_ocr",
+                    "content": comparisonDelta.emittedContent,
+                    "dependsOnEventID": priorEventID,
+                    "currentEventID": currentEventID,
+                    "observedFullProjectionNovelContent": delta.emittedContent,
+                    "clippedLineCount": removedClippedLineCount,
+                    "alignment": comparisonDelta.alignment,
+                    "overlapCharacterCount": comparisonDelta.overlapCharacterCount,
+                    "currentCharacterCount": comparisonDelta.currentCharacterCount,
+                    "novelCharacterCount": comparisonDelta.emittedContent.count,
+                    "orderingField": "capturedAt",
+                    "orderingTimestamp": candidate.overlapBoundaryAt,
+                    "surface": surface,
+                    "noveltyAuthority": "independent_interior_ocr_projection",
+                ]
+                addSemanticReadComparisonAudit(
+                    to: &novelty, mode: mode,
+                    previous: previous, current: candidate,
+                    delta: comparisonDelta
+                )
+                candidate.event["readNovelty"] = novelty
+                accepted.append(candidate)
+                previousCausalRead = completeCurrent
+                continue
+            }
+            if mode == .semanticV19,
+               let comparisonDelta,
+               let disagreement = readProjectionDisagreementEvidence(
+                    current: candidate,
+                    fullDelta: delta,
+                    comparisonDelta: comparisonDelta,
+                    lines: lines
+               ) {
+                var novelty: [String: Any] = [
+                    "schemaVersion": 1,
+                    "ruleVersion": semanticReadNoveltyRuleVersion(mode),
+                    "decision": "suppress_cross_projection_ocr_disagreement",
+                    "reason": disagreement["reason"]!,
+                    "content": "",
+                    "dependsOnEventID": priorEventID,
+                    "currentEventID": currentEventID,
+                    "observedNovelContent": delta.emittedContent,
+                    "projectionDisagreementEvidence": disagreement,
+                    "alignment": delta.alignment,
+                    "overlapCharacterCount": delta.overlapCharacterCount,
+                    "currentCharacterCount": delta.currentCharacterCount,
+                    "novelCharacterCount": delta.emittedContent.count,
+                    "orderingField": "capturedAt",
+                    "orderingTimestamp": candidate.overlapBoundaryAt,
+                    "surface": surface,
+                ]
+                addSemanticReadComparisonAudit(
+                    to: &novelty, mode: mode,
+                    previous: previous, current: candidate,
+                    delta: comparisonDelta
+                )
+                candidate.event["readNovelty"] = novelty
+                accepted.append(candidate)
+                previousCausalRead = completeCurrent
+                continue
+            }
             let microglyphs: [ReadOCRLineEvidence]?
-            if mode == .semanticV18 {
+            if mode == .semanticV18 || mode == .semanticV19 {
                 microglyphs = isolatedReadNoveltyMicroglyphs(
                     delta.emittedContent,
                     lines: lines,
@@ -3041,10 +3259,149 @@ private func reducerReadOCRLines(_ value: Any?) -> [ReadOCRLineEvidence] {
     }
 }
 
+/// Two capture pathways can prove that they observed the same settled state
+/// while disagreeing about the few visible pixels of a line at a content
+/// boundary. This identifies only short, peripheral lines whose peer OCR at
+/// the same vertical location is materially incompatible. The evidence is
+/// attached to the reconciled event and is interpreted only by semantic v19.
+private func pairedUnstableClippedOCRLineEvidence(
+    selected: [String: Any],
+    peer: [String: Any]
+) -> [[String: Any]] {
+    let selectedLines = reducerReadOCRLines(selected["_readSurfaceLines"])
+    let peerLines = reducerReadOCRLines(peer["_readSurfaceLines"])
+    let referenceHeights = selectedLines.compactMap { line -> Double? in
+        guard line.confidence >= 0.80,
+              line.text.split(whereSeparator: \Character.isWhitespace)
+                .joined(separator: " ").count >= 8,
+              let height = line.height, height > 0 else { return nil }
+        return height
+    }.sorted()
+    guard !referenceHeights.isEmpty, !peerLines.isEmpty else { return [] }
+    let middle = referenceHeights.count / 2
+    let median = referenceHeights.count.isMultiple(of: 2)
+        ? (referenceHeights[middle - 1] + referenceHeights[middle]) / 2
+        : referenceHeights[middle]
+
+    func peerComparison(
+        _ line: ReadOCRLineEvidence
+    ) -> (peers: [ReadOCRLineEvidence], bestSimilarity: Double)? {
+        guard let y = line.y, let height = line.height,
+              height > 0 else { return nil }
+        let center = y + height / 2
+        let peers = peerLines.filter { other in
+            guard let otherY = other.y, let otherHeight = other.height else {
+                return false
+            }
+            let overlap = max(
+                0, min(y + height, otherY + otherHeight) - max(y, otherY)
+            )
+            let centerDistance = abs(
+                center - (otherY + otherHeight / 2)
+            )
+            return overlap > 0 || centerDistance <= max(height, otherHeight)
+        }
+        guard !peers.isEmpty else { return nil }
+        let bestSimilarity = peers.map {
+            normalizedReadOCRSimilarity(line.text, $0.text)
+        }.max() ?? 0
+        return (peers, bestSimilarity)
+    }
+
+    func evidence(
+        _ line: ReadOCRLineEvidence,
+        peers: [ReadOCRLineEvidence],
+        bestSimilarity: Double,
+        reason: String
+    ) -> [String: Any]? {
+        guard let y = line.y, let height = line.height else { return nil }
+        var result: [String: Any] = [
+            "lineIndex": line.index,
+            "text": line.text,
+            "textSHA256": reducerSHA256String(line.text),
+            "confidence": line.confidence,
+            "reason": reason,
+            "medianReferenceLineHeight": median,
+            "bestPeerOCRSimilarity": bestSimilarity,
+            "peerTextSHA256": peers.map { reducerSHA256String($0.text) },
+        ]
+        if let x = line.x, let width = line.width {
+            result["boundingBox"] = [
+                "x": x, "y": y, "width": width, "height": height,
+            ]
+        }
+        return result
+    }
+
+    // The seed is an abnormally short line at the demonstrated lower
+    // content/composer boundary. Exact outer-boundary clipping is handled by
+    // the projection itself; this cross-sensor rule exists for an internal
+    // boundary inside a larger selected AX pane.
+    var selectedEvidence = [Int: [String: Any]]()
+    var contaminatedUpperEdge: Double?
+    for line in selectedLines {
+        guard let y = line.y, let height = line.height,
+              height <= median * 0.80,
+              let comparison = peerComparison(line),
+              comparison.bestSimilarity < 0.90,
+              let item = evidence(
+                line, peers: comparison.peers,
+                bestSimilarity: comparison.bestSimilarity,
+                reason: "cross_sensor_unstable_clipped_boundary_line"
+              ) else { continue }
+        let center = y + height / 2
+        let isLowerBoundary = center <= 0.20
+        let isWideUpperBoundary = center >= 0.80
+            && ((line.width ?? 0) >= 0.50 || line.text.count >= 64)
+        guard isLowerBoundary || isWideUpperBoundary else { continue }
+        selectedEvidence[line.index] = item
+        if isLowerBoundary {
+            contaminatedUpperEdge = max(contaminatedUpperEdge ?? 0, y + height)
+        }
+    }
+    guard var upperEdge = contaminatedUpperEdge else {
+        return selectedEvidence.keys.sorted().compactMap { selectedEvidence[$0] }
+    }
+
+    // A clipped line can corrupt the immediately adjacent OCR row even when
+    // that row retains normal height. Extend only through locally contiguous,
+    // cross-sensor-disagreeing rows and stop once stable text resumes.
+    for line in selectedLines.sorted(by: { ($0.y ?? 2) < ($1.y ?? 2) }) {
+        guard selectedEvidence[line.index] == nil,
+              let y = line.y, let height = line.height,
+              y + height / 2 <= 0.25,
+              y <= upperEdge + median * 1.25,
+              let comparison = peerComparison(line),
+              comparison.bestSimilarity < 0.98,
+              let item = evidence(
+                line, peers: comparison.peers,
+                bestSimilarity: comparison.bestSimilarity,
+                reason: "cross_sensor_clipped_boundary_neighbor_disagreement"
+              ) else { continue }
+        selectedEvidence[line.index] = item
+        upperEdge = max(upperEdge, y + height)
+    }
+    return selectedEvidence.keys.sorted().compactMap { selectedEvidence[$0] }
+}
+
+private func reducerAdditionalReadRemovalReasons(
+    _ event: [String: Any]
+) -> [Int: String] {
+    guard let reduction = event["reduction"] as? [String: Any],
+          let rows = reduction["unstableClippedOCRLineEvidence"]
+            as? [[String: Any]] else { return [:] }
+    return rows.reduce(into: [Int: String]()) { result, row in
+        guard let index = intValue(row["lineIndex"]),
+              let reason = nonEmptyString(row["reason"]) else { return }
+        result[index] = reason
+    }
+}
+
 private func reducerSemanticReadDetails(
     observedContent: String,
     projection: ReadSemanticContentProjection,
-    hadLineEvidence: Bool
+    hadLineEvidence: Bool,
+    ruleVersion: String = "read-interface-scaffolding-v3"
 ) -> [String: Any] {
     let removed: [[String: Any]] = projection.removed.map { item in
         var result: [String: Any] = [
@@ -3066,7 +3423,7 @@ private func reducerSemanticReadDetails(
     }
     return [
         "schemaVersion": 1,
-        "ruleVersion": "read-interface-scaffolding-v3",
+        "ruleVersion": ruleVersion,
         "decision": removed.isEmpty
             ? "retain_observed_content"
             : "remove_proven_interface_scaffolding",

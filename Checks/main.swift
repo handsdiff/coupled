@@ -664,6 +664,28 @@ expect(
         ) == nil,
     "multiple tiny OCR glyphs are suppressible only when no substantive novelty is mixed in"
 )
+var clippedBoundaryTracker = ReadInterfaceScaffoldingTracker()
+let clippedBoundaryProjection = clippedBoundaryTracker.project(
+    surfaceKey: "fixture-clipped-boundary",
+    bundleIdentifier: "fixture.app",
+    windowTitle: "Document",
+    observedContent: "unreadable clipped fragment\nStable visible sentence\nShort heading",
+    lines: [
+        ReadOCRLineEvidence(index: 0, text: "unreadable clipped fragment",
+            confidence: 0.3, x: 0.1, y: 0.994, width: 0.4, height: 0.006),
+        ReadOCRLineEvidence(index: 1, text: "Stable visible sentence",
+            confidence: 1, x: 0.1, y: 0.5, width: 0.5, height: 0.03),
+        ReadOCRLineEvidence(index: 2, text: "Short heading",
+            confidence: 1, x: 0.1, y: 0.002, width: 0.2, height: 0.03),
+    ],
+    removeClippedOuterBoundaryLines: true
+)
+expect(
+    clippedBoundaryProjection.content == "Stable visible sentence\nShort heading"
+        && clippedBoundaryProjection.removed.map(\.reason)
+            == ["geometrically_clipped_outer_boundary_line"],
+    "line-level boundary filtering removes only an abnormally short exact-edge OCR line"
+)
 expect(
     isChromiumAuxiliarySurface(
         bundleIdentifier: "com.google.Chrome", width: 1455, height: 158
@@ -1684,6 +1706,9 @@ let visualReadReduction = fixtureRoot.appendingPathComponent("visual-read-reduct
 let visualReadReductionV18 = fixtureRoot.appendingPathComponent(
     "visual-read-reduction-v18"
 )
+let visualReadReductionV19 = fixtureRoot.appendingPathComponent(
+    "visual-read-reduction-v19"
+)
 let visualReadTamperedReduction = fixtureRoot.appendingPathComponent(
     "visual-read-tampered-reduction"
 )
@@ -1692,6 +1717,9 @@ let visualReadSurfaceEvidence = fixtureRoot.appendingPathComponent(
 )
 let visualReadSurfaceEvidenceV5 = fixtureRoot.appendingPathComponent(
     "visual-read-surface-evidence-v5"
+)
+let visualReadSurfaceEvidenceV19 = fixtureRoot.appendingPathComponent(
+    "visual-read-surface-evidence-v19"
 )
 let visualScreenshots = visualReadInput.appendingPathComponent("screenshots")
 try! FileManager.default.createDirectory(
@@ -2152,6 +2180,121 @@ let visualReadV18Manifest = try! JSONSerialization.jsonObject(
 expect(
     visualReadV18Manifest["dynamicReadBoundaryCount"] as? Int == 4,
     "v18 binds click, scroll, activation, and pre-WRITE boundaries into reduction"
+)
+try! FileManager.default.createDirectory(
+    at: visualReadSurfaceEvidenceV19, withIntermediateDirectories: true
+)
+let visualV19JobsURL = visualReadSurfaceEvidenceV19.appendingPathComponent(
+    "jobs.jsonl"
+)
+let visualV19RowsURL = visualReadSurfaceEvidenceV19.appendingPathComponent(
+    "read-surfaces.jsonl"
+)
+let visualV19UnresolvedURL = visualReadSurfaceEvidenceV19.appendingPathComponent(
+    "unresolved.jsonl"
+)
+writeFixtureJSONL([], to: visualV19JobsURL)
+let visualV19Rows: [[String: Any]] = visualV5Rows.map { original in
+    var row = original
+    guard let sourceID = row["sourceRecordID"] as? String,
+          sourceID == "visual-ocr-1" || sourceID == "pointer-read-1" else {
+        return row
+    }
+    let clipped = sourceID == "visual-ocr-1"
+        ? "varifine boundary corruption"
+        : "unrifine different corruption"
+    let content = "same visible words\n\(clipped)"
+    let lines: [[String: Any]] = [
+        [
+            "text": "same visible words", "confidence": 1.0,
+            "boundingBox": [
+                "x": 0.1, "y": 0.5, "width": 0.5, "height": 0.05,
+            ],
+        ],
+        [
+            "text": clipped, "confidence": 1.0,
+            "boundingBox": [
+                "x": 0.1, "y": 0.14, "width": 0.5, "height": 0.01,
+            ],
+        ],
+    ]
+    let comparisonContent = "same visible words"
+    let comparisonLines: [[String: Any]] = [[
+        "text": comparisonContent, "confidence": 1.0,
+        "boundingBox": [
+            "x": 0.1, "y": 0.5, "width": 0.5, "height": 0.05,
+        ],
+    ]]
+    row["content"] = content
+    row["contentSHA256"] = SHA256.hash(data: Data(content.utf8))
+        .map { String(format: "%02x", $0) }.joined()
+    row["recognizedLineCount"] = lines.count
+    row["lines"] = lines
+    row["comparisonContent"] = comparisonContent
+    row["comparisonContentSHA256"] = SHA256.hash(
+        data: Data(comparisonContent.utf8)
+    ).map { String(format: "%02x", $0) }.joined()
+    row["comparisonRecognizedLineCount"] = comparisonLines.count
+    row["comparisonLines"] = comparisonLines
+    return row
+}
+writeFixtureJSONL(visualV19Rows, to: visualV19RowsURL)
+writeFixtureJSONL([], to: visualV19UnresolvedURL)
+try! jsonData([
+    "schemaVersion": 1, "ruleVersion": "ax-pane-read-v5",
+    "sessionID": "visual-read-session",
+    "ruleSelection": [
+        "includedRecordTypes": [
+            "screen_ocr_observation", "visual_ocr_observation",
+        ],
+    ],
+    "source": [
+        "digestsSHA256": [
+            "session.json": fixtureSHA256(
+                visualReadInput.appendingPathComponent("session.json")
+            ),
+            "raw.jsonl": fixtureSHA256(visualRawURL),
+        ],
+    ],
+    "counts": [
+        "rawRecords": 18, "screenObservations": 1,
+        "visualObservations": 7, "readObservations": 8,
+        "evidence": 8, "unresolved": 0,
+    ],
+    "artifacts": [
+        "digestsSHA256": [
+            "jobs.jsonl": fixtureSHA256(visualV19JobsURL),
+            "read-surfaces.jsonl": fixtureSHA256(visualV19RowsURL),
+            "unresolved.jsonl": fixtureSHA256(visualV19UnresolvedURL),
+        ],
+    ],
+], pretty: true).write(
+    to: visualReadSurfaceEvidenceV19.appendingPathComponent(
+        "read-surface-evidence.json"
+    )
+)
+_ = try! Phase1SemanticReducer(configuration: .init(
+    reducerVersion: "phase1-semantic-v19",
+    readSurfaceEvidenceDirectory: visualReadSurfaceEvidenceV19
+)).reduce(
+    sourceDirectory: visualReadInput, outputDirectory: visualReadReductionV19
+)
+let visualReadV19Events = readFixtureJSONL(
+    visualReadReductionV19.appendingPathComponent("events.jsonl")
+)
+let visualV19FirstReduction = visualReadV19Events[0]["reduction"]
+    as! [String: Any]
+let visualV19FirstSemantic = visualV19FirstReduction["semanticReadContent"]
+    as! [String: Any]
+let visualV19Removed = visualV19FirstSemantic["removedLines"]
+    as! [[String: Any]]
+expect(
+    visualReadV19Events[0]["content"] as? String == "same visible words"
+        && visualV19Removed.contains {
+            $0["reason"] as? String
+                == "cross_sensor_unstable_clipped_boundary_line"
+        },
+    "v19 removes a short internal boundary line only when reconciled same-state sensors disagree"
 )
 try! Data("tampered visual frame bytes".utf8).write(to: visualScreenshotURL)
 _ = try! Phase1SemanticReducer(configuration: .init(

@@ -125,9 +125,11 @@ class ReviewStore:
         candidate_version = candidate_manifest.get("reducerVersion")
         if candidate_version not in {
             "phase1-semantic-v16", "phase1-semantic-v17",
-            "phase1-semantic-v18",
+            "phase1-semantic-v18", "phase1-semantic-v19",
         }:
-            raise ReviewError("candidate must be phase1-semantic-v16, v17, or v18")
+            raise ReviewError(
+                "candidate must be phase1-semantic-v16, v17, v18, or v19"
+            )
         self.candidate_version = str(candidate_version)
         manifest_pairs = [(self.candidate, candidate_manifest)]
         if self.baseline is not None and base_manifest is not None:
