@@ -687,6 +687,33 @@ expect(
     "line-level boundary filtering removes only an abnormally short exact-edge OCR line"
 )
 expect(
+    readNoveltyIsStrictlyGrounded(
+        "Packing: phase1-token-pack-v7",
+        in: "The complete stack\nPacking: phase1-token-pack-v7\nDone"
+    )
+        && !readNoveltyIsStrictlyGrounded(
+            "Danlinn. nhaca1+akan-nack47",
+            in: "The complete stack\nPacking: phase1-token-pack-v7\nDone"
+        ),
+    "comparison novelty must be present in authoritative cleaned OCR"
+)
+expect(
+    !readCrossSensorClippingSeedIsStrong(
+        text: "20. Jul", confidence: 1, width: 0.038,
+        height: 0.0136, medianReferenceLineHeight: 0.0176
+    )
+        && readCrossSensorClippingSeedIsStrong(
+            text: "That varifine that tha naw allantar ie nra",
+            confidence: 1, width: 0.28,
+            height: 0.0143, medianReferenceLineHeight: 0.0205
+        )
+        && readCrossSensorClippingSeedIsStrong(
+            text: "A WAITP", confidence: 0.5, width: 0.078,
+            height: 0.009, medianReferenceLineHeight: 0.0206
+        ),
+    "cross-sensor disagreement preserves compact high-confidence labels but retains strong clipped-line evidence"
+)
+expect(
     isChromiumAuxiliarySurface(
         bundleIdentifier: "com.google.Chrome", width: 1455, height: 158
     )
@@ -1709,6 +1736,9 @@ let visualReadReductionV18 = fixtureRoot.appendingPathComponent(
 let visualReadReductionV19 = fixtureRoot.appendingPathComponent(
     "visual-read-reduction-v19"
 )
+let visualReadReductionV20 = fixtureRoot.appendingPathComponent(
+    "visual-read-reduction-v20"
+)
 let visualReadTamperedReduction = fixtureRoot.appendingPathComponent(
     "visual-read-tampered-reduction"
 )
@@ -2295,6 +2325,19 @@ expect(
                 == "cross_sensor_unstable_clipped_boundary_line"
         },
     "v19 removes a short internal boundary line only when reconciled same-state sensors disagree"
+)
+_ = try! Phase1SemanticReducer(configuration: .init(
+    reducerVersion: "phase1-semantic-v20",
+    readSurfaceEvidenceDirectory: visualReadSurfaceEvidenceV19
+)).reduce(
+    sourceDirectory: visualReadInput, outputDirectory: visualReadReductionV20
+)
+let visualReadV20Events = readFixtureJSONL(
+    visualReadReductionV20.appendingPathComponent("events.jsonl")
+)
+expect(
+    visualReadV20Events[0]["content"] as? String == "same visible words",
+    "v20 retains strongly evidenced clipped-line removal"
 )
 try! Data("tampered visual frame bytes".utf8).write(to: visualScreenshotURL)
 _ = try! Phase1SemanticReducer(configuration: .init(

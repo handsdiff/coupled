@@ -60,18 +60,35 @@ events = {
         "decision": "suppress_nonsemantic_microglyph", "content": "",
         "dependsOnEventID": "d",
     }),
+    "h": event("h", "CLEAN INTERIOR", {
+        "decision": "emit_stable_interior_after_clipped_boundary",
+        "content": "INTERIOR", "dependsOnEventID": "g",
+    }),
+    "i": event("i", "CLEAN INTERIOR", {
+        "decision": "suppress_clipped_boundary_no_stable_novelty",
+        "content": "", "dependsOnEventID": "h",
+    }),
+    "j": event("j", "CLEAN INTERIOR", {
+        "decision": "suppress_cross_projection_ocr_disagreement",
+        "content": "", "dependsOnEventID": "i",
+    }),
 }
 
 rendered, counts = apply_dependency_aware_read_rendering(
-    [block(events[key]) for key in ("a", "b", "c", "d", "g")], events, encode
+    [block(events[key]) for key in ("a", "b", "c", "d", "g", "h", "i", "j")],
+    events,
+    encode,
 )
 payloads = [json.loads(value["serialized"]) for value in rendered]
 assert [value["content"] for value in payloads] == [
-    "ABCD", "EF", "GH", "", "Showing most recent -\nC",
+    "ABCD", "EF", "GH", "", "Showing most recent -\nC", "INTERIOR", "", "",
 ]
 assert rendered[3]["tokenIDs"]
-assert counts["novelContentRendered"] == 2
-assert counts["adjacentRepeatContentSuppressed"] == 1
+assert rendered[5]["readRendering"]["decision"] == "render_grounded_stable_interior"
+assert rendered[6]["readRendering"]["decision"] == "render_empty_proven_no_novelty"
+assert rendered[7]["readRendering"]["decision"] == "render_empty_proven_no_novelty"
+assert counts["novelContentRendered"] == 3
+assert counts["adjacentRepeatContentSuppressed"] == 3
 assert counts["completeFallbackUncertainMicroglyph"] == 1
 
 missing, missing_counts = apply_dependency_aware_read_rendering(

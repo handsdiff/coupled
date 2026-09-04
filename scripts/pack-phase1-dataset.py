@@ -42,7 +42,7 @@ except ImportError as error:
 
 
 PACKER_VERSION = "phase1-token-pack-v7"
-DEPENDENCY_AWARE_PACKER_VERSION = "phase1-token-pack-v8"
+DEPENDENCY_AWARE_PACKER_VERSION = "phase1-token-pack-v9"
 DEFAULT_TOKENIZER = "Qwen/Qwen3.5-9B-Base"
 DEFAULT_PASTE_MARKER = "<|paste|>"
 DEFAULT_TASK_INSTRUCTION = (
@@ -639,7 +639,7 @@ def main() -> int:
         "--dependency-aware-read-novelty",
         action="store_true",
         help=(
-            "shadow v8: render semantic READ novelty only when its exact "
+            "shadow v9: render semantic READ novelty only when its exact "
             "complete predecessor survives context packing"
         ),
     )

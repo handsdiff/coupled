@@ -14,7 +14,23 @@ import json
 from typing import Any, Callable
 
 
-RENDERER_VERSION = "dependency-aware-read-novelty-v1"
+RENDERER_VERSION = "dependency-aware-read-novelty-v2"
+
+POSITIVE_NOVELTY_DECISIONS = {
+    "emit_new_content": "render_novel_content",
+    "emit_stable_interior_after_clipped_boundary": (
+        "render_grounded_stable_interior"
+    ),
+}
+EMPTY_NOVELTY_DECISIONS = {
+    "suppress_no_new_content": "render_empty_adjacent_repeat",
+    "suppress_clipped_boundary_no_stable_novelty": (
+        "render_empty_proven_no_novelty"
+    ),
+    "suppress_cross_projection_ocr_disagreement": (
+        "render_empty_proven_no_novelty"
+    ),
+}
 
 
 def canonical_json(value: dict[str, Any]) -> str:
@@ -125,7 +141,9 @@ def apply_dependency_aware_read_rendering(
                 dependency_available=dependency_available,
             )
             counts["completeFallbackUncertainMicroglyph"] += 1
-        elif semantic_decision in {"emit_new_content", "suppress_no_new_content"}:
+        elif semantic_decision in (
+            POSITIVE_NOVELTY_DECISIONS.keys() | EMPTY_NOVELTY_DECISIONS.keys()
+        ):
             novel_content = novelty.get("content")
             if not isinstance(novel_content, str):
                 raise ValueError(f"READ {event_id} has invalid novelty content")
@@ -139,16 +157,15 @@ def apply_dependency_aware_read_rendering(
                     block["tokenIDs"] = packed_ids
                     block["packedSerialized"] = packed_serialized
                     render_decision = (
-                        "render_novel_content"
-                        if semantic_decision == "emit_new_content"
-                        else "render_empty_adjacent_repeat"
+                        POSITIVE_NOVELTY_DECISIONS.get(semantic_decision)
+                        or EMPTY_NOVELTY_DECISIONS[semantic_decision]
                     )
                     block["readRendering"] = _rendering(
                         render_decision,
                         novelty,
                         dependency_available=True,
                     )
-                    if semantic_decision == "emit_new_content":
+                    if semantic_decision in POSITIVE_NOVELTY_DECISIONS:
                         counts["novelContentRendered"] += 1
                     else:
                         counts["adjacentRepeatContentSuppressed"] += 1

@@ -126,9 +126,10 @@ class ReviewStore:
         if candidate_version not in {
             "phase1-semantic-v16", "phase1-semantic-v17",
             "phase1-semantic-v18", "phase1-semantic-v19",
+            "phase1-semantic-v20",
         }:
             raise ReviewError(
-                "candidate must be phase1-semantic-v16, v17, v18, or v19"
+                "candidate must be phase1-semantic-v16, v17, v18, v19, or v20"
             )
         self.candidate_version = str(candidate_version)
         manifest_pairs = [(self.candidate, candidate_manifest)]
@@ -205,8 +206,10 @@ class ReviewStore:
         packing_summary: dict[str, Any] | None = None
         if self.compiled is not None and self.packed is not None:
             packing_manifest = load_json(self.packed / "packing.json")
-            if packing_manifest.get("packerVersion") != "phase1-token-pack-v8":
-                raise ReviewError("packed review requires phase1-token-pack-v8")
+            if packing_manifest.get("packerVersion") not in {
+                "phase1-token-pack-v8", "phase1-token-pack-v9",
+            }:
+                raise ReviewError("packed review requires phase1-token-pack-v8 or v9")
             if packing_manifest.get("packing", {}).get(
                 "readNoveltyRendering", {}
             ).get("status") != "shadow_opt_in":

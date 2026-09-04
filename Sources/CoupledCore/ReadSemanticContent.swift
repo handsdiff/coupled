@@ -57,6 +57,45 @@ public struct ReadSemanticContentProjection: Equatable, Sendable {
     public let removed: [RemovedReadScaffoldingLine]
 }
 
+/// Comparison-only OCR may corroborate semantic novelty, but it must not add
+/// words absent from the cleaned authoritative pane observation. Whitespace
+/// reflow and case are non-semantic; token order and spelling remain strict.
+public func readNoveltyIsStrictlyGrounded(
+    _ novelty: String,
+    in authoritativeContent: String
+) -> Bool {
+    func normalized(_ value: String) -> String {
+        value.precomposedStringWithCanonicalMapping
+            .split(whereSeparator: \Character.isWhitespace)
+            .joined(separator: " ")
+            .lowercased()
+    }
+    let needle = normalized(novelty)
+    let haystack = normalized(authoritativeContent)
+    guard !needle.isEmpty, !haystack.isEmpty else { return false }
+    return haystack == needle
+        || " \(haystack) ".contains(" \(needle) ")
+}
+
+/// Cross-sensor disagreement is not sufficient evidence that a visible line
+/// is clipped. A removable seed also needs low OCR confidence or the geometry
+/// of a materially wide/punctuation-only line compressed at the boundary.
+public func readCrossSensorClippingSeedIsStrong(
+    text: String,
+    confidence: Double,
+    width: Double,
+    height: Double,
+    medianReferenceLineHeight: Double
+) -> Bool {
+    if confidence < 0.80 { return true }
+    guard medianReferenceLineHeight > 0,
+          height <= medianReferenceLineHeight * 0.80 else { return false }
+    let alphanumericCount = text.reduce(0) {
+        $0 + ($1.isLetter || $1.isNumber ? 1 : 0)
+    }
+    return width >= 0.10 || alphanumericCount == 0
+}
+
 /// A deliberately conservative interface-scaffolding detector.
 /// Application-specific rules cover interface elements whose semantics are
 /// directly known. The generic rule requires exact text at matching peripheral

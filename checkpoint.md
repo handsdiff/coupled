@@ -296,7 +296,27 @@ latency projection, not proof that a live router knew the destination then.
   the reviewed clipped-gibberish cases without incorporating September 3. The
   separate event-531 cross-window screenshot attribution case is deliberately
   unchanged and remains an explicit deferred limitation.
-- Known production cases in the September 2 v19 candidate now behave as
+- Semantic-v20 corrects the remaining v19 grounding and packing failures without
+  changing collection evidence. Comparison-only OCR may contribute novelty only
+  when the exact normalized text is present in the authoritative full-pane OCR;
+  otherwise the reducer keeps the authoritative observation or records an
+  explicit uncertain disposition. Cross-sensor clipping now also requires strong
+  geometric or confidence evidence, which preserves the valid CoinGecko label
+  `20. Jul` while continuing to remove the reviewed clipped OCR. Two full replays
+  were byte-for-byte identical: `events.jsonl` SHA-256
+  `3679ecc514d7316ccd145a40047d512138ab7de09ac057df27c2f13e743228c7`,
+  `unresolved.jsonl` SHA-256
+  `876780e3da1ce91df76cc9fb37f365323261d3ffc35acfb8221ab44159f76387`,
+  and `reduction.json` SHA-256
+  `9d15d7bb08566a5395c9a272614f25b07ac020af7e687c903a6209869bc2d003`.
+  Counts remain 575 READs, 87 WRITEs, and 371 non-event dispositions. Every
+  WRITE, all 77 target strings, masks, queries, and loss-bearing token sequences
+  remain unchanged. Packer v9 explicitly consumes all v20 novelty decisions
+  instead of falling back to complete states: its 77-example 32K pack contains
+  1,690,731 model-input tokens, removes 543,841 proven repeated READ tokens, and
+  is 6,115 tokens smaller than the semantic-v18/packer-v8 baseline. The reviewed
+  event-622 garble is absent from model input, and event 386 retains `20. Jul`.
+- Known production cases in the September 2 v20 candidate now behave as
   intended: material click/scroll/
   activation/pre-WRITE boundaries remain separate; adjacent overlapping READs
   retain full semantic states while packing removes only proven repeated
@@ -330,12 +350,12 @@ Missing evidence stays unknown; these limits do not authorize guesses.
 
 ## Next step
 
-1. Manually review the pane-v7/semantic-v19 before/after UI, with particular
+1. Manually review the pane-v7/semantic-v20 before/after UI, with particular
    attention to current AX panes, recovered prior panes, the 16 unresolved
    observations, browser chrome, VS Code editor/terminal transitions, passive
    AI responses, material-action boundaries, and the named production cases.
 2. If that review finds no remaining material issue beyond the explicitly
-   deferred screen-occlusion case, apply the same pane-v7/semantic-v19 rules to
+   deferred screen-occlusion case, apply the same pane-v7/semantic-v20 rules to
    the untouched September 3 session and inspect its new edge cases before any
    canonical-corpus promotion.
 3. Audit READ surfaces, WRITE destinations, closed-episode boundaries,

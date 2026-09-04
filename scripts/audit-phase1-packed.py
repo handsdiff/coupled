@@ -34,9 +34,9 @@ def main() -> int:
     manifest = json.loads((directory / "packing.json").read_text(encoding="utf-8"))
     if manifest.get("schemaVersion") != 4 or manifest.get("packerVersion") not in {
         "phase1-token-pack-v4", "phase1-token-pack-v5", "phase1-token-pack-v6",
-        "phase1-token-pack-v7", "phase1-token-pack-v8",
+        "phase1-token-pack-v7", "phase1-token-pack-v8", "phase1-token-pack-v9",
     }:
-        raise ValueError("auditor requires phase1-token-pack-v4 through v8")
+        raise ValueError("auditor requires phase1-token-pack-v4 through v9")
     packed_path = directory / "packed-examples.jsonl"
     expected = manifest["artifactDigestsSHA256"]["packed-examples.jsonl"]
     if sha256(packed_path) != expected:
@@ -44,7 +44,7 @@ def main() -> int:
     context_plans: dict[str, dict] = {}
     if manifest["packerVersion"] in {
         "phase1-token-pack-v5", "phase1-token-pack-v6", "phase1-token-pack-v7",
-        "phase1-token-pack-v8",
+        "phase1-token-pack-v8", "phase1-token-pack-v9",
     }:
         plans_path = directory / "context-plans.jsonl"
         expected_plans = manifest["artifactDigestsSHA256"].get("context-plans.jsonl")
@@ -84,7 +84,8 @@ def main() -> int:
     expected_budget_scope = (
         "task_instruction_plus_history_plus_conditioning_query"
         if manifest["packerVersion"] in {
-            "phase1-token-pack-v6", "phase1-token-pack-v7", "phase1-token-pack-v8"
+            "phase1-token-pack-v6", "phase1-token-pack-v7", "phase1-token-pack-v8",
+            "phase1-token-pack-v9",
         }
         else "history_plus_conditioning_query_only"
     )
@@ -148,7 +149,8 @@ def main() -> int:
             if history_count + query_count + instruction_count != input_count:
                 raise ValueError(f"line {line_number}: instruction/history/query token counts disagree")
             if manifest["packerVersion"] in {
-                "phase1-token-pack-v6", "phase1-token-pack-v7", "phase1-token-pack-v8"
+                "phase1-token-pack-v6", "phase1-token-pack-v7", "phase1-token-pack-v8",
+                "phase1-token-pack-v9",
             }:
                 instruction_ids = inputs[:instruction_count]
                 if (
@@ -235,9 +237,13 @@ def main() -> int:
                 elif "packedSerialized" in span:
                     rendering = span.get("readRendering", {})
                     if not (
-                        manifest["packerVersion"] == "phase1-token-pack-v8"
+                        manifest["packerVersion"] in {
+                            "phase1-token-pack-v8", "phase1-token-pack-v9",
+                        }
                         and rendering.get("decision") in {
-                            "render_novel_content", "render_empty_adjacent_repeat"
+                            "render_novel_content", "render_empty_adjacent_repeat",
+                            "render_grounded_stable_interior",
+                            "render_empty_proven_no_novelty",
                         }
                         and json.loads(span["packedSerialized"]).get("kind") == "read"
                         and isinstance(
@@ -253,16 +259,23 @@ def main() -> int:
                 rendering = span.get("readRendering")
                 if rendering is not None:
                     if not (
-                        manifest["packerVersion"] == "phase1-token-pack-v8"
+                        manifest["packerVersion"] in {
+                            "phase1-token-pack-v8", "phase1-token-pack-v9",
+                        }
                         and rendering.get("schemaVersion") == 1
                         and rendering.get("rendererVersion")
                             == manifest["packing"]["readNoveltyRendering"]["rendererVersion"]
                     ):
                         raise ValueError(f"line {line_number}: READ rendering metadata is invalid")
                     decision = rendering.get("decision")
-                    if decision == "render_novel_content":
+                    if decision in {
+                        "render_novel_content", "render_grounded_stable_interior",
+                    }:
                         read_rendering_counts["novelContentRendered"] += 1
-                    elif decision == "render_empty_adjacent_repeat":
+                    elif decision in {
+                        "render_empty_adjacent_repeat",
+                        "render_empty_proven_no_novelty",
+                    }:
                         read_rendering_counts["adjacentRepeatContentSuppressed"] += 1
                     elif decision == "render_complete_dependency_unavailable":
                         read_rendering_counts[
@@ -306,14 +319,18 @@ def main() -> int:
                 record["modelInputTokenCountBeforePacking"] - input_count
             ):
                 raise ValueError(f"line {line_number}: discarded token count disagrees")
-            if manifest["packerVersion"] == "phase1-token-pack-v8":
+            if manifest["packerVersion"] in {
+                "phase1-token-pack-v8", "phase1-token-pack-v9",
+            }:
                 selected_count = record.get("modelInputTokenCountAfterContextSelection")
                 if not (
                     isinstance(selected_count, int)
                     and input_count <= selected_count
                     <= record["modelInputTokenCountBeforePacking"]
                 ):
-                    raise ValueError(f"line {line_number}: v8 selection token count is invalid")
+                    raise ValueError(
+                        f"line {line_number}: dependency-aware selection token count is invalid"
+                    )
                 tokens_removed_by_context_truncation += (
                     record["modelInputTokenCountBeforePacking"] - selected_count
                 )
@@ -349,7 +366,9 @@ def main() -> int:
                 record["unusedModelInputTokenBudget"],
             )
 
-            if manifest["packerVersion"] == "phase1-token-pack-v8":
+            if manifest["packerVersion"] in {
+                "phase1-token-pack-v8", "phase1-token-pack-v9",
+            }:
                 read_rendering_counts["tokensRemoved"] += (
                     record["modelInputTokenCountAfterContextSelection"] - input_count
                 )
@@ -374,7 +393,9 @@ def main() -> int:
     for key, value in expected_counts.items():
         if manifest["counts"].get(key) != value:
             raise ValueError(f"manifest count disagrees: {key}")
-    if manifest["packerVersion"] == "phase1-token-pack-v8":
+    if manifest["packerVersion"] in {
+        "phase1-token-pack-v8", "phase1-token-pack-v9",
+    }:
         novelty_contract = manifest.get("packing", {}).get("readNoveltyRendering", {})
         if not (
             novelty_contract.get("enabled") is True
@@ -384,7 +405,7 @@ def main() -> int:
             and novelty_contract.get("uncertainMicroglyphPolicy")
                 == "retain complete current READ"
         ):
-            raise ValueError("v8 READ novelty contract is incomplete")
+            raise ValueError("dependency-aware READ novelty contract is incomplete")
         if (
             manifest["counts"].get("modelInputTokensRemovedByContextTruncation")
                 != tokens_removed_by_context_truncation
@@ -392,7 +413,7 @@ def main() -> int:
                 != tokens_removed_by_read_rendering
             or manifest["counts"].get("readRendering") != read_rendering_counts
         ):
-            raise ValueError("v8 READ rendering counts disagree")
+            raise ValueError("dependency-aware READ rendering counts disagree")
     if sequence_contract.get("requiredTrainerSequenceCapacity") != maximum_sequence_tokens:
         raise ValueError("required trainer sequence capacity disagrees")
     for relative, digest in manifest["tokenizer"]["savedFileDigestsSHA256"].items():

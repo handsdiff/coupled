@@ -763,6 +763,7 @@ public struct CausalDatasetCompiler {
             if [
                 "phase1-semantic-v16", "phase1-semantic-v17",
                 "phase1-semantic-v18", "phase1-semantic-v19",
+                "phase1-semantic-v20",
             ].contains(
                 reduction?.string("reducerVersion") ?? ""
             ) {
