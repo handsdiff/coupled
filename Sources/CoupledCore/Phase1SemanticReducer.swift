@@ -154,14 +154,16 @@ public struct Phase1SemanticReducer {
                 }
             case "screen_ocr_observation":
                 let screenRecordID = stringValue(object["recordID"]) ?? ""
-                if readSurfaceEvidence?.ruleVersion == "ax-pane-read-v6",
+                if ["ax-pane-read-v6", "ax-pane-read-v7"].contains(
+                    readSurfaceEvidence?.ruleVersion ?? ""
+                ),
                    readSurfaceEvidence?.bySourceRecordID[screenRecordID] == nil {
                     dispositions.append(ReducerDisposition(
                         line: record.line,
                         object: reducerUnresolved(
                             sessionID: sessionID, raw: object,
                             line: record.line, kind: "read",
-                            rule: "read_surface_resolution_v6",
+                            rule: "read_surface_resolution_v6_plus",
                             reason: readSurfaceEvidence?
                                 .unresolvedReasonBySourceRecordID[screenRecordID]
                                 ?? "read_surface_evidence_missing"
@@ -499,9 +501,10 @@ public struct Phase1SemanticReducer {
             "previewAuthority": false,
         ]
         if let readSurfaceEvidence {
-            reduction["readSurfaceRule"] = readSurfaceEvidence.ruleVersion
-                == "ax-pane-read-v6"
-                ? "hash-verified ax-pane-read-v6 evidence before causal overlap; unresolved pane observations remain raw evidence and are excluded from semantic READs"
+            reduction["readSurfaceRule"] = [
+                "ax-pane-read-v6", "ax-pane-read-v7",
+            ].contains(readSurfaceEvidence.ruleVersion)
+                ? "hash-verified \(readSurfaceEvidence.ruleVersion) evidence before causal overlap; unresolved pane observations remain raw evidence and are excluded from semantic READs"
                 : "hash-verified \(readSurfaceEvidence.ruleVersion) evidence before causal overlap; unresolved evidence falls back to collector OCR"
         }
         if configuration.reducerVersion == "phase1-semantic-v15" {
@@ -669,7 +672,7 @@ private func loadReadSurfaceEvidence(
         ]
     case "phase1-semantic-v18":
         expectedRuleVersions = rawScreenOCRSchema >= 7
-            ? ["ax-pane-read-v5", "ax-pane-read-v6"]
+            ? ["ax-pane-read-v5", "ax-pane-read-v6", "ax-pane-read-v7"]
             : ["pointer-local-read-v1"]
         expectedReadRecordTypes = [
             "screen_ocr_observation", "visual_ocr_observation",
@@ -768,7 +771,7 @@ private func loadReadSurfaceEvidence(
                 "invalid or duplicate read-surface evidence at line \(row.line)"
             )
         }
-        if ["ax-pane-read-v5", "ax-pane-read-v6"]
+        if ["ax-pane-read-v5", "ax-pane-read-v6", "ax-pane-read-v7"]
             .contains(evidenceRuleVersion) {
             guard let comparison = object["comparisonContent"] as? String,
                   !comparison.isEmpty,
@@ -882,7 +885,7 @@ private func effectiveReadObject(
         ?? ruleVersion ?? "unknown"
     effective["captureScope"] = [
         "ax-pane-read-v2", "ax-pane-read-v3", "ax-pane-read-v4",
-        "ax-pane-read-v5", "ax-pane-read-v6",
+        "ax-pane-read-v5", "ax-pane-read-v6", "ax-pane-read-v7",
     ]
         .contains(evidenceRuleVersion)
         ? "active_ax_pane"
@@ -897,7 +900,7 @@ private func effectiveReadObject(
         "originalContentSHA256": reducerSHA256String(originalContent),
         "replacementContentSHA256": evidence["contentSHA256"]!,
     ]
-    if ["ax-pane-read-v5", "ax-pane-read-v6"]
+    if ["ax-pane-read-v5", "ax-pane-read-v6", "ax-pane-read-v7"]
         .contains(evidenceRuleVersion),
        let comparisonRegion = evidence["comparisonRegionOfInterest"],
        let comparisonHash = evidence["comparisonContentSHA256"] {
@@ -3194,7 +3197,7 @@ private func readOverlapPaneIdentity(_ raw: [String: Any]) -> String {
     guard let readSurface = raw["readSurface"] as? [String: Any],
           [
             "ax-pane-read-v2", "ax-pane-read-v3", "ax-pane-read-v4",
-            "ax-pane-read-v5", "ax-pane-read-v6",
+            "ax-pane-read-v5", "ax-pane-read-v6", "ax-pane-read-v7",
           ].contains(
             stringValue(readSurface["ruleVersion"]) ?? ""
           ) else {

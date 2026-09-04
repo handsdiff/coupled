@@ -74,7 +74,7 @@ evidence. A WRITE or ordinary user-triggered READ ends the run. The semantic
 projection therefore does not synthesize a full response from transient text
 that was never visible at once.
 
-The current review candidate is `ax-pane-read-v6` plus
+The current review candidate is `ax-pane-read-v7` plus
 `phase1-semantic-v18`; neither is promoted merely by generating this artifact.
 Pane v6 resolves each observation in capture-time order from either a
 trustworthy current AX pane or the last compatible pane proven in the same
@@ -86,7 +86,18 @@ windows. If neither current nor compatible prior AX evidence is available, the
 observation remains explicit unresolved evidence and produces no semantic READ;
 the old pointer crop and full-window OCR never become silent authority.
 
-Pane-v6 OCR keeps the complete selected pane as authoritative content. Its 20%
+Pane v7 adds one deliberately narrow canonicalization before OCR: when
+near-simultaneous screen and visual sensors probe the same point in the same
+window, and Chromium exposes the latter probe as a strictly nested
+`AXContentList` whose ancestry independently preserves the established outer
+pane, both observations reuse that outer pane and pane identity. The exact
+nested selection remains audit evidence. Distinct editors, text fields, web
+areas, main landmarks, document articles, generic nested groups, later
+interactions, different pointers, and different windows are not canonicalized.
+This fixes one physical state being represented as two READ surfaces without
+turning pane memory into a broad application heuristic.
+
+Pane-v6/v7 OCR keeps the complete selected pane as authoritative content. Its 20%
 vertical inset is comparison-only. Semantic v18 then removes only proven
 interface scaffolding, reconciles duplicate pointer/visual observations,
 records adjacent order-preserving novelty without destroying complete READ
@@ -133,7 +144,7 @@ coordinates never bias the diff, there is no synthetic deletion fallback, and
 ambiguous evidence remains unresolved rather than inferred from keystrokes.
 
 The active pane-v2/semantic-v14 baseline selects an AX-defined READ panel from
-the retained full-window evidence. The pane-v6/semantic-v18 review candidate
+the retained full-window evidence. The pane-v7/semantic-v18 review candidate
 applies the stricter stateful pane policy above before any semantic
 deduplication. Causal v16 derives compact logical WRITE destinations and READ
 sources while preserving the original evidence. Proven VS Code terminal focus
@@ -247,20 +258,27 @@ latency projection, not proof that a live router knew the destination then.
   `ensure you keep memory usage within reason` as one episode. All closed-
   episode and packing audits passed.
 - The immutable clone through `2026-09-02T18:20:34.197Z` covers roughly 95
-  minutes and contains 3,027 raw records. Pane v6 reviewed all 857 eligible
+  minutes and contains 3,027 raw records. Pane v7 reviewed all 857 eligible
   screen/visual observations: 841 produced hash-bound full-pane and
   comparison-only OCR evidence, while 16 remained explicit unresolved
   dispositions. None used the old v1 crop as authoritative content. Of the 841
   resolved observations, 45 safely reused an earlier pane from the same
-  application process and window; current AX evidence resolved the remainder.
-- Semantic-v18 replay over that pane-v6 evidence produced 578 READs, 87 WRITEs,
-  and 368 non-event dispositions. Two independent replays were byte-identical
+  application process and window. Three near-simultaneous nested
+  `AXContentList` observations reused the proven outer pane; current AX evidence
+  resolved the remainder. Two exact evidence builds were byte-identical.
+- Semantic-v18 replay over that pane-v7 evidence produced 575 READs, 87 WRITEs,
+  and 371 non-event dispositions. Two independent replays were byte-identical
   (`events.jsonl` SHA-256
-  `b658ddbff2fc87c6f413c30dd3eb8afb2f6b24aa56faf3cc8ac8d8fd2e3e8a06`).
-  Causal v16 retained all 665 events, yielded 77 eligible micro-WRITE examples
+  `0d749f6536ecfd438cfbcb252418c9555b375cc795ba0c580661783b5040fb94`).
+  Relative to pane v6, exactly three nested same-state ChatGPT READs were
+  absorbed into their immediately preceding outer-pane READs; every WRITE and
+  all other READ content remained unchanged. Causal v16 retained all 662
+  events, yielded 77 eligible micro-WRITE examples
   and 10 target exclusions, and had zero context exclusions or rejections.
   The 32K Qwen pack contains the same 77 examples and five grounded paste
-  actions. Pane, causal, packing, and repository-wide audits pass.
+  actions. Example identities, targets, masks, conditioning queries, and every
+  loss-bearing token sequence are unchanged from pane v6. Pane, causal,
+  packing, and repository-wide audits pass.
 - Known production cases now behave as intended: material click/scroll/
   activation/pre-WRITE boundaries remain separate; adjacent overlapping READs
   retain full semantic states while packing removes only proven repeated
@@ -294,8 +312,8 @@ Missing evidence stays unknown; these limits do not authorize guesses.
 
 ## Next step
 
-1. Manually review the pane-v6/semantic-v18 before/after UI, with particular
-   attention to current AX panes, recovered prior panes, the 14 unresolved
+1. Manually review the pane-v7/semantic-v18 before/after UI, with particular
+   attention to current AX panes, recovered prior panes, the 16 unresolved
    observations, browser chrome, VS Code editor/terminal transitions, passive
    AI responses, material-action boundaries, and the named production cases.
 2. If that review finds no systematic false or incoherent READs, promote pane

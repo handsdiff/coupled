@@ -38,6 +38,11 @@ from phase1_read_surface_v6 import (
     PaneResolver as V6PaneResolver,
     surface_regions_from_review as v6_surface_regions_from_review,
 )
+from phase1_read_surface_v7 import (
+    SURFACE_RULE_VERSION as V7_SURFACE_RULE_VERSION,
+    PaneResolver as V7PaneResolver,
+    surface_regions_from_review as v7_surface_regions_from_review,
+)
 
 
 EVIDENCE_SCHEMA_VERSION = 1
@@ -184,9 +189,10 @@ def parse_arguments() -> argparse.Namespace:
             "auto", V1_SURFACE_RULE_VERSION, V2_SURFACE_RULE_VERSION,
             V3_SURFACE_RULE_VERSION, V4_SURFACE_RULE_VERSION,
             V5_SURFACE_RULE_VERSION, V6_SURFACE_RULE_VERSION,
+            V7_SURFACE_RULE_VERSION,
         ],
         default="auto",
-        help="surface rule; auto selects stateful dual-projection AX v6 for raw screen schema 7+",
+        help="surface rule; auto retains stateful dual-projection AX v6 until v7 review is promoted",
     )
     parser.add_argument(
         "--include-visual-observations",
@@ -227,7 +233,7 @@ def main() -> int:
     if rule_version in {
         V2_SURFACE_RULE_VERSION, V3_SURFACE_RULE_VERSION,
         V4_SURFACE_RULE_VERSION, V5_SURFACE_RULE_VERSION,
-        V6_SURFACE_RULE_VERSION,
+        V6_SURFACE_RULE_VERSION, V7_SURFACE_RULE_VERSION,
     } \
             and raw_screen_schema < 7:
         raise EvidenceError(
@@ -251,12 +257,16 @@ def main() -> int:
         row["recordID"]: row for row in read_rows
         if isinstance(row.get("recordID"), str)
     }
-    v6_reviews = (
-        V6PaneResolver().resolve_records([
+    stateful_resolver = {
+        V6_SURFACE_RULE_VERSION: V6PaneResolver,
+        V7_SURFACE_RULE_VERSION: V7PaneResolver,
+    }.get(rule_version)
+    stateful_reviews = (
+        stateful_resolver().resolve_records([
             (raw_line, row) for raw_line, row in enumerate(raw_rows, 1)
             if row.get("recordType") in included_record_types
         ])
-        if rule_version == V6_SURFACE_RULE_VERSION else {}
+        if stateful_resolver is not None else {}
     )
 
     jobs: list[dict[str, Any]] = []
@@ -289,10 +299,14 @@ def main() -> int:
         recorded_screenshot_hash = record.get("screenshotSHA256")
         if actual_screenshot_hash != recorded_screenshot_hash:
             raise EvidenceError(f"screenshot hash differs for {record_id}")
-        if rule_version == V6_SURFACE_RULE_VERSION:
-            review = v6_reviews.get(record_id)
+        if rule_version in {V6_SURFACE_RULE_VERSION, V7_SURFACE_RULE_VERSION}:
+            review = stateful_reviews.get(record_id)
             resolved = (
-                v6_surface_regions_from_review(review)
+                (
+                    v7_surface_regions_from_review(review)
+                    if rule_version == V7_SURFACE_RULE_VERSION
+                    else v6_surface_regions_from_review(review)
+                )
                 if isinstance(review, dict) else None
             )
             if resolved is None:
@@ -425,6 +439,7 @@ def main() -> int:
             "authoritative_full_pane"
             if rule_version in {
                 V5_SURFACE_RULE_VERSION, V6_SURFACE_RULE_VERSION,
+                V7_SURFACE_RULE_VERSION,
             } else "authoritative"
         )
         authoritative_job, authoritative = results[authoritative_key]
@@ -452,7 +467,10 @@ def main() -> int:
             "recognizedLineCount": len(lines),
             "lines": lines,
         }
-        if rule_version in {V5_SURFACE_RULE_VERSION, V6_SURFACE_RULE_VERSION}:
+        if rule_version in {
+            V5_SURFACE_RULE_VERSION, V6_SURFACE_RULE_VERSION,
+            V7_SURFACE_RULE_VERSION,
+        }:
             comparison_job, comparison = results["comparison_interior"]
             row.update({
                 "comparisonRegionOfInterest": comparison_job["regionOfInterest"],

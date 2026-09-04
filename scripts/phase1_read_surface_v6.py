@@ -411,12 +411,22 @@ class PaneAnchor:
 class PaneResolver:
     """Resolve records in capture-time order while retaining per-window panes."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, rule_version: str = SURFACE_RULE_VERSION) -> None:
+        self._rule_version = rule_version
         self._anchors: dict[tuple[str, str, str], PaneAnchor] = {}
+
+    def _canonicalize_direct(
+        self,
+        record: dict[str, Any],
+        review: dict[str, Any],
+        anchor: PaneAnchor,
+    ) -> bool:
+        """Version hook for stricter descendants; v6 never canonicalizes."""
+        return False
 
     def resolve(self, record: dict[str, Any]) -> dict[str, Any]:
         review = deepcopy(v5_proposal_for_record(record))
-        review["ruleVersion"] = SURFACE_RULE_VERSION
+        review["ruleVersion"] = self._rule_version
         proposal = review["proposal"]
         attempted = {
             "method": proposal.get("method"),
@@ -431,25 +441,38 @@ class PaneResolver:
         direct = not bool(proposal.get("isV1Fallback")) and not chrome
         source_record_id = str(record.get("recordID") or "")
         captured_at = str(record.get("capturedAt") or "")
+        anchor = self._anchors.get(key) if key is not None else None
+        canonicalized = bool(
+            direct
+            and anchor is not None
+            and self._canonicalize_direct(record, review, anchor)
+        )
 
         if direct:
-            node = selected_node(review) or {}
+            node = {} if canonicalized else selected_node(review) or {}
             proposal.update({
-                "ruleVersion": SURFACE_RULE_VERSION,
+                "ruleVersion": self._rule_version,
                 "resolved": True,
-                "resolution": "current_ax_pane",
+                "resolution": proposal.get("resolution") or "current_ax_pane",
                 "selectedLabel": (
+                    proposal.get("selectedLabel") if canonicalized else
                     node.get("identifier") or node.get("title")
                     or node.get("elementDescription")
                 ),
-                "selectedTitle": node.get("title"),
-                "selectedDescription": node.get("elementDescription"),
-                "selectedIdentifier": node.get("identifier"),
+                "selectedTitle": proposal.get("selectedTitle")
+                    if canonicalized else node.get("title"),
+                "selectedDescription": proposal.get("selectedDescription")
+                    if canonicalized else node.get("elementDescription"),
+                "selectedIdentifier": proposal.get("selectedIdentifier")
+                    if canonicalized else node.get("identifier"),
                 "semanticPointNormalizedTop": normalized_pointer(record),
-                "physicalPointerClassification": "content_or_unclassified",
+                "physicalPointerClassification": proposal.get(
+                    "physicalPointerClassification", "content_or_unclassified"
+                ),
                 "attemptedSelection": attempted,
             })
-            proposal["paneIdentity"] = pane_identity(proposal)
+            if not canonicalized:
+                proposal["paneIdentity"] = pane_identity(proposal)
             if key is not None:
                 self._anchors[key] = PaneAnchor(
                     source_record_id=source_record_id,
@@ -475,7 +498,6 @@ class PaneResolver:
                 )
             return review
 
-        anchor = self._anchors.get(key) if key is not None else None
         current_ax_compatible = (
             anchor is not None
             and current_ax_is_compatible_with_anchor(record, anchor)
@@ -483,7 +505,7 @@ class PaneResolver:
         recovery_is_compatible = chrome or retained_point or current_ax_compatible
         if anchor is None or not recovery_is_compatible:
             proposal.update({
-                "ruleVersion": SURFACE_RULE_VERSION,
+                "ruleVersion": self._rule_version,
                 "resolved": False,
                 "resolution": "unresolved",
                 "method": "unresolved",
@@ -522,7 +544,7 @@ class PaneResolver:
             comparison_normalized, pixel_width, pixel_height
         )
         proposal.update({
-            "ruleVersion": SURFACE_RULE_VERSION,
+            "ruleVersion": self._rule_version,
             "resolved": True,
             "resolution": "recovered_prior_window_pane",
             "method": "recovered_prior_ax_pane",
@@ -598,7 +620,7 @@ def surface_regions_from_review(
         "selectedLabel", "selectedTitle", "selectedDescription",
         "selectedIdentifier", "isV1Fallback", "paneIdentity",
         "semanticPointNormalizedTop", "physicalPointerClassification",
-        "attemptedSelection", "recovery", "paneCrop",
+        "attemptedSelection", "recovery", "canonicalization", "paneCrop",
     )
     selection = {
         key: deepcopy(proposal[key]) for key in selection_keys if key in proposal

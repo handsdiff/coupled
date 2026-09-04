@@ -240,6 +240,10 @@ class ReviewStore:
                 )
                 if baseline_candidates else None
             )
+            baseline_rows = sorted(
+                baseline_candidates.values(),
+                key=lambda item: int(item.get("sequence", 0)),
+            )
             surface = next((evidence[item] for item in reversed(ids) if item in evidence), {})
             observed = str(surface.get("content", row.get("content", "")))
             semantic = str(row.get("content", ""))
@@ -336,6 +340,7 @@ class ReviewStore:
                         "comparisonRegionOfInterest"
                     ),
                     "recovery": selection.get("recovery"),
+                    "canonicalization": selection.get("canonicalization"),
                     "resolution": selection.get("resolution"),
                 })
             scaffolding_changed = bool(removed)
@@ -378,6 +383,18 @@ class ReviewStore:
                 ),
                 "candidateSequence": row.get("sequence"),
                 "baselineSequence": baseline_row.get("sequence") if baseline_row else None,
+                "baselineSequences": [
+                    item.get("sequence") for item in baseline_rows
+                ],
+                "baselineReads": [
+                    {
+                        "eventID": item.get("eventID"),
+                        "sequence": item.get("sequence"),
+                        "capturedAt": item.get("capturedAt"),
+                        "content": item.get("content", ""),
+                    }
+                    for item in baseline_rows
+                ],
                 "sourceRecordIDs": list(ids),
                 "priorCompleteSemantic": predecessor.get("content", "") if predecessor else "",
                 "observedOCR": observed,
@@ -505,6 +522,14 @@ class ReviewStore:
                 "candidateSequence": None,
                 "baselineSequence": baseline_row.get("sequence")
                     if baseline_row else None,
+                "baselineSequences": [baseline_row.get("sequence")]
+                    if baseline_row else [],
+                "baselineReads": [{
+                    "eventID": baseline_row.get("eventID"),
+                    "sequence": baseline_row.get("sequence"),
+                    "capturedAt": baseline_row.get("capturedAt"),
+                    "content": baseline_row.get("content", ""),
+                }] if baseline_row else [],
                 "sourceRecordIDs": [source_id],
                 "priorCompleteSemantic": "",
                 "observedOCR": str(raw.get("content") or ""),
@@ -559,7 +584,7 @@ class ReviewStore:
         keys = (
             "id", "changed", "capturedAt", "application", "windowTitle",
             "sequence", "modelChanged", "modelFallback", "modelRenderingCounts",
-            "unresolved", "unresolvedReason",
+            "unresolved", "unresolvedReason", "baselineSequences",
         )
         result = []
         for row in self.rows:
@@ -581,6 +606,11 @@ class ReviewStore:
             value["paneMethod"] = selected_pane.get("method") or "missing"
             value["paneConfidence"] = selected_pane.get("confidence") or "missing"
             value["paneReason"] = selected_pane.get("reason") or "missing"
+            value["paneCanonicalized"] = any(
+                item.get("method") == "canonicalized_prior_outer_ax_pane"
+                for item in panes
+            )
+            value["sourceRecordIDs"] = row.get("sourceRecordIDs", [])
             result.append(value)
         return result
 
@@ -629,6 +659,7 @@ img{display:block;max-width:100%;max-height:560px;margin:auto}.wide{grid-column:
     <div id="stats" class="stats"></div>
     <div class="filters">
       <select id="scope">
+        <option value="canonicalized">Pane-v7 canonicalizations</option>
         <option value="changed">Changed READs</option>
         <option value="model-changed">Adjacent overlap removed</option>
         <option value="scaffolding">Interface text removed</option>
@@ -649,6 +680,7 @@ const esc=s=>String(s??'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt
 let rows=[],filtered=[],index=0;
 function inScope(r,s){
   if(!s)return true;
+  if(s==='canonicalized')return r.paneCanonicalized;
   if(s==='model-changed')return r.modelChanged;
   if(s==='changed')return r.changed||r.modelChanged;
   if(s==='scaffolding')return r.scaffoldingCount>0;
@@ -687,7 +719,8 @@ function paneSummary(p){
   const pointReason=p.semanticPointReason?` · anchor ${esc(p.semanticPointReason)}`:'';
   const resolutionClass=p.resolution==='unresolved'?'unresolved':cssClass;
   const recovery=p.recovery?.sourceRecordID?` · recovered from ${esc(p.recovery.sourceRecordID)}`:'';
-  return `<div class="paneinfo"><div class="primary ${resolutionClass}">${esc(p.ruleVersion)} · ${esc(p.method||'unknown')} · ${esc(p.confidence||'unknown')}</div><div>${esc(p.reason||'no reason')} · AX ${esc(role)}${p.selectedDepth==null?'':` · depth ${esc(p.selectedDepth)}`}${pointReason}${recovery}</div><div class="muted">source ${esc(p.sourceRecordID)} · ROI ${esc(JSON.stringify(p.regionOfInterest||null))}</div></div>`;
+  const canonical=p.canonicalization?.sourceRecordID?` · canonical outer pane from ${esc(p.canonicalization.sourceRecordID)} after ${esc(p.canonicalization.intervalSeconds)}s`:'';
+  return `<div class="paneinfo"><div class="primary ${resolutionClass}">${esc(p.ruleVersion)} · ${esc(p.method||'unknown')} · ${esc(p.confidence||'unknown')}</div><div>${esc(p.reason||'no reason')} · AX ${esc(role)}${p.selectedDepth==null?'':` · depth ${esc(p.selectedDepth)}`}${pointReason}${recovery}${canonical}</div><div class="muted">source ${esc(p.sourceRecordID)} · ROI ${esc(JSON.stringify(p.regionOfInterest||null))}</div></div>`;
 }
 function imagePanels(r){
   const values=r.images||[],panes=r.paneEvidence||[];
@@ -701,11 +734,11 @@ function imagePanels(r){
 }
 function apply(){
   const scope=$('scope').value,a=$('app').value,p=$('pane').value,q=$('search').value.toLowerCase();
-  filtered=rows.filter(r=>inScope(r,scope)&&(!a||r.application===a)&&(!p||r.paneMethod===p)&&(!q||(r.sequence+' '+r.windowTitle+' '+r.application+' '+r.paneMethod+' '+r.paneReason).toLowerCase().includes(q)));
+  filtered=rows.filter(r=>inScope(r,scope)&&(!a||r.application===a)&&(!p||r.paneMethod===p)&&(!q||(r.sequence+' '+(r.baselineSequences||[]).join(' ')+' '+(r.sourceRecordIDs||[]).join(' ')+' '+r.windowTitle+' '+r.application+' '+r.paneMethod+' '+r.paneReason).toLowerCase().includes(q)));
   index=Math.min(index,Math.max(0,filtered.length-1));list();show();
 }
 function list(){
-  $('items').innerHTML=filtered.map((r,i)=>`<button class="item ${i===index?'active':''}" data-i="${i}"><b class="${r.changed||r.modelChanged?'changed':''}">#${r.sequence}</b><small>${esc(r.application)} · ${esc(r.windowTitle)}</small><small>${esc(r.paneMethod)} · ${esc(r.paneConfidence)}</small><small>${esc(r.capturedAt)}</small></button>`).join('');
+  $('items').innerHTML=filtered.map((r,i)=>{const absorbed=(r.baselineSequences||[]).length>1?` · absorbs #${r.baselineSequences.join(', #')}`:'';return `<button class="item ${i===index?'active':''}" data-i="${i}"><b class="${r.changed||r.modelChanged?'changed':''}">#${r.sequence}${esc(absorbed)}</b><small>${esc(r.application)} · ${esc(r.windowTitle)}</small><small>${esc(r.paneMethod)} · ${esc(r.paneConfidence)}</small><small>${esc(r.capturedAt)}</small></button>`}).join('');
   document.querySelectorAll('.item').forEach(b=>b.onclick=()=>{index=+b.dataset.i;location.hash=filtered[index].id;list();show()});
 }
 async function show(){
@@ -715,7 +748,9 @@ async function show(){
   const recon=r.observationReconciliation?` · reconciled ${r.observationReconciliation.memberObservationIDs?.length||0} sensor observations`:'';
   const dynamic=r.dynamicVisualConsolidation?` · settled ${r.dynamicVisualConsolidation.memberCount} dynamic states to the final state`:'';
   const currentSequence=r.candidateSequence!==r.sequence?` · current semantic event #${r.candidateSequence}`:'';
-  $('main').innerHTML=`<div class="top"><h1>Review #${r.sequence} ${esc(r.application)} · ${esc(r.windowTitle)}</h1><span class="tag">${esc(outcomeLabel(r))}</span><span class="tag">${index+1} of ${filtered.length}</span></div><div class="muted">stable baseline label #${r.sequence}${esc(currentSequence)} · ${esc(r.capturedAt)} · cases are chronological within the selected filter${esc(recon)}${esc(dynamic)}</div><div class="grid">${imagePanels(r)}<section class="panel"><h2>Before · Original READ</h2><pre>${esc(r.baselineContent||'[No READ in the original version]')}</pre></section><section class="panel"><h2>After · Newly available READ text</h2><pre>${esc(currentRead(r))}</pre></section></div>`;
+  const originals=(r.baselineReads||[]).length?r.baselineReads.map(v=>`--- Original READ #${v.sequence} · ${v.capturedAt} ---\n${v.content||'[empty]'}`).join('\n\n'):r.baselineContent||'[No READ in the original version]';
+  const baselineLabels=(r.baselineSequences||[]).map(v=>'#'+v).join(', ')||'#'+r.sequence;
+  $('main').innerHTML=`<div class="top"><h1>Review #${r.sequence} ${esc(r.application)} · ${esc(r.windowTitle)}</h1><span class="tag">${esc(outcomeLabel(r))}</span><span class="tag">${index+1} of ${filtered.length}</span></div><div class="muted">original baseline event${(r.baselineSequences||[]).length===1?'':'s'} ${esc(baselineLabels)}${esc(currentSequence)} · ${esc(r.capturedAt)} · cases are chronological within the selected filter${esc(recon)}${esc(dynamic)}</div><div class="grid">${imagePanels(r)}<section class="panel"><h2>Before · Original READ event${(r.baselineSequences||[]).length===1?'':'s'}</h2><pre>${esc(originals)}</pre></section><section class="panel"><h2>After · Newly available READ text</h2><pre>${esc(currentRead(r))}</pre></section></div>`;
 }
 Promise.all([fetch('/api/summary').then(r=>r.json()),fetch('/api/index').then(r=>r.json())]).then(([s,x])=>{
   rows=x;

@@ -34,6 +34,11 @@ from phase1_read_surface_v6 import (
     PaneResolver as V6PaneResolver,
     surface_regions_from_review as v6_surface_regions_from_review,
 )
+from phase1_read_surface_v7 import (
+    SURFACE_RULE_VERSION as V7_SURFACE_RULE_VERSION,
+    PaneResolver as V7PaneResolver,
+    surface_regions_from_review as v7_surface_regions_from_review,
+)
 
 
 class AuditError(RuntimeError):
@@ -93,6 +98,7 @@ def main() -> int:
             V1_SURFACE_RULE_VERSION, V2_SURFACE_RULE_VERSION,
             V3_SURFACE_RULE_VERSION, V4_SURFACE_RULE_VERSION,
             V5_SURFACE_RULE_VERSION, V6_SURFACE_RULE_VERSION,
+            V7_SURFACE_RULE_VERSION,
         },
         "unsupported rule version",
     )
@@ -108,7 +114,7 @@ def main() -> int:
         rule_version not in {
             V2_SURFACE_RULE_VERSION, V3_SURFACE_RULE_VERSION,
             V4_SURFACE_RULE_VERSION, V5_SURFACE_RULE_VERSION,
-            V6_SURFACE_RULE_VERSION,
+            V6_SURFACE_RULE_VERSION, V7_SURFACE_RULE_VERSION,
         }
         or raw_screen_schema >= 7,
         f"{rule_version} requires rawScreenOCR schema 7+",
@@ -146,12 +152,16 @@ def main() -> int:
         if row.get("recordType") in included_record_types
         and isinstance(row.get("recordID"), str)
     }
-    v6_reviews = (
-        V6PaneResolver().resolve_records([
+    stateful_resolver = {
+        V6_SURFACE_RULE_VERSION: V6PaneResolver,
+        V7_SURFACE_RULE_VERSION: V7PaneResolver,
+    }.get(rule_version)
+    stateful_reviews = (
+        stateful_resolver().resolve_records([
             (line, row) for line, row in enumerate(raw_rows, 1)
             if row.get("recordType") in included_record_types
         ])
-        if rule_version == V6_SURFACE_RULE_VERSION else {}
+        if stateful_resolver is not None else {}
     )
     jobs = load_jsonl(jobs_path)
     evidence = load_jsonl(evidence_path)
@@ -159,6 +169,7 @@ def main() -> int:
     require(len({row["jobID"] for row in jobs}) == len(jobs), "duplicate job ID")
     dual_projection = rule_version in {
         V5_SURFACE_RULE_VERSION, V6_SURFACE_RULE_VERSION,
+        V7_SURFACE_RULE_VERSION,
     }
     expected_jobs_per_source = 2 if dual_projection else 1
     require(
@@ -190,10 +201,14 @@ def main() -> int:
         )
         record = raw_by_id.get(job["sourceRecordID"])
         require(record is not None, f"job source is missing: {job['sourceRecordID']}")
-        if rule_version == V6_SURFACE_RULE_VERSION:
-            review = v6_reviews.get(str(record.get("recordID")))
+        if rule_version in {V6_SURFACE_RULE_VERSION, V7_SURFACE_RULE_VERSION}:
+            review = stateful_reviews.get(str(record.get("recordID")))
             resolved = (
-                v6_surface_regions_from_review(review)
+                (
+                    v7_surface_regions_from_review(review)
+                    if rule_version == V7_SURFACE_RULE_VERSION
+                    else v6_surface_regions_from_review(review)
+                )
                 if isinstance(review, dict) else None
             )
             require(resolved is not None, f"job source is unresolved: {job['jobID']}")
@@ -246,7 +261,7 @@ def main() -> int:
         require(digest_text(row["content"]) == row["contentSHA256"], f"content hash differs: {row['jobID']}")
         require(len(row["lines"]) == row["recognizedLineCount"], f"line count differs: {row['jobID']}")
         require("\n".join(line["text"] for line in row["lines"]) == row["content"], f"line content differs: {row['jobID']}")
-        if rule_version == V6_SURFACE_RULE_VERSION:
+        if rule_version in {V6_SURFACE_RULE_VERSION, V7_SURFACE_RULE_VERSION}:
             selection = row.get("surfaceSelection", {})
             require(selection.get("resolved") is True, "v6 evidence is not resolved")
             require(
@@ -260,6 +275,15 @@ def main() -> int:
                     recovery.get("sameCanonicalWindow") is True
                     and isinstance(recovery.get("sourceRecordID"), str),
                     "v6 recovered pane lacks same-window lineage",
+                )
+            if selection.get("method") == "canonicalized_prior_outer_ax_pane":
+                canonicalization = selection.get("canonicalization", {})
+                require(
+                    rule_version == V7_SURFACE_RULE_VERSION
+                    and canonicalization.get("policy")
+                        == "near_simultaneous_cross_sensor_nested_pane_v1"
+                    and isinstance(canonicalization.get("sourceRecordID"), str),
+                    "v7 canonical pane lacks source lineage",
                 )
         if dual_projection:
             job_ids = row.get("jobIDs")
@@ -298,11 +322,13 @@ def main() -> int:
     for row in unresolved:
         require(row.get("ruleVersion") == rule_version, "unresolved rule differs")
         require(row.get("sessionID") == manifest.get("sessionID"), "unresolved session differs")
-        if rule_version == V6_SURFACE_RULE_VERSION and row.get("reason") in {
+        if rule_version in {
+            V6_SURFACE_RULE_VERSION, V7_SURFACE_RULE_VERSION,
+        } and row.get("reason") in {
             "no_trustworthy_current_or_prior_ax_pane",
             "window_identity_unavailable_for_pane_recovery",
         }:
-            review = v6_reviews.get(str(row.get("sourceRecordID")))
+            review = stateful_reviews.get(str(row.get("sourceRecordID")))
             require(
                 isinstance(review, dict)
                 and review.get("proposal", {}).get("resolved") is False

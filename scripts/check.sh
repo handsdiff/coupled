@@ -128,6 +128,7 @@ python3 -m py_compile \
   "$project_dir/scripts/check-phase1-read-surface-v4.py" \
   "$project_dir/scripts/check-phase1-read-surface-v5.py" \
   "$project_dir/scripts/check-phase1-read-surface-v6.py" \
+  "$project_dir/scripts/check-phase1-read-surface-v7.py" \
   "$project_dir/scripts/check-phase1-read-novelty.py" \
   "$project_dir/scripts/build-phase1-read-surface-v2-review.py" \
   "$project_dir/scripts/serve-phase1-read-surface-v2-review.py" \
@@ -164,6 +165,7 @@ python3 "$project_dir/scripts/check-phase1-read-surface-v3.py"
 python3 "$project_dir/scripts/check-phase1-read-surface-v4.py"
 python3 "$project_dir/scripts/check-phase1-read-surface-v5.py"
 python3 "$project_dir/scripts/check-phase1-read-surface-v6.py"
+python3 "$project_dir/scripts/check-phase1-read-surface-v7.py"
 python3 "$project_dir/scripts/check-phase1-read-novelty.py"
 
 if [[ -x "$project_dir/.build/tinker-venv/bin/python" ]]; then
