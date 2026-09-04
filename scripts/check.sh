@@ -134,6 +134,7 @@ python3 -m py_compile \
   "$project_dir/scripts/serve-phase1-read-surface-v2-review.py" \
   "$project_dir/scripts/serve-phase1-read-delta-review.py" \
   "$project_dir/scripts/serve-phase1-read-semantic-review.py" \
+  "$project_dir/scripts/check-phase1-read-semantic-review.py" \
   "$project_dir/scripts/prepare-phase1-write-identity-review.py" \
   "$project_dir/scripts/serve-phase1-write-identity-review.py" \
   "$project_dir/scripts/build-phase1-read-surface-evidence.py" \
@@ -167,6 +168,9 @@ python3 "$project_dir/scripts/check-phase1-read-surface-v5.py"
 python3 "$project_dir/scripts/check-phase1-read-surface-v6.py"
 python3 "$project_dir/scripts/check-phase1-read-surface-v7.py"
 python3 "$project_dir/scripts/check-phase1-read-novelty.py"
+
+PYTHONPYCACHEPREFIX="$project_dir/.build/python-cache" \
+python3 "$project_dir/scripts/check-phase1-read-semantic-review.py"
 
 if [[ -x "$project_dir/.build/tinker-venv/bin/python" ]]; then
   PYTHONPYCACHEPREFIX="$project_dir/.build/python-cache" \

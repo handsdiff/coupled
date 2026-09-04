@@ -13,9 +13,80 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from phase1_read_novelty import (
+    EMPTY_NOVELTY_DECISIONS as EMPTY_NOVELTY_RENDERINGS,
+    POSITIVE_NOVELTY_DECISIONS as POSITIVE_NOVELTY_RENDERINGS,
+)
+
 
 class ReviewError(RuntimeError):
     pass
+
+
+POSITIVE_NOVELTY_DECISIONS = frozenset(POSITIVE_NOVELTY_RENDERINGS)
+EMPTY_NOVELTY_DECISIONS = frozenset(EMPTY_NOVELTY_RENDERINGS)
+MODEL_REWRITTEN_RENDER_DECISIONS = frozenset(
+    POSITIVE_NOVELTY_RENDERINGS.values()
+) | frozenset(EMPTY_NOVELTY_RENDERINGS.values())
+MODEL_FALLBACK_RENDER_DECISIONS = frozenset({
+    "render_complete_dependency_unavailable",
+    "render_complete_uncertain_microglyph",
+    "retain_existing_truncated_state",
+    "retain_nonread_model_projection",
+})
+
+
+def novelty_projection_changed(decision: str) -> bool:
+    return decision in POSITIVE_NOVELTY_DECISIONS | EMPTY_NOVELTY_DECISIONS
+
+
+def model_rendering_changed(decision: str) -> bool:
+    return decision in MODEL_REWRITTEN_RENDER_DECISIONS
+
+
+def review_projection(
+    novelty: dict[str, Any], complete_semantic: str,
+) -> tuple[str, str, bool]:
+    """Return displayed content, outcome label, and empty-projection flag."""
+    decision = str(novelty.get("decision", "missing"))
+    if decision in EMPTY_NOVELTY_DECISIONS:
+        labels = {
+            "suppress_ambiguous_adjacent_difference": (
+                "No newly available text · ambiguous high-overlap change"
+            ),
+            "suppress_nonsemantic_microglyph": (
+                "No newly available text · OCR micro-change"
+            ),
+        }
+        return "[No new READ text]", labels.get(
+            decision, "No newly available text"
+        ), True
+    if decision in POSITIVE_NOVELTY_DECISIONS:
+        content = novelty.get("content")
+        if not isinstance(content, str):
+            raise ReviewError(f"{decision} lacks string novelty content")
+        alignment = novelty.get("lineAlignment")
+        matched = (
+            alignment.get("matchedLineCount")
+            if isinstance(alignment, dict) else None
+        )
+        suffix = (
+            f" · {matched} repeated line{'s' if matched != 1 else ''} removed"
+            if isinstance(matched, int) and matched > 0
+            else " · repeated text removed"
+        )
+        if decision == "emit_stable_interior_after_clipped_boundary":
+            label = "Stable interior text retained · clipped edge removed"
+        elif decision == "emit_contiguous_new_content":
+            label = "New contiguous text retained" + suffix
+        else:
+            label = "New text retained" + suffix
+        return content or "[No new READ text]", label, content == ""
+    if decision == "retain_full_uncertain":
+        label = "Full READ retained · comparison uncertain"
+    else:
+        label = "Full READ retained · new surface or boundary"
+    return complete_semantic or "[No new READ text]", label, False
 
 
 def sha256(path: Path) -> str:
@@ -387,27 +458,22 @@ class ReviewStore:
                 })
             scaffolding_changed = bool(removed)
             novelty_decision = str(novelty.get("decision", "missing"))
-            changed = scaffolding_changed or novelty_decision in {
-                "emit_new_content", "suppress_no_new_content",
-                "suppress_nonsemantic_microglyph",
-            }
+            changed = scaffolding_changed or novelty_projection_changed(
+                novelty_decision
+            )
+            projected_content, outcome_label, novelty_suppressed = (
+                review_projection(novelty, semantic)
+            )
             occurrences = model_occurrences.get(str(row["eventID"]), [])
             rendering_counts = Counter(
                 str(item.get("decision", "missing")) for item in occurrences
             )
-            model_changed = any(
-                item.get("decision") in {
-                    "render_novel_content", "render_empty_adjacent_repeat"
-                }
-                for item in occurrences
-            )
+            model_changed = any(model_rendering_changed(
+                str(item.get("decision", "missing"))
+            ) for item in occurrences)
             model_fallback = any(
-                item.get("decision") in {
-                    "render_complete_dependency_unavailable",
-                    "render_complete_uncertain_microglyph",
-                    "retain_existing_truncated_state",
-                    "retain_nonread_model_projection",
-                }
+                str(item.get("decision", "missing"))
+                in MODEL_FALLBACK_RENDER_DECISIONS
                 for item in occurrences
             )
             rows.append({
@@ -444,6 +510,9 @@ class ReviewStore:
                 "completeSemantic": semantic,
                 "novelContent": novelty.get("content", ""),
                 "novelty": novelty,
+                "reviewProjectedContent": projected_content,
+                "reviewOutcomeLabel": outcome_label,
+                "noveltySuppressed": novelty_suppressed,
                 "semanticDetails": details,
                 "baselineContent": baseline_row.get("content", "") if baseline_row else "",
                 "imageKey": image_keys[-1]["key"] if image_keys else "",
@@ -579,6 +648,11 @@ class ReviewStore:
                 "completeSemantic": "",
                 "novelContent": "",
                 "novelty": {"decision": "unresolved_pane"},
+                "reviewProjectedContent": (
+                    f"[Excluded from semantic READ: {reason}]"
+                ),
+                "reviewOutcomeLabel": f"Excluded · {reason}",
+                "noveltySuppressed": False,
                 "semanticDetails": {},
                 "baselineContent": baseline_row.get("content", "")
                     if baseline_row else str(raw.get("content") or ""),
@@ -730,19 +804,10 @@ function inScope(r,s){
   return false;
 }
 function currentRead(r){
-  if(r.unresolved)return `[Excluded from semantic READ: ${r.unresolvedReason}]`;
-  if(['suppress_no_new_content','suppress_nonsemantic_microglyph'].includes(r.novelty.decision))return '[No new READ text]';
-  return r.novelContent||r.completeSemantic||'[No new READ text]';
+  return r.reviewProjectedContent||'[No new READ text]';
 }
 function outcomeLabel(r){
-  if(r.unresolved)return `Excluded · ${r.unresolvedReason}`;
-  if(['suppress_no_new_content','suppress_nonsemantic_microglyph'].includes(r.novelty.decision))return 'No newly available text';
-  if(r.novelty.decision==='emit_new_content'){
-    const n=r.novelty.lineAlignment?.matchedLineCount;
-    return n?`New text retained · ${n} repeated line${n===1?'':'s'} removed`:'New text retained · repeated text removed';
-  }
-  if(r.novelty.decision==='retain_full_uncertain')return 'Full READ retained · comparison uncertain';
-  return 'Full READ retained · new surface or boundary';
+  return r.reviewOutcomeLabel||'READ projection unavailable';
 }
 function pct(v){return (Math.max(-.02,Math.min(1.02,Number(v)||0))*100).toFixed(4)+'%'}
 function rect(value,kind){

@@ -351,6 +351,11 @@ latency projection, not proof that a live router knew the destination then.
   The separate line-531 cross-window screenshot attribution case remains the
   explicitly deferred limitation. The 16 unresolved pane observations remain
   visible separately rather than being hidden.
+- The localhost semantic READ review now consumes the same v21 novelty and v3
+  model-rendering decision maps as packing. In particular, all 82 ambiguous
+  high-overlap suppressions display as no new READ text, and all 38 contiguous
+  novel spans display and filter as changed projections; this UI correction
+  does not modify any reducer, causal, or packed artifact.
 - `phase1-visual-read-promotion-canary-1` was stopped cleanly and reduced
   separately as a candidate-v14 validation trace; it does not alter the frozen
   semantic-v13 corpus.
