@@ -42,7 +42,10 @@ except ImportError as error:
 
 
 PACKER_VERSION = "phase1-token-pack-v7"
-DEPENDENCY_AWARE_PACKER_VERSION = "phase1-token-pack-v10"
+DEPENDENCY_AWARE_PACKER_VERSIONS = {
+    "phase1-semantic-v21": "phase1-token-pack-v10",
+    "phase1-semantic-v22": "phase1-token-pack-v11",
+}
 DEFAULT_TOKENIZER = "Qwen/Qwen3.5-9B-Base"
 DEFAULT_PASTE_MARKER = "<|paste|>"
 DEFAULT_TASK_INSTRUCTION = (
@@ -639,17 +642,13 @@ def main() -> int:
         "--dependency-aware-read-novelty",
         action="store_true",
         help=(
-            "shadow v10: render semantic READ novelty only when its exact "
+            "render semantic READ novelty only when its exact "
             "complete predecessor survives context packing"
         ),
     )
     arguments = parser.parse_args()
 
-    packer_version = (
-        DEPENDENCY_AWARE_PACKER_VERSION
-        if arguments.dependency_aware_read_novelty
-        else PACKER_VERSION
-    )
+    packer_version = PACKER_VERSION
 
     source = arguments.input.expanduser().resolve()
     output = arguments.output.expanduser().resolve()
@@ -662,18 +661,19 @@ def main() -> int:
     source_reducer_version = source_manifest.get("source", {}).get(
         "reducerVersion"
     )
-    if (
-        arguments.dependency_aware_read_novelty
-        and (
+    if arguments.dependency_aware_read_novelty:
+        packer_version = DEPENDENCY_AWARE_PACKER_VERSIONS.get(
+            source_reducer_version
+        )
+        if (
             source_manifest.get("semanticReadProjection", {}).get("sourceField")
                 != "readNovelty"
-            or source_reducer_version != "phase1-semantic-v21"
-        )
-    ):
-        raise ValueError(
-            "--dependency-aware-read-novelty packer v10 requires a compiled "
-            "phase1-semantic-v21 dataset that preserves readNovelty"
-        )
+            or packer_version is None
+        ):
+            raise ValueError(
+                "--dependency-aware-read-novelty requires a compiled "
+                "phase1-semantic-v21 or v22 dataset that preserves readNovelty"
+            )
     snapshot, resolved_revision = resolve_tokenizer_snapshot(
         arguments.tokenizer, arguments.revision, arguments.local_files_only
     )
@@ -1069,12 +1069,16 @@ def main() -> int:
                 "enabled": True,
                 "status": "shadow_opt_in",
                 "rendererVersion": READ_NOVELTY_RENDERER_VERSION,
-                "requiredReducerVersion": "phase1-semantic-v21",
+                "requiredReducerVersion": source_reducer_version,
                 "selectionUsesCompleteReadTokens": True,
                 "dependencyRule": "render novelty only when dependsOnEventID is retained as a complete reconstructable READ state",
                 "missingDependencyFallback": "retain complete current READ",
                 "uncertainMicroglyphPolicy": "render an empty READ when the reducer proves a low-information adjacent change",
-                "ambiguousAdjacentDifferencePolicy": "render an empty READ when substantial overlap exists without one contiguous novel region",
+                "ambiguousAdjacentDifferencePolicy": (
+                    "retain the complete current READ when one contiguous novel region is unproven"
+                    if source_reducer_version == "phase1-semantic-v22"
+                    else "render an empty READ when substantial overlap exists without one contiguous novel region"
+                ),
                 "exactAdjacentRepeatRepresentation": "retain READ record with empty content",
                 "completeSemanticReadRemainsSourceAuthority": True,
             }

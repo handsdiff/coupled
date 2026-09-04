@@ -84,8 +84,16 @@ def review_projection(
         return content or "[No new READ text]", label, content == ""
     if decision == "retain_full_uncertain":
         label = "Full READ retained · comparison uncertain"
+    elif novelty.get("reason") == (
+        "candidate_alignment_unproven_preserve_complete_state"
+    ):
+        label = "Full READ retained · safe delta unproven"
+    elif novelty.get("reason") == "no_causal_predecessor":
+        label = "Full READ retained · no adjacent predecessor"
+    elif novelty.get("reason") == "surface_changed":
+        label = "Full READ retained · surface changed"
     else:
-        label = "Full READ retained · new surface or boundary"
+        label = "Full READ retained · substantial/new state"
     return complete_semantic or "[No new READ text]", label, False
 
 
@@ -198,9 +206,10 @@ class ReviewStore:
             "phase1-semantic-v16", "phase1-semantic-v17",
             "phase1-semantic-v18", "phase1-semantic-v19",
             "phase1-semantic-v20", "phase1-semantic-v21",
+            "phase1-semantic-v22",
         }:
             raise ReviewError(
-                "candidate must be phase1-semantic-v16 through v21"
+                "candidate must be phase1-semantic-v16 through v22"
             )
         self.candidate_version = str(candidate_version)
         manifest_pairs = [(self.candidate, candidate_manifest)]
@@ -279,9 +288,9 @@ class ReviewStore:
             packing_manifest = load_json(self.packed / "packing.json")
             if packing_manifest.get("packerVersion") not in {
                 "phase1-token-pack-v8", "phase1-token-pack-v9",
-                "phase1-token-pack-v10",
+                "phase1-token-pack-v10", "phase1-token-pack-v11",
             }:
-                raise ReviewError("packed review requires phase1-token-pack-v8 through v10")
+                raise ReviewError("packed review requires phase1-token-pack-v8 through v11")
             if packing_manifest.get("packing", {}).get(
                 "readNoveltyRendering", {}
             ).get("status") != "shadow_opt_in":

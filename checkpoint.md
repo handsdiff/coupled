@@ -356,6 +356,40 @@ latency projection, not proof that a live router knew the destination then.
   high-overlap suppressions display as no new READ text, and all 38 contiguous
   novel spans display and filter as changed projections; this UI correction
   does not modify any reducer, causal, or packed artifact.
+- Semantic-v22 is the conservative correction to v21's destructive ambiguity
+  fallback. Proven equivalent adjacent states still render empty, one verified
+  contiguous authoritative change still renders alone, and every other
+  difference now retains the complete cleaned pane. The approximate reflow
+  matcher remains in the event only as audit evidence; it can no longer erase a
+  READ based on repeated fraction. Semantic-v21 remains reproducible.
+- Two full semantic-v22 replays were byte-for-byte identical:
+  `events.jsonl` SHA-256
+  `7d9f5af284856233fa9242ff579cd3dfa450453ad3759112e106d199b2aeed13`,
+  `unresolved.jsonl` SHA-256
+  `876780e3da1ce91df76cc9fb37f365323261d3ffc35acfb8221ab44159f76387`,
+  and `reduction.json` SHA-256
+  `f91c2d48a53f1bb82deb48650699c19eb32ce3f617d81e9b40affb2ed78a779d`.
+  Counts remain 575 READs, 87 WRITEs, and 371 non-event dispositions. The v22
+  READ projection contains 38 contiguous novel spans, 484 complete states, and
+  53 proven equivalent/no-content suppressions. It contains no ambiguous
+  whole-state suppressions.
+- The six reviewed lost-content lines 97, 116, 248, 305, 351, and 430 now retain
+  their complete cleaned states. Lines 98 and 236 remain proven empty repeats.
+  Lines 10, 142, 364, 366, 397, 457, 470, 577, 622, and 639 intentionally become
+  redundant full states because the current pipeline cannot prove them empty
+  without the removed heuristic. Lines 386, 409, 424, 442, and 469 remain
+  intact. The deferred cross-window and tiny-status cases remain unchanged.
+- Every semantic WRITE is byte-identical to v21. Causal-v16 over v22 remains 77
+  examples; its targets, conditioning queries, and masks are byte-identical to
+  v21 (`examples.jsonl` SHA-256
+  `b0cbe9bb1690c317928660b71416e25c071fb66207f5da95a281dfcabd224f4d`).
+  Packer v11 binds the changed v22 contract without changing rendering logic.
+  Its deterministic packed examples SHA-256 is
+  `996149be4aabfdc9824424bf6843f9dedd462031b79e5878828dfde6e35dc206`;
+  the pack contains 1,962,024 model-input tokens and removes 272,548 proven
+  repeated READ tokens. Relative to v21/v10, conservative preservation adds
+  259,825 model-input tokens. This is intentional redundancy rather than silent
+  causal information loss.
 - `phase1-visual-read-promotion-canary-1` was stopped cleanly and reduced
   separately as a candidate-v14 validation trace; it does not alter the frozen
   semantic-v13 corpus.
@@ -381,13 +415,13 @@ Missing evidence stays unknown; these limits do not authorize guesses.
 
 ## Next step
 
-1. Manually review the pane-v7/semantic-v21 before/after UI, with particular
+1. Manually review the pane-v7/semantic-v22 before/after UI, with particular
    attention to current AX panes, recovered prior panes, the 16 unresolved
    observations, browser chrome, VS Code editor/terminal transitions, passive
    AI responses, material-action boundaries, complete-state fallbacks, bounded
    ambiguous suppressions, and the named production cases.
 2. If that review finds no remaining material issue beyond the explicitly
-   deferred screen-occlusion case, apply the same pane-v7/semantic-v21 rules to
+   deferred screen-occlusion case, apply the same pane-v7/semantic-v22 rules to
    the untouched September 3 session and inspect its new edge cases before any
    canonical-corpus promotion.
 3. Audit READ surfaces, WRITE destinations, closed-episode boundaries,

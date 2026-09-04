@@ -1772,6 +1772,9 @@ let visualReadReductionV20 = fixtureRoot.appendingPathComponent(
 let visualReadReductionV21 = fixtureRoot.appendingPathComponent(
     "visual-read-reduction-v21"
 )
+let visualReadReductionV22 = fixtureRoot.appendingPathComponent(
+    "visual-read-reduction-v22"
+)
 let visualReadTamperedReduction = fixtureRoot.appendingPathComponent(
     "visual-read-tampered-reduction"
 )
@@ -2384,6 +2387,36 @@ let visualReadV21Events = readFixtureJSONL(
 expect(
     visualReadV21Events[0]["content"] as? String == "same visible words",
     "v21 preserves the complete cleaned semantic READ while changing only model novelty"
+)
+_ = try! Phase1SemanticReducer(configuration: .init(
+    reducerVersion: "phase1-semantic-v22",
+    readSurfaceEvidenceDirectory: visualReadSurfaceEvidenceV19
+)).reduce(
+    sourceDirectory: visualReadInput, outputDirectory: visualReadReductionV22
+)
+let visualReadV22Events = readFixtureJSONL(
+    visualReadReductionV22.appendingPathComponent("events.jsonl")
+)
+expect(
+    visualReadV22Events[0]["content"] as? String == "same visible words",
+    "v22 preserves the complete cleaned semantic READ while changing only model novelty"
+)
+expect(
+    visualReadV22Events.allSatisfy {
+        (($0["readNovelty"] as? [String: Any])?["decision"] as? String)
+            != "suppress_ambiguous_adjacent_difference"
+    },
+    "v22 never converts an unproven adjacent difference into an empty READ"
+)
+let visualReadV22Manifest = try! JSONSerialization.jsonObject(
+    with: Data(contentsOf: visualReadReductionV22.appendingPathComponent(
+        "reduction.json"
+    ))
+) as! [String: Any]
+expect(
+    visualReadV22Manifest["ambiguousReadSuppression"] as? String
+        == "disabled; approximate reflow overlap is audit-only",
+    "v22 records that approximate overlap cannot suppress a READ"
 )
 try! Data("tampered visual frame bytes".utf8).write(to: visualScreenshotURL)
 _ = try! Phase1SemanticReducer(configuration: .init(

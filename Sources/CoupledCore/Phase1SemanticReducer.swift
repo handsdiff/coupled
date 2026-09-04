@@ -93,6 +93,7 @@ public struct Phase1SemanticReducer {
         let usesReconciledSemanticReads = [
             "phase1-semantic-v18", "phase1-semantic-v19",
             "phase1-semantic-v20", "phase1-semantic-v21",
+            "phase1-semantic-v22",
         ].contains(configuration.reducerVersion)
         let dynamicReadBoundaries = usesReconciledSemanticReads
             ? reducerDynamicReadBoundaries(raw)
@@ -413,7 +414,9 @@ public struct Phase1SemanticReducer {
             paneAwareSurfaceIdentity: configuration.reducerVersion
                 == "phase1-semantic-v13"
                 || reducerUsesVisualReadEvidence(configuration.reducerVersion),
-            mode: configuration.reducerVersion == "phase1-semantic-v21"
+            mode: configuration.reducerVersion == "phase1-semantic-v22"
+                ? .semanticV22
+                : configuration.reducerVersion == "phase1-semantic-v21"
                 ? .semanticV21
                 : configuration.reducerVersion == "phase1-semantic-v20"
                 ? .semanticV20
@@ -500,6 +503,7 @@ public struct Phase1SemanticReducer {
                     || configuration.reducerVersion == "phase1-semantic-v19"
                     || configuration.reducerVersion == "phase1-semantic-v20"
                     || configuration.reducerVersion == "phase1-semantic-v21"
+                    || configuration.reducerVersion == "phase1-semantic-v22"
                 ? "globally adjacent causal READs with the same app/window, strongly overlapping capture geometry, and compatible AX pane role; AX depth and object identity are supporting evidence only"
                 : configuration.reducerVersion == "phase1-semantic-v13"
                     || configuration.reducerVersion == "phase1-semantic-v14"
@@ -525,9 +529,12 @@ public struct Phase1SemanticReducer {
             || configuration.reducerVersion == "phase1-semantic-v18"
             || configuration.reducerVersion == "phase1-semantic-v19"
             || configuration.reducerVersion == "phase1-semantic-v20"
-            || configuration.reducerVersion == "phase1-semantic-v21" {
+            || configuration.reducerVersion == "phase1-semantic-v21"
+            || configuration.reducerVersion == "phase1-semantic-v22" {
             reduction["semanticReadRule"] = configuration.reducerVersion
-                == "phase1-semantic-v21"
+                == "phase1-semantic-v22"
+                ? "full selected-pane OCR is retained as semantic evidence; proven equivalent states render empty, one proven contiguous authoritative change renders that span, and every unproven difference retains the complete cleaned pane"
+                : configuration.reducerVersion == "phase1-semantic-v21"
                 ? "full selected-pane OCR is retained as semantic evidence; model-facing novelty is limited to one contiguous authoritative span under one alignment, substantial state changes retain the complete cleaned pane, and small disconnected or ambiguous differences are suppressed"
                 : configuration.reducerVersion == "phase1-semantic-v20"
                 ? "full selected-pane OCR is projected to complete semantic READ content by conservative application rules plus session-wide exact-recurrence and strictly evidenced clipped-line removal; comparison-only OCR can suppress unsupported novelty but can emit positive novelty only when strictly grounded in the cleaned full-pane state"
@@ -547,12 +554,14 @@ public struct Phase1SemanticReducer {
             reduction["dynamicReadBoundaryCount"] = dynamicReadBoundaries.count
             reduction["readContentAuthority"] = [
                 "phase1-semantic-v19", "phase1-semantic-v20",
-                "phase1-semantic-v21",
+                "phase1-semantic-v21", "phase1-semantic-v22",
             ].contains(configuration.reducerVersion)
                 ? "the complete selected AX pane is authoritative after removing only geometrically proven clipped OCR lines; a 20 percent top/bottom interior projection supplies independent OCR comparison evidence"
                 : "the complete selected AX pane is authoritative; a 20 percent top/bottom interior projection supports comparison but cannot remove edge content"
             reduction["adjacentReadNoveltyRule"] = configuration.reducerVersion
-                == "phase1-semantic-v21"
+                == "phase1-semantic-v22"
+                ? "try exact contiguous overlap, then one ordered OCR-tolerant contiguous line block; equivalent states render empty, one verified contiguous authoritative span renders alone, and every other difference retains the complete cleaned state; approximate reflow overlap remains audit-only"
+                : configuration.reducerVersion == "phase1-semantic-v21"
                 ? "try exact contiguous overlap, then one ordered OCR-tolerant contiguous line block; rejected alignments are not evidence of repetition, comparison OCR can only veto, and unresolved differences retain the complete state unless at least two thirds of the current pane is independently proven repeated"
                 : "after exact normalized edge overlap, compare complete pane text with reflow-tolerant ordered token alignment; line boundaries are not semantic, numeric changes remain distinct except one/ell and zero/oh OCR glyph equivalence, and uncertain alignment retains the complete current READ"
             if configuration.reducerVersion == "phase1-semantic-v19" {
@@ -566,6 +575,11 @@ public struct Phase1SemanticReducer {
                 reduction["modelFacingReadRule"] = "exact equivalent state emits nothing; one contiguous authoritative change emits that span; a substantial unaligned change emits the complete cleaned state; small or disconnected ambiguous change emits nothing"
                 reduction["ambiguousReadSuppressionMinimumRepeatedFraction"] =
                     semanticV21AmbiguousReadSuppressionMinimumRepeatedFraction
+            }
+            if configuration.reducerVersion == "phase1-semantic-v22" {
+                reduction["clippedOCRRule"] = "inherit v20's evidence-bound clipped-line removal; comparison OCR may veto unsupported peripheral novelty but never contributes model-facing words"
+                reduction["modelFacingReadRule"] = "exact equivalent state emits nothing; one verified contiguous authoritative change emits that span; every other difference emits the complete cleaned state"
+                reduction["ambiguousReadSuppression"] = "disabled; approximate reflow overlap is audit-only"
             }
         }
         try reducerWriteJSON(reduction, to: output.appendingPathComponent("reduction.json"))
@@ -635,6 +649,7 @@ private enum ReducerReadOverlapMode: Equatable {
     case semanticV19
     case semanticV20
     case semanticV21
+    case semanticV22
 }
 private let semanticV21AmbiguousReadSuppressionMinimumRepeatedFraction =
     2.0 / 3.0
@@ -653,6 +668,7 @@ private func reducerUsesVisualReadEvidence(_ version: String) -> Bool {
         || version == "phase1-semantic-v19"
         || version == "phase1-semantic-v20"
         || version == "phase1-semantic-v21"
+        || version == "phase1-semantic-v22"
 }
 
 /// Returns raw interaction intervals that divide autonomous visual progress
@@ -718,7 +734,8 @@ private func loadReadSurfaceEvidence(
             "screen_ocr_observation", "visual_ocr_observation",
         ]
     case "phase1-semantic-v18", "phase1-semantic-v19",
-         "phase1-semantic-v20", "phase1-semantic-v21":
+         "phase1-semantic-v20", "phase1-semantic-v21",
+         "phase1-semantic-v22":
         expectedRuleVersions = rawScreenOCRSchema >= 7
             ? ["ax-pane-read-v5", "ax-pane-read-v6", "ax-pane-read-v7"]
             : ["pointer-local-read-v1"]
@@ -728,7 +745,7 @@ private func loadReadSurfaceEvidence(
     default:
         guard configuration.readSurfaceEvidenceDirectory == nil else {
             throw Phase1SemanticReducerError.invalidManifest(
-                "--read-surface-evidence requires phase1-semantic-v11 through phase1-semantic-v21"
+                "--read-surface-evidence requires phase1-semantic-v11 through phase1-semantic-v22"
             )
         }
         return nil
@@ -2524,6 +2541,8 @@ private func semanticReadNoveltyRuleVersion(
     _ mode: ReducerReadOverlapMode
 ) -> String {
     switch mode {
+    case .semanticV22:
+        return "adjacent-causal-read-high-precision-v2"
     case .semanticV21:
         return "adjacent-causal-read-high-precision-v1"
     case .semanticV20:
@@ -2544,7 +2563,8 @@ private func semanticReadUnprovenReason(
     fullDeltaAvailable: Bool
 ) -> String {
     switch mode {
-    case .semanticV18, .semanticV19, .semanticV20, .semanticV21:
+    case .semanticV18, .semanticV19, .semanticV20, .semanticV21,
+         .semanticV22:
         return fullDeltaAvailable
             ? "comparison_interior_alignment_unproven"
             : "conservative_reflow_alignment_unproven"
@@ -2790,7 +2810,8 @@ private func addSemanticReadComparisonAudit(
     delta: AdjacentCausalReadDelta?
 ) {
     guard mode == .semanticV18 || mode == .semanticV19
-        || mode == .semanticV20 || mode == .semanticV21 else { return }
+        || mode == .semanticV20 || mode == .semanticV21
+        || mode == .semanticV22 else { return }
     guard let previous else {
         novelty["comparisonProjection"] = [
             "role": "comparison_only",
@@ -2847,7 +2868,8 @@ private func applySemanticReadOverlap(
     var comparisonScaffoldingTracker = ReadInterfaceScaffoldingTracker()
     let usesSemanticReadProjection = mode == .semanticV16
         || mode == .semanticV17 || mode == .semanticV18
-        || mode == .semanticV19 || mode == .semanticV20 || mode == .semanticV21
+        || mode == .semanticV19 || mode == .semanticV20
+        || mode == .semanticV21 || mode == .semanticV22
     if usesSemanticReadProjection {
         // Classify recurring interface chrome from the immutable session as a
         // whole, then apply that classification to every READ. This can only
@@ -2863,7 +2885,8 @@ private func applySemanticReadOverlap(
                 lines: reducerReadOCRLines(raw["_readSurfaceLines"])
             )
             if mode == .semanticV18 || mode == .semanticV19
-                || mode == .semanticV20 || mode == .semanticV21 {
+                || mode == .semanticV20 || mode == .semanticV21
+                || mode == .semanticV22 {
                 comparisonScaffoldingTracker.observe(
                     surfaceKey: reducerReadScaffoldingSurfaceKey(raw)
                         + "|comparison-interior",
@@ -2903,11 +2926,12 @@ private func applySemanticReadOverlap(
                 lines: lines,
                 allowJoinedLineScaffolding: mode == .semanticV18
                     || mode == .semanticV19 || mode == .semanticV20
-                    || mode == .semanticV21,
+                    || mode == .semanticV21 || mode == .semanticV22,
                 removeClippedOuterBoundaryLines: mode == .semanticV19
-                    || mode == .semanticV20 || mode == .semanticV21,
+                    || mode == .semanticV20 || mode == .semanticV21
+                    || mode == .semanticV22,
                 additionalRemovalReasons: mode == .semanticV20
-                    || mode == .semanticV21
+                    || mode == .semanticV21 || mode == .semanticV22
                     ? reducerAdditionalReadRemovalReasons(
                         candidate.event, requireStrongClippingEvidence: true
                     )
@@ -2917,7 +2941,8 @@ private func applySemanticReadOverlap(
             )
             candidate.event["content"] = projection.content
             if (mode == .semanticV18 || mode == .semanticV19
-                    || mode == .semanticV20 || mode == .semanticV21),
+                    || mode == .semanticV20 || mode == .semanticV21
+                    || mode == .semanticV22),
                let comparisonObserved = candidate.raw["_readComparisonContent"]
                     as? String {
                 let comparisonLines = reducerReadOCRLines(
@@ -2933,6 +2958,7 @@ private func applySemanticReadOverlap(
                     allowJoinedLineScaffolding: true,
                     removeClippedOuterBoundaryLines: mode == .semanticV19
                         || mode == .semanticV20 || mode == .semanticV21
+                        || mode == .semanticV22
                 )
                 candidate.comparisonContent = comparisonProjection.content
                 if var reduction = candidate.event["reduction"] as? [String: Any] {
@@ -2940,7 +2966,7 @@ private func applySemanticReadOverlap(
                         observedContent: comparisonObserved,
                         projection: comparisonProjection,
                         hadLineEvidence: !comparisonLines.isEmpty,
-                        ruleVersion: mode == .semanticV21
+                        ruleVersion: mode == .semanticV21 || mode == .semanticV22
                             ? "read-interface-scaffolding-v6"
                             : mode == .semanticV20
                             ? "read-interface-scaffolding-v5"
@@ -2955,7 +2981,7 @@ private func applySemanticReadOverlap(
                 observedContent: observedContent,
                 projection: projection,
                 hadLineEvidence: !lines.isEmpty,
-                ruleVersion: mode == .semanticV21
+                ruleVersion: mode == .semanticV21 || mode == .semanticV22
                     ? "read-interface-scaffolding-v6"
                     : mode == .semanticV20
                     ? "read-interface-scaffolding-v5"
@@ -2999,7 +3025,7 @@ private func applySemanticReadOverlap(
             }
             let previousContent = stringValue(previous.event["content"]) ?? ""
             let priorEventID = stringValue(previous.event["eventID"]) ?? ""
-            let delta = mode == .semanticV21
+            let delta = mode == .semanticV21 || mode == .semanticV22
                 ? adjacentCausalReadContiguousDelta(
                     previous: previousContent,
                     current: projection.content
@@ -3021,10 +3047,11 @@ private func applySemanticReadOverlap(
                 )
             let comparisonDelta = mode == .semanticV18 || mode == .semanticV19
                     || mode == .semanticV20 || mode == .semanticV21
+                    || mode == .semanticV22
                 ? semanticReadComparisonDelta(previous: previous, current: candidate)
                 : nil
             let removedLineIndices = Set(projection.removed.map(\.line.index))
-            if mode == .semanticV21 {
+            if mode == .semanticV21 || mode == .semanticV22 {
                 var novelty: [String: Any] = [
                     "schemaVersion": 1,
                     "ruleVersion": semanticReadNoveltyRuleVersion(mode),
@@ -3146,7 +3173,7 @@ private func applySemanticReadOverlap(
                     // proven repeated but no single coherent novel region can
                     // be isolated, prefer an empty model projection over a
                     // duplicated complete state.
-                    let suppress = approximate != nil
+                    let suppress = mode == .semanticV21 && approximate != nil
                         && repeatedFraction
                             >= semanticV21AmbiguousReadSuppressionMinimumRepeatedFraction
                     novelty["decision"] = suppress
@@ -3154,6 +3181,8 @@ private func applySemanticReadOverlap(
                         : "full_state"
                     novelty["reason"] = suppress
                         ? "substantial_overlap_without_one_contiguous_novel_region"
+                        : mode == .semanticV22
+                            ? "candidate_alignment_unproven_preserve_complete_state"
                         : highPrecisionCandidates.isEmpty
                             ? "substantial_state_change_without_safe_contiguous_overlap"
                             : "candidate_alignment_rejected_without_substantial_repetition"

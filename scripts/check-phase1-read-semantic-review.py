@@ -47,9 +47,21 @@ content, label, suppressed = review.review_projection(
     {"decision": "full_state", "content": "complete OCR"}, "complete OCR",
 )
 assert content == "complete OCR"
-assert label == "Full READ retained · new surface or boundary"
+assert label == "Full READ retained · substantial/new state"
 assert suppressed is False
 assert not review.novelty_projection_changed("full_state")
+
+content, label, suppressed = review.review_projection(
+    {
+        "decision": "full_state",
+        "reason": "candidate_alignment_unproven_preserve_complete_state",
+        "content": "complete OCR",
+    },
+    "complete OCR",
+)
+assert content == "complete OCR"
+assert label == "Full READ retained · safe delta unproven"
+assert suppressed is False
 
 for decision in review.MODEL_REWRITTEN_RENDER_DECISIONS:
     assert review.model_rendering_changed(decision), decision
