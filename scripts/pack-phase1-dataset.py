@@ -51,6 +51,7 @@ DEPENDENCY_AWARE_PACKER_VERSIONS = {
     "phase1-semantic-v22": "phase1-token-pack-v11",
     "phase1-semantic-v23": "phase1-token-pack-v12",
     "phase1-semantic-v24": "phase1-token-pack-v12",
+    "phase1-semantic-v25": "phase1-token-pack-v12",
 }
 DEFAULT_TOKENIZER = "Qwen/Qwen3.5-9B-Base"
 DEFAULT_PASTE_MARKER = "<|paste|>"
@@ -678,7 +679,7 @@ def main() -> int:
         ):
             raise ValueError(
                 "--dependency-aware-read-novelty requires a compiled "
-                "phase1-semantic-v21 through v24 dataset that preserves readNovelty"
+                "phase1-semantic-v21 through v25 dataset that preserves readNovelty"
             )
     snapshot, resolved_revision = resolve_tokenizer_snapshot(
         arguments.tokenizer, arguments.revision, arguments.local_files_only
@@ -1081,20 +1082,20 @@ def main() -> int:
                 "dependencyRule": "render novelty only when dependsOnEventID is retained as a complete reconstructable READ state",
                 "missingDependencyFallback": (
                     "retain complete current semantic viewport"
-                    if source_reducer_version in {"phase1-semantic-v23", "phase1-semantic-v24"}
+                    if source_reducer_version in {"phase1-semantic-v23", "phase1-semantic-v24", "phase1-semantic-v25"}
                     else "retain complete current READ"
                 ),
                 "uncertainMicroglyphPolicy": "render an empty READ when the reducer proves a low-information adjacent change",
                 "ambiguousAdjacentDifferencePolicy": (
                     "render empty when substantial ordered repetition is proven without one coherent new region; otherwise retain the current semantic viewport"
-                    if source_reducer_version in {"phase1-semantic-v23", "phase1-semantic-v24"}
+                    if source_reducer_version in {"phase1-semantic-v23", "phase1-semantic-v24", "phase1-semantic-v25"}
                     else "retain the complete current READ when one contiguous novel region is unproven"
                     if source_reducer_version == "phase1-semantic-v22"
                     else "render an empty READ when substantial overlap exists without one contiguous novel region"
                 ),
                 "exactAdjacentRepeatRepresentation": "retain READ record with empty content",
                 "completeSemanticReadRemainsSourceAuthority": (
-                    source_reducer_version not in {"phase1-semantic-v23", "phase1-semantic-v24"}
+                    source_reducer_version not in {"phase1-semantic-v23", "phase1-semantic-v24", "phase1-semantic-v25"}
                 ),
                 "completePaneRemainsInImmutableSurfaceEvidence": True,
             }

@@ -494,11 +494,10 @@ public func adjacentCausalReadUniqueTokenOverlap(
     )
 }
 
-/// Exact-token longest-common-subsequence evidence for the rare case where
-/// two near-simultaneous sensors wrap the same pixels very differently. This
-/// is intentionally more expensive than the unique-token backbone and should
-/// be used only after independent timing/surface evidence establishes that
-/// the observations are competing views of one state.
+/// Exact-token longest-common-subsequence evidence when OCR wraps repeated
+/// text differently. This is more expensive than the unique-token backbone.
+/// Callers must first establish adjacent compatible reading states and prefer
+/// coherent new passages; unmatched fragments are evidence, not READ prose.
 public func adjacentCausalReadTokenLCSEvidence(
     previous: String,
     current: String

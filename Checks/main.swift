@@ -2517,7 +2517,8 @@ expect(v24Manifest["minimumAmbiguousRepeatFraction"] as? Double == 0.72,
 // sanitized evidence is replayed through both versions so these tests cannot
 // pass merely because a new candidate bypassed the old failure path.
 func reduceReadSequenceFixture(
-    name: String, records: [[String: Any]], version: String
+    name: String, records: [[String: Any]], version: String,
+    lastLineOutsideComparisonForRecordID: String? = nil
 ) -> [[String: Any]] {
     let root = fixtureRoot.appendingPathComponent("\(name)-\(version)")
     let source = root.appendingPathComponent("source")
@@ -2547,7 +2548,7 @@ func reduceReadSequenceFixture(
         row["capturedAt"] = record["capturedAt"]
         row["evidenceID"] = "evidence-\(record["recordID"] as! String)"
         row["jobID"] = row["evidenceID"]
-        let lines: [[String: Any]] = content.split(separator: "\n").enumerated().map { number, text in
+        var lines: [[String: Any]] = content.split(separator: "\n").enumerated().map { number, text in
             ["text": String(text), "confidence": 1.0,
              "boundingBox": ["x": 0.1, "y": 0.65 - Double(number) * 0.025,
                              "width": 0.8, "height": 0.02]]
@@ -2562,6 +2563,19 @@ func reduceReadSequenceFixture(
         row["comparisonContentSHA256"] = hash
         row["comparisonRecognizedLineCount"] = lines.count
         row["comparisonLines"] = lines
+        if lastLineOutsideComparisonForRecordID == record["recordID"] as? String,
+           !lines.isEmpty {
+            lines[lines.count - 1]["boundingBox"] = [
+                "x": 0.1, "y": 0.05, "width": 0.8, "height": 0.02,
+            ]
+            row["lines"] = lines
+            let comparison = content.split(separator: "\n").dropLast().joined(separator: "\n")
+            row["comparisonContent"] = comparison
+            row["comparisonContentSHA256"] = SHA256.hash(data: Data(comparison.utf8))
+                .map { String(format: "%02x", $0) }.joined()
+            row["comparisonRecognizedLineCount"] = lines.count - 1
+            row["comparisonLines"] = Array(lines.dropLast())
+        }
         return row
     }
     writeFixtureJSONL(rows, to: evidence.appendingPathComponent("read-surfaces.jsonl"))
@@ -2661,6 +2675,109 @@ expect((newCrossSensorNovelty?["content"] as? String)?.contains(newCrossSensorPa
        "v24 preserves a coherent new paragraph despite substantial repeated build output")
 expect(crossSensorV24.last?["capturedAt"] as? String == "2026-01-01T00:00:03.200Z",
        "v24 new cross-sensor content retains its actual observation time")
+
+// v25: sanitized counterparts of Sep3 263–264 / 1138–1139 and Sep4
+// 327–328. Repeated vocabulary defeats the unique-token shortcut; different
+// line wrapping/punctuation defeats the contiguous path. These are ordinary
+// pointer observations seven seconds apart, not special sensor coincidences.
+let ordinaryPaneLines = (0..<12).map { index in
+    "Section \(index): The selected reading area preserves the complete observed information and the previous reading area preserves the same information for the next comparison."
+}
+let ordinaryPaneBefore = "Report begins\n" + ordinaryPaneLines.joined(separator: "\n") + "\nReport ends"
+let ordinaryPaneAfter = "Report beglns\n" + ordinaryPaneLines.enumerated().map { index, line in
+    line.replacingOccurrences(of: ":", with: " —")
+        .replacingOccurrences(of: "complete observed", with: index % 2 == 0 ? "complete\nobserved" : "complete observed")
+}.joined(separator: "\n") + "\nReport end5"
+func ordinaryPaneRead(_ id: String, _ second: Int, _ content: String) -> [String: Any] {
+    var row = coincidentPointerRead
+    let at = String(format: "2026-01-01T00:00:%02d.050Z", second)
+    row["recordID"] = id
+    for key in ["capturedAt", "observedAt", "settledAt", "firstActivityAt", "lastActivityAt"] {
+        row[key] = at
+    }
+    row["content"] = content
+    row["triggerTypes"] = ["pointer_moved"]
+    return row
+}
+let ordinaryPaneRecords = [
+    ordinaryPaneRead("ordinary-pane-before", 2, ordinaryPaneBefore),
+    ordinaryPaneRead("ordinary-pane-after", 9, ordinaryPaneAfter),
+]
+let ordinaryV24 = reduceReadSequenceFixture(
+    name: "ordinary-pane", records: ordinaryPaneRecords, version: "phase1-semantic-v24"
+)
+let ordinaryV25 = reduceReadSequenceFixture(
+    name: "ordinary-pane", records: ordinaryPaneRecords, version: "phase1-semantic-v25"
+)
+expect((ordinaryV24.last?["readNovelty"] as? [String: Any])?["decision"] as? String == "full_state",
+       "v24 fixture reaches the actual ordinary-pane comparison gap")
+expect((ordinaryV25.last?["readNovelty"] as? [String: Any])?["decision"] as? String == "suppress_ambiguous_adjacent_difference",
+       "v25 compares ordinary repeated states despite timing and repeated vocabulary")
+expect(ordinaryV25.last?["content"] as? String == ordinaryV24.last?["content"] as? String,
+       "v25 repetition projection leaves complete source content intact")
+
+// A coherent new passage wins before approximate suppression, even when the
+// unchanged surrounding text is much longer than that passage.
+let actualNewPassage = "A genuinely new result follows: the experiment revealed a previously unseen alternative and explains why it matters."
+let novelV25 = reduceReadSequenceFixture(name: "ordinary-novel-passage", records: [
+    ordinaryPaneRead("novel-before", 2, ordinaryPaneBefore),
+    ordinaryPaneRead("novel-after", 9, ordinaryPaneBefore + "\n" + actualNewPassage),
+], version: "phase1-semantic-v25")
+expect(((novelV25.last?["readNovelty"] as? [String: Any])?["content"] as? String)?.contains(actualNewPassage) == true,
+       "v25 keeps coherent genuinely new information rather than suppressing by percentage alone")
+let establishedAnchor = "The final established sentence provides a stable anchor for comparing the next observation."
+let ordinaryProgressBefore = ordinaryPaneBefore + "\n" + establishedAnchor
+let ordinaryProgressAfter = ordinaryPaneLines.dropFirst(2).enumerated().map { index, line in
+    index == 3 ? "Background status indicator changed its rendering."
+        : line.replacingOccurrences(of: ":", with: " —")
+}.joined(separator: "\n") + "\nReport end5\n" + establishedAnchor + "\n" + actualNewPassage
+let progressV25 = reduceReadSequenceFixture(name: "ordinary-pane-progress", records: [
+    ordinaryPaneRead("progress-before", 2, ordinaryProgressBefore),
+    ordinaryPaneRead("progress-after", 9, ordinaryProgressAfter),
+], version: "phase1-semantic-v25", lastLineOutsideComparisonForRecordID: "progress-after")
+expect(((progressV25.last?["readNovelty"] as? [String: Any])?["content"] as? String)?.contains(actualNewPassage) == true,
+       "v25 preserves a new paragraph despite OCR noise and text displacement without a scroll trigger")
+expect((progressV25.last?["readNovelty"] as? [String: Any])?["reason"] as? String == "same_pane_displacement_exposes_coherent_edge",
+       "v25 progress regression exercises the new ordinary-state edge proof, not a full-state fallback")
+
+// X→Y→X is a legitimate return, not repetition within X. Incompatible
+// observed windows and application activation both reset comparison state.
+var otherPaneRead = ordinaryPaneRead("other-pane", 6, "Different source with its own information.")
+otherPaneRead["windowID"] = 8
+otherPaneRead["windowTitle"] = "Other document"
+let returnedPaneV25 = reduceReadSequenceFixture(name: "ordinary-pane-return", records: [
+    ordinaryPaneRecords[0], otherPaneRead, ordinaryPaneRecords[1],
+], version: "phase1-semantic-v25")
+expect((returnedPaneV25.last?["readNovelty"] as? [String: Any])?["decision"] as? String == "full_state",
+       "v25 preserves X→Y→X rereads even when returning to largely repeated content")
+var activatedPaneRead = ordinaryPaneRecords[1]
+activatedPaneRead["triggerTypes"] = ["application_activated"]
+let activatedPaneV25 = reduceReadSequenceFixture(name: "ordinary-pane-activation", records: [
+    ordinaryPaneRecords[0], activatedPaneRead,
+], version: "phase1-semantic-v25")
+expect((activatedPaneV25.last?["readNovelty"] as? [String: Any])?["decision"] as? String == "full_state",
+       "v25 activation preserves a return even when no intervening other-app READ was captured")
+let ordinaryWriteBoundary: [String: Any] = [
+    "recordType": "active_tap_write_attempt", "recordID": "ordinary-write-boundary",
+    "sessionID": "visual-read-session", "schemaVersion": 15,
+    "beganAt": "2026-01-01T00:00:05.000Z", "inputEventCount": 1,
+]
+let writtenPaneV25 = reduceReadSequenceFixture(name: "ordinary-pane-write", records: [
+    ordinaryPaneRecords[0], ordinaryWriteBoundary, ordinaryPaneRecords[1],
+], version: "phase1-semantic-v25")
+expect((writtenPaneV25.last?["readNovelty"] as? [String: Any])?["decision"] as? String == "full_state",
+       "v25 cannot suppress a reread across a WRITE, even when its final resolution is unavailable")
+let distinctPaneContent = "A different article describes a coastline, tidal wetlands, migrating birds, and the seasonal paths of a river.\nIts evidence is unrelated to the previous report."
+let distinctPaneV25 = reduceReadSequenceFixture(name: "ordinary-pane-distinct", records: [
+    ordinaryPaneRecords[0], ordinaryPaneRead("distinct-after", 9, distinctPaneContent),
+], version: "phase1-semantic-v25")
+expect((distinctPaneV25.last?["readNovelty"] as? [String: Any])?["content"] as? String == distinctPaneContent,
+       "v25 preserves distinct information encountered in the same reading area")
+let newCrossSensorV25 = reduceReadSequenceFixture(
+    name: "cross-sensor-new-paragraph", records: crossSensorRecords, version: "phase1-semantic-v25"
+)
+expect(((newCrossSensorV25.last?["readNovelty"] as? [String: Any])?["content"] as? String)?.contains(newCrossSensorParagraph) == true,
+       "v25 preserves v24's new cross-sensor paragraph rather than reinstating the weak threshold")
 try! Data("tampered visual frame bytes".utf8).write(to: visualScreenshotURL)
 _ = try! Phase1SemanticReducer(configuration: .init(
     reducerVersion: "phase1-semantic-v14",

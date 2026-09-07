@@ -252,10 +252,10 @@ class ReviewStore:
             "phase1-semantic-v16", "phase1-semantic-v17",
             "phase1-semantic-v18", "phase1-semantic-v19",
             "phase1-semantic-v20", "phase1-semantic-v21",
-            "phase1-semantic-v22", "phase1-semantic-v23", "phase1-semantic-v24",
+            "phase1-semantic-v22", "phase1-semantic-v23", "phase1-semantic-v24", "phase1-semantic-v25",
         }:
             raise ReviewError(
-                "candidate must be phase1-semantic-v16 through v24"
+                "candidate must be phase1-semantic-v16 through v25"
             )
         self.candidate_version = str(candidate_version)
         self.session_id = str(candidate_manifest.get("sessionID", ""))

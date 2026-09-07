@@ -18,7 +18,7 @@ def v12_reducer_contract_valid(manifest: dict) -> bool:
         "readNoveltyRendering", {}
     ).get("requiredReducerVersion")
     return (
-        source_version in {"phase1-semantic-v23", "phase1-semantic-v24"}
+        source_version in {"phase1-semantic-v23", "phase1-semantic-v24", "phase1-semantic-v25"}
         and required_version == source_version
     )
 
@@ -63,7 +63,7 @@ def main() -> int:
     if manifest.get("packerVersion") == "phase1-token-pack-v12" and not (
         v12_reducer_contract_valid(manifest)
     ):
-        raise ValueError("phase1-token-pack-v12 requires matching semantic-v23 or v24 source and rendering contracts")
+        raise ValueError("phase1-token-pack-v12 requires matching semantic-v23, v24, or v25 source and rendering contracts")
     if manifest.get("packerVersion") == "phase1-token-pack-v12":
         read_contract = manifest.get("packing", {}).get(
             "readNoveltyRendering", {}

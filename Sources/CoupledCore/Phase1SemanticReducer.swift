@@ -6,7 +6,7 @@ public struct Phase1SemanticReducerConfiguration: Sendable {
     public let readSurfaceEvidenceDirectory: URL?
 
     fileprivate var usesSamePaneSequence: Bool {
-        ["phase1-semantic-v23", "phase1-semantic-v24"].contains(reducerVersion)
+        ["phase1-semantic-v23", "phase1-semantic-v24", "phase1-semantic-v25"].contains(reducerVersion)
     }
 
     public init(
@@ -97,7 +97,7 @@ public struct Phase1SemanticReducer {
         let usesReconciledSemanticReads = [
             "phase1-semantic-v18", "phase1-semantic-v19",
             "phase1-semantic-v20", "phase1-semantic-v21",
-            "phase1-semantic-v22", "phase1-semantic-v23", "phase1-semantic-v24",
+            "phase1-semantic-v22", "phase1-semantic-v23", "phase1-semantic-v24", "phase1-semantic-v25",
         ].contains(configuration.reducerVersion)
         let dynamicReadBoundaries = usesReconciledSemanticReads
             ? reducerDynamicReadBoundaries(raw)
@@ -445,7 +445,8 @@ public struct Phase1SemanticReducer {
                 writeBoundaries: writeOverlapBoundaries,
                 attentionBoundaries: dynamicReadBoundaries,
                 sessionID: sessionID,
-                preserveNovelCheckpoints: configuration.reducerVersion == "phase1-semantic-v24"
+                preserveNovelCheckpoints: configuration.reducerVersion != "phase1-semantic-v23",
+                compareOrdinarySamePaneStates: configuration.reducerVersion == "phase1-semantic-v25"
             )
             : overlapResult
         dispositions.append(contentsOf: sequenceResult.dispositions)
@@ -625,7 +626,7 @@ public struct Phase1SemanticReducer {
                         "write_began", "collection_end",
                     ],
                     "coverageReset": "flush does not erase same-pane coverage; only a WRITE, application activation, proven surface transition, or incompatible captured surface resets it",
-                    "preWriteCheckpoint": configuration.reducerVersion == "phase1-semantic-v24"
+                    "preWriteCheckpoint": configuration.reducerVersion != "phase1-semantic-v23"
                         ? "ordinary captured READ evidence; suppress only by the content-comparison rules"
                         : "raw/audit evidence only; never a new semantic READ",
                     "passiveStateSelection": "final observed viewport; intermediate progress remains raw lineage",
@@ -633,10 +634,13 @@ public struct Phase1SemanticReducer {
                 ]
             }
         }
-        if configuration.reducerVersion == "phase1-semantic-v24" {
+        if ["phase1-semantic-v24", "phase1-semantic-v25"].contains(configuration.reducerVersion) {
             reduction["preWriteReadRule"] = "pre-WRITE observations close passive progress but are compared as ordinary captured READ evidence; fresh causally available content is retained and redundant same-pane content is suppressed"
             reduction["minimumAmbiguousRepeatFraction"] = 0.72
             reduction["crossSensorSuppressionRule"] = "sensor alternation alone never lowers the minimum repeated fraction"
+        }
+        if configuration.reducerVersion == "phase1-semantic-v25" {
+            reduction["ordinarySamePaneComparisonRule"] = "after coherent contiguous novelty fails, apply ordered reflow and exact-token LCS evidence to every adjacent compatible reading state, regardless of sensor type or elapsed time; retain a proven coherent displaced edge before suppressing a repeat and advance viewport coverage; retain the v24 repeat threshold and all sequence resets; never compare across application/surface returns or WRITE boundaries"
         }
         try reducerWriteJSON(reduction, to: output.appendingPathComponent("reduction.json"))
         return Phase1SemanticReducerResult(
@@ -728,6 +732,7 @@ private func reducerUsesVisualReadEvidence(_ version: String) -> Bool {
         || version == "phase1-semantic-v22"
         || version == "phase1-semantic-v23"
         || version == "phase1-semantic-v24"
+        || version == "phase1-semantic-v25"
 }
 
 /// Returns raw interaction intervals that divide autonomous visual progress
@@ -794,7 +799,7 @@ private func loadReadSurfaceEvidence(
         ]
     case "phase1-semantic-v18", "phase1-semantic-v19",
          "phase1-semantic-v20", "phase1-semantic-v21",
-         "phase1-semantic-v22", "phase1-semantic-v23", "phase1-semantic-v24":
+         "phase1-semantic-v22", "phase1-semantic-v23", "phase1-semantic-v24", "phase1-semantic-v25":
         expectedRuleVersions = rawScreenOCRSchema >= 7
             ? ["ax-pane-read-v5", "ax-pane-read-v6", "ax-pane-read-v7"]
             : ["pointer-local-read-v1"]
@@ -804,7 +809,7 @@ private func loadReadSurfaceEvidence(
     default:
         guard configuration.readSurfaceEvidenceDirectory == nil else {
             throw Phase1SemanticReducerError.invalidManifest(
-                "--read-surface-evidence requires phase1-semantic-v11 through phase1-semantic-v24"
+                "--read-surface-evidence requires phase1-semantic-v11 through phase1-semantic-v25"
             )
         }
         return nil
@@ -2579,7 +2584,8 @@ private func applySequenceAwareSemanticReads(
     writeBoundaries: [ReducerWriteBoundary],
     attentionBoundaries: [ReducerDynamicReadBoundary],
     sessionID: String,
-    preserveNovelCheckpoints: Bool
+    preserveNovelCheckpoints: Bool,
+    compareOrdinarySamePaneStates: Bool
 ) -> ReducerOverlapResult {
     enum TimelineItem {
         case candidate(Int)
@@ -2992,8 +2998,10 @@ private func applySequenceAwareSemanticReads(
 
         // If no single coherent new region survived the high-precision path,
         // substantial ordered overlap is evidence of the same visible state,
-        // not a reason to replay the entire pane. Alternating sensor pathways
-        // receive slightly more tolerance only when they are near-simultaneous.
+        // not a reason to replay the entire pane. v25 applies the existing
+        // stronger comparison to ordinary same-pane states too. Surface/WRITE
+        // resets above still bound this comparison; elapsed time and sensor
+        // choice are not evidence of new content. v23/v24 remain replayable.
         let crossSensor = isNearSimultaneousCrossSensorState(
             previous, candidate
         )
@@ -3018,10 +3026,61 @@ private func applySequenceAwareSemanticReads(
                 > (approximate?.overlapCharacterCount ?? 0) {
             approximate = lcs
         }
+        // Retain established decisions and their evidence byte-for-byte. The
+        // new fallback only fills the comparison gap; it does not replace a
+        // successful earlier comparison with a different diagnostic score.
+        let ordinaryFallback = compareOrdinarySamePaneStates
+            && Double(approximate?.overlapCharacterCount ?? 0)
+                / Double(max(1, approximate?.currentCharacterCount ?? current.count)) < 0.72
+        if ordinaryFallback {
+            if !crossSensor, quickFraction < 0.25,
+               let reflow = adjacentCausalReadReflowDelta(previous: prior, current: current),
+               reflow.overlapCharacterCount > (approximate?.overlapCharacterCount ?? 0) {
+                approximate = reflow
+            }
+            if !asScroll, !crossSensor,
+               let lcs = adjacentCausalReadTokenLCSEvidence(previous: prior, current: current),
+               lcs.overlapCharacterCount > (approximate?.overlapCharacterCount ?? 0) {
+                approximate = lcs
+            }
+        }
         if let approximate {
             let repeatedFraction = Double(approximate.overlapCharacterCount)
                 / Double(max(1, approximate.currentCharacterCount))
             if repeatedFraction >= ((!preserveNovelCheckpoints && crossSensor) ? 0.40 : 0.72) {
+                // A mostly repeated ordinary view may have moved to expose a
+                // real paragraph. Apply the existing displacement/edge proof
+                // here too; a scroll trigger is not required to prove visible
+                // text displacement. Never serialize LCS mismatch fragments.
+                if ordinaryFallback, !asScroll,
+                   let edge = adjacentCausalReadScrollFrontierDelta(
+                       previousFull: prior, previousModelFacing: prior, current: current
+                   ), let uncovered = coherentUncoveredEdge(edge.emittedContent, coverage: prior),
+                   uncovered.split(whereSeparator: \.isNewline).contains(where: {
+                       normalizedReadFragment(String($0)).count >= 24
+                   }),
+                   !readNoveltyIsStrictlyGrounded(uncovered, in: prior),
+                   readNoveltyIsStrictlyGrounded(uncovered, in: current) {
+                    // This edge has independent displacement + unique-phrase
+                    // proof and is a contiguous span of cleaned full-pane OCR.
+                    // The comparison inset cannot veto a real new paragraph
+                    // merely because it lies outside that inset. No words are
+                    // imported from comparison OCR or unmatched LCS fragments.
+                    candidate.event["readNovelty"] = makeNovelty(
+                        candidate: candidate, decision: "emit_contiguous_new_content",
+                        reason: "same_pane_displacement_exposes_coherent_edge",
+                        content: uncovered, previous: previous,
+                        alignment: edge.alignment,
+                        details: ["sequenceTransition": "state", "surface": surface,
+                                  "repeatedFraction": repeatedFraction,
+                                  "contentAuthority": "grounded_contiguous_cleaned_full_pane_span"]
+                    )
+                    output.append(candidate)
+                    state.previous = candidate
+                    state.modelFacingFrontier = current
+                    state.scrollFrontierOpen = false
+                    return
+                }
                 candidate.event["readNovelty"] = makeNovelty(
                     candidate: candidate,
                     decision: "suppress_ambiguous_adjacent_difference",
@@ -3044,8 +3103,18 @@ private func applySequenceAwareSemanticReads(
                 )
                 output.append(candidate)
                 state.previous = candidate
-                state.scrollFrontierOpen = asScroll
-                    || state.scrollFrontierOpen
+                if ordinaryFallback {
+                    // Advance the observed coverage exactly as the former
+                    // full-state path did. Omitting a substantially equivalent
+                    // OCR view must not strand the frontier at an older small
+                    // delta and replay this whole view on the next scroll.
+                    // Small uncertain differences were deliberately omitted;
+                    // this is overlap coverage, never newly fabricated prose.
+                    state.modelFacingFrontier = current
+                    state.scrollFrontierOpen = asScroll
+                } else {
+                    state.scrollFrontierOpen = asScroll || state.scrollFrontierOpen
+                }
                 return
             }
         }
