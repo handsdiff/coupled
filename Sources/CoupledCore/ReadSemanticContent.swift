@@ -519,13 +519,13 @@ private func knownScaffoldingReason(
         return "codex_composer_placeholder"
     }
     if lowered.range(
-        of: #"^(working|worked) (?:for|tor) [0-9]+(?:\.[0-9]+)?[smh](?: [0-9]+[smh])?\s*>?$"#,
+        of: #"^(working|worked) (?:for|tor) [0-9]+(?:\.[0-9]+)?[smh](?: [0-9]+[smh])?\s*[›»>]?\s*$"#,
         options: .regularExpression
     ) != nil {
         return "codex_progress_status"
     }
     if lowered.range(
-        of: #"^[•›»>]?\s*(?:working|worked)(?: for)?\s*\(?[0-9]+(?:\.[0-9]+)?[smh](?:\s+[0-9]+[smh])?(?:\s*[•·]\s*esc to interrupt)?\)?\s*>?$"#,
+        of: #"^[•›»>]?\s*(?:working|worked)(?: for)?\s*\(?[0-9]+(?:\.[0-9]+)?[smh](?:\s+[0-9]+[smh])?(?:\s*[•·]\s*esc to interrupt)?\)?\s*[›»>]?\s*$"#,
         options: .regularExpression
     ) != nil {
         return "codex_progress_status"

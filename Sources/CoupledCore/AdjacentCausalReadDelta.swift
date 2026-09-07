@@ -467,6 +467,426 @@ public func adjacentCausalReadReflowDelta(
     )
 }
 
+/// Linear-time, order-preserving evidence that two OCR observations mostly
+/// describe the same state. The unmatched text is audit evidence only: callers
+/// must not serialize its disconnected fragments as a coherent READ.
+public func adjacentCausalReadUniqueTokenOverlap(
+    previous: String,
+    current: String
+) -> AdjacentCausalReadDelta? {
+    let prior = NormalizedReadText(previous)
+    let next = NormalizedReadText(current)
+    let priorTokens = readReflowTokens(prior.characters)
+    let currentTokens = readReflowTokens(next.characters)
+    guard !priorTokens.isEmpty, !currentTokens.isEmpty else { return nil }
+    let matches = orderedUniqueExactReadTokenMatches(
+        previous: priorTokens, current: currentTokens
+    )
+    let overlap = matches.reduce(0) { $0 + $1.currentText.count }
+    guard matches.count >= 3, overlap >= 24 else { return nil }
+    let ranges = matches.map { currentTokens[$0.currentTokenIndex].range }
+    return AdjacentCausalReadDelta(
+        emittedContent: next.content(excluding: ranges),
+        alignment: "ordered_unique_exact_token_overlap",
+        overlapCharacterCount: overlap,
+        currentCharacterCount: next.characters.count,
+        tokenMatches: matches
+    )
+}
+
+/// Exact-token longest-common-subsequence evidence for the rare case where
+/// two near-simultaneous sensors wrap the same pixels very differently. This
+/// is intentionally more expensive than the unique-token backbone and should
+/// be used only after independent timing/surface evidence establishes that
+/// the observations are competing views of one state.
+public func adjacentCausalReadTokenLCSEvidence(
+    previous: String,
+    current: String
+) -> AdjacentCausalReadDelta? {
+    let prior = NormalizedReadText(previous)
+    let next = NormalizedReadText(current)
+    let priorTokens = readReflowTokens(prior.characters)
+    let currentTokens = readReflowTokens(next.characters)
+    guard !priorTokens.isEmpty, !currentTokens.isEmpty else { return nil }
+    let matches = orderedExactReadTokenLCSMatches(
+        previous: priorTokens, current: currentTokens
+    )
+    let overlap = matches.reduce(0) { $0 + $1.currentText.count }
+    guard matches.count >= 3, overlap >= 24 else { return nil }
+    return AdjacentCausalReadDelta(
+        emittedContent: next.content(excluding: matches.map {
+            currentTokens[$0.currentTokenIndex].range
+        }),
+        alignment: "exact_token_longest_common_subsequence",
+        overlapCharacterCount: overlap,
+        currentCharacterCount: next.characters.count,
+        tokenMatches: matches
+    )
+}
+
+private func orderedExactReadTokenLCSMatches(
+    previous priorTokens: [ReadReflowToken],
+    current currentTokens: [ReadReflowToken]
+) -> [AdjacentCausalReadTokenMatch] {
+    var lengths = Array(
+        repeating: Array(repeating: 0, count: currentTokens.count + 1),
+        count: priorTokens.count + 1
+    )
+    if !priorTokens.isEmpty, !currentTokens.isEmpty {
+        for left in stride(from: priorTokens.count - 1, through: 0, by: -1) {
+            for right in stride(
+                from: currentTokens.count - 1, through: 0, by: -1
+            ) {
+                if priorTokens[left].normalized == currentTokens[right].normalized {
+                    lengths[left][right] = lengths[left + 1][right + 1] + 1
+                } else {
+                    lengths[left][right] = max(
+                        lengths[left + 1][right], lengths[left][right + 1]
+                    )
+                }
+            }
+        }
+    }
+    var left = 0
+    var right = 0
+    var matches = [AdjacentCausalReadTokenMatch]()
+    while left < priorTokens.count, right < currentTokens.count {
+        if priorTokens[left].normalized == currentTokens[right].normalized {
+            matches.append(AdjacentCausalReadTokenMatch(
+                previousTokenIndex: left,
+                currentTokenIndex: right,
+                previousText: priorTokens[left].raw,
+                currentText: currentTokens[right].raw,
+                kind: "exact"
+            ))
+            left += 1
+            right += 1
+        } else if lengths[left + 1][right] >= lengths[left][right + 1] {
+            left += 1
+        } else {
+            right += 1
+        }
+    }
+    return matches
+}
+
+/// Reconstructs the coherent edge exposed by a scroll without treating OCR
+/// disagreements inside the overlapping viewport as new content. Direction
+/// is established from the complete adjacent panes. The removal frontier is
+/// then anchored to the text that was actually exposed to the model from the
+/// preceding pane, so a clipped boundary line may become available when it
+/// later moves into the stable interior.
+public func adjacentCausalReadScrollFrontierDelta(
+    previousFull: String,
+    previousModelFacing: String,
+    current: String
+) -> AdjacentCausalReadDelta? {
+    let prior = NormalizedReadText(previousFull)
+    let next = NormalizedReadText(current)
+    guard !prior.characters.isEmpty, !next.characters.isEmpty else { return nil }
+    if prior.characters == next.characters {
+        return AdjacentCausalReadDelta(
+            emittedContent: "",
+            alignment: "exact_state",
+            overlapCharacterCount: next.characters.count,
+            currentCharacterCount: next.characters.count
+        )
+    }
+
+    enum Direction { case down, up }
+    let direction: Direction?
+    if let exact = adjacentCausalReadEdgeDelta(
+        previous: previousFull, current: current
+    ) {
+        switch exact.alignment {
+        case "prior_suffix_to_current_prefix": direction = .down
+        case "prior_prefix_to_current_suffix": direction = .up
+        default: direction = nil
+        }
+    } else {
+        let priorTokens = readReflowTokens(prior.characters)
+        let currentTokens = readReflowTokens(next.characters)
+        let minimumDirectionalDisplacement = max(
+            2, min(priorTokens.count, currentTokens.count) / 50
+        )
+        let phraseDisplacement = exactReadScrollDisplacement(
+            previous: prior.characters, current: next.characters
+        )
+        if let phraseDisplacement,
+           phraseDisplacement >= minimumDirectionalDisplacement {
+            direction = .down
+        } else if let phraseDisplacement,
+                  phraseDisplacement <= -minimumDirectionalDisplacement {
+            direction = .up
+        } else {
+            let matches = orderedUniqueExactReadTokenMatches(
+                previous: priorTokens, current: currentTokens
+            )
+            guard matches.count >= 3,
+                  matches.reduce(0, { $0 + $1.currentText.count }) >= 24,
+                  let first = matches.first, let last = matches.last else {
+                return nil
+            }
+            let priorLeading = first.previousTokenIndex
+            let currentLeading = first.currentTokenIndex
+            let priorTrailing = max(
+                0, priorTokens.count - last.previousTokenIndex - 1
+            )
+            let currentTrailing = max(
+                0, currentTokens.count - last.currentTokenIndex - 1
+            )
+            let downScore = (priorLeading - currentLeading)
+                + (currentTrailing - priorTrailing)
+            if downScore >= minimumDirectionalDisplacement {
+                direction = .down
+            } else if downScore <= -minimumDirectionalDisplacement {
+                direction = .up
+            } else {
+                direction = nil
+            }
+        }
+    }
+    guard let direction else { return nil }
+
+    let frontierText = previousModelFacing.isEmpty
+        ? previousFull : previousModelFacing
+    let frontier = NormalizedReadText(frontierText)
+    guard !frontier.characters.isEmpty else { return nil }
+    let frontierTokens = readReflowTokens(frontier.characters)
+    let currentTokens = readReflowTokens(next.characters)
+    guard !frontierTokens.isEmpty, !currentTokens.isEmpty else { return nil }
+
+    let emitted: String
+    let anchorMatches: [AdjacentCausalReadTokenMatch]
+    switch direction {
+    case .down:
+        guard let anchor = exactReadFrontierAnchor(
+            frontier: frontierTokens, current: currentTokens, fromEnd: true
+        ) else { return nil }
+        anchorMatches = anchor.matches
+        let lower = currentTokens[anchor.currentRange.upperBound - 1].range.upperBound
+        emitted = next.content(excluding: [0..<lower])
+    case .up:
+        guard let anchor = exactReadFrontierAnchor(
+            frontier: frontierTokens, current: currentTokens, fromEnd: false
+        ) else { return nil }
+        anchorMatches = anchor.matches
+        let upper = currentTokens[anchor.currentRange.lowerBound].range.lowerBound
+        emitted = next.content(excluding: [upper..<next.characters.count])
+    }
+    return AdjacentCausalReadDelta(
+        emittedContent: emitted,
+        alignment: direction == .down
+            ? "ocr_tolerant_downward_scroll_frontier"
+            : "ocr_tolerant_upward_scroll_frontier",
+        overlapCharacterCount: anchorMatches.reduce(0) {
+            $0 + $1.currentText.count
+        },
+        currentCharacterCount: next.characters.count,
+        tokenMatches: anchorMatches
+    )
+}
+
+/// Infer viewport displacement from repeated exact phrases rather than from
+/// isolated OCR tokens. A five-token phrase is long enough to resist common
+/// words and short enough to survive line wrapping. The dominant displacement
+/// must explain at least three phrases and sixty percent of all unique phrase
+/// matches; otherwise direction remains unknown.
+private func exactReadScrollDisplacement(
+    previous: [Character],
+    current: [Character]
+) -> Int? {
+    let priorTokens = readReflowTokens(previous).map(\.normalized)
+    let currentTokens = readReflowTokens(current).map(\.normalized)
+    let phraseLength = 5
+    guard priorTokens.count >= phraseLength,
+          currentTokens.count >= phraseLength else { return nil }
+
+    func phrasePositions(_ tokens: [String]) -> [String: [Int]] {
+        var positions = [String: [Int]]()
+        for start in 0...(tokens.count - phraseLength) {
+            let phrase = tokens[start..<(start + phraseLength)]
+                .joined(separator: "\u{1F}")
+            positions[phrase, default: []].append(start)
+        }
+        return positions
+    }
+    let priorPositions = phrasePositions(priorTokens)
+    let currentPositions = phrasePositions(currentTokens)
+    let offsets = priorPositions.compactMap { phrase, prior -> Int? in
+        guard prior.count == 1,
+              let current = currentPositions[phrase], current.count == 1
+        else { return nil }
+        return prior[0] - current[0]
+    }.sorted()
+    guard offsets.count >= 3 else { return nil }
+    let median = offsets[offsets.count / 2]
+    let consistent = offsets.filter { abs($0 - median) <= 2 }.count
+    guard consistent >= 3, consistent * 5 >= offsets.count * 3 else {
+        return nil
+    }
+    return median
+}
+
+private struct ExactReadFrontierAnchor {
+    let currentRange: Range<Int>
+    let matches: [AdjacentCausalReadTokenMatch]
+}
+
+/// Exact unique tokens provide a linear-time displacement backbone. OCR-
+/// tolerant matching remains useful for audit, but its quadratic all-pairs
+/// search is deliberately not used in the full-corpus sequence reducer.
+private func orderedUniqueExactReadTokenMatches(
+    previous: [ReadReflowToken],
+    current: [ReadReflowToken]
+) -> [AdjacentCausalReadTokenMatch] {
+    var previousPositions = [String: [Int]]()
+    var currentPositions = [String: [Int]]()
+    for (index, token) in previous.enumerated()
+        where token.normalized.count >= 3 {
+        previousPositions[token.normalized, default: []].append(index)
+    }
+    for (index, token) in current.enumerated()
+        where token.normalized.count >= 3 {
+        currentPositions[token.normalized, default: []].append(index)
+    }
+    let pairs = current.enumerated().compactMap { currentIndex, token
+        -> (Int, Int, String)? in
+        guard previousPositions[token.normalized]?.count == 1,
+              currentPositions[token.normalized]?.count == 1,
+              let previousIndex = previousPositions[token.normalized]?.first
+        else { return nil }
+        return (previousIndex, currentIndex, token.raw)
+    }
+    var result = [AdjacentCausalReadTokenMatch]()
+    var lastPrevious = -1
+    for pair in pairs where pair.0 > lastPrevious {
+        result.append(AdjacentCausalReadTokenMatch(
+            previousTokenIndex: pair.0,
+            currentTokenIndex: pair.1,
+            previousText: previous[pair.0].raw,
+            currentText: pair.2,
+            kind: "exact"
+        ))
+        lastPrevious = pair.0
+    }
+    return result
+}
+
+/// Find a short exact phrase at the edge of the prior model-facing frontier.
+/// The phrase must occur once in the current pane; this avoids anchoring a
+/// scroll on a common repeated phrase elsewhere in the document.
+private func exactReadFrontierAnchor(
+    frontier: [ReadReflowToken],
+    current: [ReadReflowToken],
+    fromEnd: Bool
+) -> ExactReadFrontierAnchor? {
+    // The stable-interior crop can cut an entire wrapped line or short bullet
+    // from the end of the preceding observation. Search modestly inward for a
+    // unique exact phrase instead of requiring the literal last two tokens to
+    // survive OCR. This deliberately prefers omitting an uncertain clipped
+    // edge over replaying the already-read viewport.
+    let maximumSkippedEdgeTokens = min(32, max(0, frontier.count - 1))
+    let maximumPhraseTokens = min(8, frontier.count)
+    for skipped in 0...maximumSkippedEdgeTokens {
+        let edge = fromEnd ? frontier.count - skipped : skipped
+        for length in stride(from: maximumPhraseTokens, through: 3, by: -1) {
+            let frontierRange: Range<Int>
+            if fromEnd {
+                guard edge >= length else { continue }
+                frontierRange = (edge - length)..<edge
+            } else {
+                guard edge + length <= frontier.count else { continue }
+                frontierRange = edge..<(edge + length)
+            }
+            let phrase = frontier[frontierRange].map(\.normalized)
+            var occurrences = [Range<Int>]()
+            if current.count >= phrase.count {
+                for start in 0...(current.count - phrase.count) where
+                    Array(current[start..<(start + phrase.count)]).map(\.normalized)
+                        == phrase {
+                    occurrences.append(start..<(start + phrase.count))
+                    if occurrences.count > 1 { break }
+                }
+            }
+            guard occurrences.count == 1, let currentRange = occurrences.first
+            else { continue }
+            let characters = current[currentRange].reduce(0) {
+                $0 + $1.raw.count
+            }
+            guard characters >= 12 else { continue }
+            var resolvedFrontierRange = frontierRange
+            var resolvedCurrentRange = currentRange
+            if fromEnd, edge < frontier.count {
+                let trailing = edge..<frontier.count
+                let currentTrailing = currentRange.upperBound
+                    ..< (currentRange.upperBound + trailing.count)
+                if currentTrailing.upperBound <= current.count,
+                   zip(trailing, currentTrailing).allSatisfy({
+                       readReflowTokenMatch(frontier[$0], current[$1]) != nil
+                   }) {
+                    resolvedFrontierRange = frontierRange.lowerBound..<frontier.count
+                    resolvedCurrentRange = currentRange.lowerBound
+                        ..< currentTrailing.upperBound
+                }
+            } else if !fromEnd, edge > 0,
+                      currentRange.lowerBound >= edge {
+                let leading = 0..<edge
+                let currentLeading = (currentRange.lowerBound - edge)
+                    ..< currentRange.lowerBound
+                if zip(leading, currentLeading).allSatisfy({
+                    readReflowTokenMatch(frontier[$0], current[$1]) != nil
+                }) {
+                    resolvedFrontierRange = 0..<frontierRange.upperBound
+                    resolvedCurrentRange = currentLeading.lowerBound
+                        ..< currentRange.upperBound
+                }
+            }
+            let matches = zip(resolvedFrontierRange, resolvedCurrentRange).map {
+                previousIndex, currentIndex in
+                AdjacentCausalReadTokenMatch(
+                    previousTokenIndex: previousIndex,
+                    currentTokenIndex: currentIndex,
+                    previousText: frontier[previousIndex].raw,
+                    currentText: current[currentIndex].raw,
+                    kind: "exact"
+                )
+            }
+            return ExactReadFrontierAnchor(
+                currentRange: resolvedCurrentRange, matches: matches
+            )
+        }
+    }
+
+
+    // OCR often corrupts one word or changes wrapping at the exact viewport
+    // edge. Fall back to several ordered, unique exact tokens close to the
+    // prior frontier. This deliberately accepts a small omission instead of
+    // replaying the whole overlapping viewport.
+    let unique = orderedUniqueExactReadTokenMatches(
+        previous: frontier, current: current
+    )
+    let edgeLimit = max(3, frontier.count / 4)
+    func nearFrontierEdge(
+        _ matches: [AdjacentCausalReadTokenMatch]
+    ) -> [AdjacentCausalReadTokenMatch] {
+        matches.filter { match in
+            fromEnd
+                ? match.previousTokenIndex >= frontier.count - edgeLimit
+                : match.previousTokenIndex < edgeLimit
+        }
+    }
+    let nearEdge = nearFrontierEdge(unique)
+    guard nearEdge.count >= 3 else { return nil }
+    let selected = fromEnd ? Array(nearEdge.suffix(6)) : Array(nearEdge.prefix(6))
+    guard selected.reduce(0, { $0 + $1.currentText.count }) >= 24,
+          let first = selected.first, let last = selected.last else { return nil }
+    return ExactReadFrontierAnchor(
+        currentRange: first.currentTokenIndex..<(last.currentTokenIndex + 1),
+        matches: selected
+    )
+}
+
 public func normalizedReadOCRSimilarity(
     _ first: String,
     _ second: String,

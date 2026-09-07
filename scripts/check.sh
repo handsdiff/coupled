@@ -37,6 +37,9 @@ swiftc \
   -o "$check_binary"
 
 "$check_binary"
+python3 "$project_dir/scripts/check-phase1-jsonl.py"
+python3 "$project_dir/scripts/check-phase1-corpus-memory.py"
+python3 "$project_dir/scripts/check-phase1-packed-version.py"
 
 PYTHONPYCACHEPREFIX="$project_dir/.build/python-cache" \
 python3 -m py_compile \
@@ -171,6 +174,7 @@ python3 "$project_dir/scripts/check-phase1-read-novelty.py"
 
 PYTHONPYCACHEPREFIX="$project_dir/.build/python-cache" \
 python3 "$project_dir/scripts/check-phase1-read-semantic-review.py"
+python3 "$project_dir/scripts/check-phase1-corpus-audit-ui.py"
 
 if [[ -x "$project_dir/.build/tinker-venv/bin/python" ]]; then
   PYTHONPYCACHEPREFIX="$project_dir/.build/python-cache" \

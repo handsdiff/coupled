@@ -11,6 +11,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, Iterable
 
+from phase1_jsonl import JSONLSequence
+
 
 ASSEMBLER_VERSION = "phase1-corpus-v2"
 PRIVACY_POLICY_VERSION = "phase1-context-privacy-v1"
@@ -130,7 +132,9 @@ def load_session(path: Path) -> dict[str, Any]:
     if not isinstance(session_id, str) or not session_id:
         raise ValueError(f"{path}: missing sessionID")
     events = load_jsonl(path / "events.jsonl")
-    examples = load_jsonl(path / "examples.jsonl")
+    # Preserve exhaustive context validation without retaining every expanded
+    # prefix twice (context and modelInput) across all collected sessions.
+    examples = JSONLSequence(path / "examples.jsonl")
     if manifest.get("counts", {}).get("convertedEvents") != len(events):
         raise ValueError(f"{path}: event count disagrees with dataset.json")
     if manifest.get("counts", {}).get("examples") != len(examples):
@@ -380,12 +384,11 @@ def assemble(
             seen_example_ids.add(example_id)
             local_ids = source_example["contextEventIDs"]
             context_ids = prefix + local_ids
-            serialized_blocks = [context_by_id[value]["serialized"] for value in context_ids]
-            context_text = "\n".join(serialized_blocks)
-            query = source_example["query"]
-            model_input = query if not context_text else context_text + "\n" + query
             assembled_examples.append({
-                **source_example,
+                **{
+                    key: value for key, value in source_example.items()
+                    if key not in {"context", "modelInput"}
+                },
                 "corpusID": corpus_id,
                 "sourceSessionOrdinal": session_index,
                 "contextBlockIDs": context_ids,
@@ -393,8 +396,6 @@ def assemble(
                     value for value in context_ids
                     if context_by_id[value]["contextBlockType"] == "semantic_event"
                 ],
-                "context": context_text,
-                "modelInput": model_input,
             })
 
     assembled_examples.sort(
@@ -432,7 +433,22 @@ def assemble(
     try:
         write_jsonl(temporary / "events.jsonl", semantic_events)
         write_jsonl(temporary / "context-blocks.jsonl", context_blocks)
-        write_jsonl(temporary / "examples.jsonl", assembled_examples)
+        # Materialize one prefix only when emitting it. The serialized artifact
+        # is unchanged; only the in-memory representation is now thin.
+        def expanded_examples() -> Iterable[dict[str, Any]]:
+            for example in assembled_examples:
+                context_text = "\n".join(
+                    context_by_id[value]["serialized"]
+                    for value in example["contextBlockIDs"]
+                )
+                query = example["query"]
+                yield {
+                    **example,
+                    "context": context_text,
+                    "modelInput": query if not context_text else context_text + "\n" + query,
+                }
+
+        write_jsonl(temporary / "examples.jsonl", expanded_examples())
         write_jsonl(temporary / "gaps.jsonl", gaps)
         (temporary / "privacy-policy.json").write_bytes(
             json_bytes(privacy_policy_artifact)
@@ -588,7 +604,7 @@ def audit(directory: Path) -> dict[str, Any]:
     events = load_jsonl(directory / "events.jsonl")
     blocks = load_jsonl(directory / "context-blocks.jsonl")
     gaps = load_jsonl(directory / "gaps.jsonl")
-    examples = load_jsonl(directory / "examples.jsonl")
+    examples = JSONLSequence(directory / "examples.jsonl")
     privacy_policy_artifact = (
         load_json(directory / "privacy-policy.json")
         if manifest.get("assemblerVersion") == ASSEMBLER_VERSION else None
@@ -739,7 +755,7 @@ def audit(directory: Path) -> dict[str, Any]:
             comparisons = load_jsonl(
                 directory / "destination-identity-comparison.jsonl"
             )
-            candidates = load_jsonl(directory / "raw-episode-candidates.jsonl")
+            candidates = JSONLSequence(directory / "raw-episode-candidates.jsonl")
             changed = [
                 row for row in comparisons
                 if row.get("wouldChangeIdentityGate") is True

@@ -13,7 +13,7 @@ import shutil
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable, Iterator
 
 
 BUILDER_VERSION = "phase1-episode-design-v1-shadow-r6"
@@ -57,8 +57,9 @@ def load_json(path: Path) -> dict[str, Any]:
     return value
 
 
-def load_jsonl(path: Path) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
+def iter_jsonl(
+    path: Path, *, omit_fields: tuple[str, ...] = (),
+) -> Iterator[dict[str, Any]]:
     with path.open(encoding="utf-8") as handle:
         for line_number, line in enumerate(handle, 1):
             if not line.strip():
@@ -66,8 +67,39 @@ def load_jsonl(path: Path) -> list[dict[str, Any]]:
             value = json.loads(line)
             if not isinstance(value, dict):
                 raise ReviewError(f"expected object at {path}:{line_number}")
-            rows.append(value)
-    return rows
+            for field in omit_fields:
+                value.pop(field, None)
+            yield value
+
+
+def load_jsonl(
+    path: Path, *, omit_fields: tuple[str, ...] = (),
+) -> list[dict[str, Any]]:
+    return list(iter_jsonl(path, omit_fields=omit_fields))
+
+
+class SpooledRows:
+    """Replay candidate rows without retaining all editable snapshots in RAM."""
+
+    def __init__(self) -> None:
+        self.handle = tempfile.TemporaryFile(mode="w+b")
+        self.offsets: list[int] = []
+
+    def append(self, row: dict[str, Any]) -> None:
+        self.handle.seek(0, os.SEEK_END)
+        self.offsets.append(self.handle.tell())
+        self.handle.write(canonical_bytes(row))
+
+    def __len__(self) -> int:
+        return len(self.offsets)
+
+    def __iter__(self) -> Iterator[dict[str, Any]]:
+        for offset in self.offsets:
+            self.handle.seek(offset)
+            yield json.loads(self.handle.readline())
+
+    def close(self) -> None:
+        self.handle.close()
 
 
 def indexed(rows: list[dict[str, Any]], key: str, label: str) -> dict[str, dict[str, Any]]:
@@ -115,7 +147,7 @@ def model_event_projection(serialized: str) -> dict[str, Any]:
     }
 
 
-def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
+def write_jsonl(path: Path, rows: Iterable[dict[str, Any]]) -> None:
     with path.open("wb") as handle:
         for row in rows:
             handle.write(canonical_bytes(row))
@@ -736,6 +768,8 @@ def discover_semantic_sessions(
     project: Path,
     corpus_manifest: dict[str, Any],
     session_ids: set[str],
+    *,
+    writes_only: bool = False,
 ) -> tuple[dict[str, dict[str, dict[str, Any]]], dict[str, dict[str, Any]]]:
     """Resolve the exact semantic artifacts bound into the frozen corpus."""
     events_by_session: dict[str, dict[str, dict[str, Any]]] = {}
@@ -778,10 +812,18 @@ def discover_semantic_sessions(
         )
         if semantic_path is None:
             raise ReviewError(f"cannot find bound semantic events for {session_id}")
-        semantic_rows = load_jsonl(semantic_path)
-        by_id = {row.get("eventID"): row for row in semantic_rows}
-        if len(by_id) != len(semantic_rows) or None in by_id:
-            raise ReviewError(f"invalid semantic event IDs for {session_id}")
+        by_id: dict[str, dict[str, Any]] = {}
+        seen: set[str] = set()
+        for row in iter_jsonl(semantic_path):
+            event_id = row.get("eventID")
+            if event_id is None or event_id in seen:
+                raise ReviewError(f"invalid semantic event IDs for {session_id}")
+            seen.add(event_id)
+            # build_candidate only looks up selected WRITE members. READ
+            # context comes from the bound corpus, not this richer raw-facing
+            # semantic projection. Still validate IDs across the entire file.
+            if not writes_only or row.get("kind") == "write":
+                by_id[event_id] = row
         events_by_session[session_id] = by_id
         sources[session_id] = {
             "causalDatasetPath": str(dataset_paths[0].relative_to(project)),
@@ -1736,11 +1778,11 @@ def event_markdown(event: dict[str, Any]) -> list[str]:
     ]
 
 
-def markdown(
-    candidates: list[dict[str, Any]],
+def markdown_lines(
+    candidates: Iterable[dict[str, Any]],
     proposals_by_label: dict[str, dict[str, Any]] | None = None,
     model_inputs_by_example: dict[str, dict[str, Any]] | None = None,
-) -> str:
+) -> Iterator[str]:
     lines = [
         "# Phase 1 episode review — shadow mode",
         "",
@@ -1749,7 +1791,9 @@ def markdown(
         "Adjudication question: **At the initial conditioning point, what single completion could have captured the intended output and made the subsequent editing trajectory largely unnecessary, using no information read later?**",
         "",
     ]
+    yield from lines
     for candidate in candidates:
+        lines = []
         diagnostic = candidate["singleCompletionDiagnostic"]
         causal = candidate["causalEvidence"]
         closure = candidate["closureEvidence"]
@@ -1930,7 +1974,18 @@ def markdown(
                         f"  - {partition['notes']}",
                     ])
                 lines.append("")
-    return "\n".join(lines) + "\n"
+        yield from lines
+
+
+def markdown(
+    candidates: Iterable[dict[str, Any]],
+    proposals_by_label: dict[str, dict[str, Any]] | None = None,
+    model_inputs_by_example: dict[str, dict[str, Any]] | None = None,
+) -> str:
+    """Compatibility wrapper for callers that explicitly need one string."""
+    return "\n".join(markdown_lines(
+        candidates, proposals_by_label, model_inputs_by_example,
+    )) + "\n"
 
 
 def load_proposals(
@@ -2274,7 +2329,14 @@ def main() -> int:
         expected = manifest.get("artifactDigestsSHA256", {}).get(name)
         if not expected or sha256(corpus_path / name) != expected:
             raise ReviewError(f"corpus artifact changed: {name}")
-    examples = load_jsonl(corpus_path / "examples.jsonl")
+    # The review obtains exact model input from its bound packing plan;
+    # duplicated unbounded example strings are never read by this builder.
+    examples = load_jsonl(
+        corpus_path / "examples.jsonl", omit_fields=(
+            "context", "modelInput", "contextBlockIDs", "contextEventIDs",
+            "contextSourceRecordIDs", "targetSourceRecordIDs", "sourceRecordIDs",
+        ),
+    )
     events = load_jsonl(corpus_path / "events.jsonl")
     if arguments.all_write_singletons:
         ordered_writes = sorted(
@@ -2316,7 +2378,10 @@ def main() -> int:
             "status": "algorithmic_complete_write_coverage",
         }
     context_blocks = indexed(
-        load_jsonl(corpus_path / "context-blocks.jsonl"),
+        load_jsonl(
+            corpus_path / "context-blocks.jsonl",
+            omit_fields=() if packed_path else ("serialized",),
+        ),
         "contextBlockID",
         "context blocks",
     )
@@ -2376,7 +2441,7 @@ def main() -> int:
     )
     raw_records, raw_sources = load_raw_records(raw_sessions, needed_ids)
     semantic_events, semantic_sources = discover_semantic_sessions(
-        project, manifest, session_ids
+        project, manifest, session_ids, writes_only=True,
     )
     for session_id in sorted(session_ids):
         expected_raw_sha = semantic_sources[session_id].get("rawSHA256")
@@ -2385,7 +2450,7 @@ def main() -> int:
             raise ReviewError(
                 f"raw journal does not match causal lineage for {session_id}"
             )
-    candidates = []
+    candidates = SpooledRows()
     skipped_onset_probes = []
     for neighborhood in neighborhoods:
         try:
@@ -2425,7 +2490,7 @@ def main() -> int:
         proposals_by_label = {
             value["label"]: value for value in proposed_annotations
         }
-    annotations = [
+    annotations = (
         {
             "schemaVersion": 2,
             "candidateID": candidate["candidateID"],
@@ -2438,7 +2503,7 @@ def main() -> int:
             "notes": "",
         }
         for candidate in candidates
-    ]
+    )
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = Path(tempfile.mkdtemp(prefix=f".{output.name}.", dir=output.parent))
     try:
@@ -2449,10 +2514,11 @@ def main() -> int:
             write_jsonl(
                 temporary / "proposed-annotations.jsonl", proposed_annotations
             )
-        (temporary / "review.md").write_text(
-            markdown(candidates, proposals_by_label, model_inputs_by_example),
-            encoding="utf-8",
-        )
+        with (temporary / "review.md").open("w", encoding="utf-8") as handle:
+            for line in markdown_lines(
+                candidates, proposals_by_label, model_inputs_by_example,
+            ):
+                handle.write(line + "\n")
         review_manifest = {
             "schemaVersion": 2,
             "builderVersion": BUILDER_VERSION,
@@ -2572,9 +2638,11 @@ def main() -> int:
         )
         os.replace(temporary, output)
     except BaseException:
+        candidates.close()
         shutil.rmtree(temporary, ignore_errors=True)
         raise
     print(f"Wrote {len(candidates)} shadow episode neighborhoods to {output}")
+    candidates.close()
     print("No semantic events, examples, packing, loss masks, or model results changed.")
     return 0
 

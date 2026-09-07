@@ -4,12 +4,16 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Iterator, Mapping
+from functools import lru_cache
 import hashlib
 import json
 import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+from phase1_jsonl import JSONLSequence
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -19,12 +23,26 @@ def load_json(path: Path) -> dict[str, Any]:
     return value
 
 
-def load_jsonl(path: Path) -> list[dict[str, Any]]:
-    return [
-        json.loads(line)
-        for line in path.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
+def load_jsonl(path: Path) -> JSONLSequence:
+    return JSONLSequence(path)
+
+
+class IndexedJSONL(Mapping[str, dict[str, Any]]):
+    """Keep identifiers/offsets, not repeated context or raw-state payloads."""
+
+    def __init__(self, rows: JSONLSequence, key: str):
+        self.rows = rows
+        self.positions = {row[key]: index for index, row in enumerate(rows)}
+        self._row_at = lru_cache(maxsize=8)(rows.__getitem__)
+
+    def __len__(self) -> int:
+        return len(self.positions)
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.positions)
+
+    def __getitem__(self, key: str) -> dict[str, Any]:
+        return self._row_at(self.positions[key])
 
 
 def digest(path: Path) -> str:
@@ -129,7 +147,7 @@ def main() -> int:
             raise ValueError(f"source digest mismatch for {name}: {actual} != {expected}")
 
     source_events = load_jsonl(source / "events.jsonl")
-    source_event_by_id = {row["sourceEventID"]: row for row in source_events}
+    source_event_by_id = IndexedJSONL(source_events, "sourceEventID")
     source_write_ids = {
         row["sourceEventID"] for row in source_events if row.get("kind") == "write"
     }
@@ -137,9 +155,7 @@ def main() -> int:
     blocks = load_jsonl(root / "context-blocks.jsonl")
     examples = load_jsonl(root / "examples.jsonl")
     adjudications = load_jsonl(root / "episode-adjudications.jsonl")
-    adjudication_by_candidate = {
-        row["candidateID"]: row for row in adjudications
-    }
+    adjudication_by_candidate = IndexedJSONL(adjudications, "candidateID")
     if raw_authoritative and episode_version in {
         "phase1-raw-episode-v2", "phase1-raw-episode-v3",
         "phase1-raw-episode-v4",
@@ -164,8 +180,17 @@ def main() -> int:
                 assert boundary.get("reason") == "novel_read"
                 assert boundary.get("sameLogicalDestination") is True
                 assert boundary.get("stateContinuous") is True
-    event_by_id = {row["sourceEventID"]: row for row in events}
-    block_by_id = {row["contextBlockID"]: row for row in blocks}
+    # Context membership needs only this small metadata projection. The complete
+    # serialized/audit payload is still checked below, one event at a time.
+    event_by_id = {
+        row["sourceEventID"]: {
+            key: row[key] for key in (
+                "kind", "availableAt", "episodeID", "memberWriteEventIDs"
+            ) if key in row
+        }
+        for row in events
+    }
+    block_by_id = IndexedJSONL(blocks, "contextBlockID")
     assert len(event_by_id) == len(events)
     assert len(block_by_id) == len(blocks)
 
@@ -177,8 +202,11 @@ def main() -> int:
     assert covered == source_write_ids
 
     closed_members: set[str] = set()
-    write_events = [row for row in events if row.get("kind") == "write"]
-    for event in write_events:
+    write_event_count = 0
+    for event in events:
+        if event.get("kind") != "write":
+            continue
+        write_event_count += 1
         assert event.get("episodeID")
         members = event.get("memberWriteEventIDs")
         assert isinstance(members, list) and members
@@ -202,9 +230,12 @@ def main() -> int:
                     "unresolved_authorship",
                 }
 
-    target_texts: list[str] = []
+    expected_fragment_found = {value: False for value in args.expect_target_substring}
+    rejected_prefix_found = {value: False for value in args.reject_target_prefix}
+    multi_write_loss_count = 0
     loss_members: set[str] = set()
     for ordinal, example in enumerate(examples):
+        multi_write_loss_count += example["episode"]["memberCount"] > 1
         assert example["chronologicalOrdinal"] == ordinal
         assert example["conversionVersion"] == conversion_version
         assert example["targetUnitType"] == "closed_composition_episode"
@@ -264,13 +295,13 @@ def main() -> int:
                 first_member = source_event_by_id[member_ids[0]]
                 previous_id = onset.get("previousSameSurfaceWriteEventID")
                 previous = source_event_by_id[previous_id]
-                same_surface_prior = [
+                same_surface_prior = (
                     event for event in source_events
                     if event.get("kind") == "write"
                     and event.get("sessionID") == first_member.get("sessionID")
                     and event_destination(event) == event_destination(first_member)
                     and instant(event["availableAt"]) < began
-                ]
+                )
                 immediate_previous = max(
                     same_surface_prior,
                     key=lambda event: (event["availableAt"], event["sourceEventID"]),
@@ -293,12 +324,15 @@ def main() -> int:
                         for event in boundary_events
                     )
                     assert all(event.get("kind") == "read" for event in boundary_events)
-                    old_reads = {
-                        event.get("serialized") for event in source_events
+                    boundary_serialized = {
+                        event.get("serialized") for event in boundary_events
+                    }
+                    assert all(
+                        event.get("serialized") not in boundary_serialized
+                        for event in source_events
                         if event.get("kind") == "read"
                         and instant(event["availableAt"]) <= instant(previous["beganAt"])
-                    }
-                    assert all(event.get("serialized") not in old_reads for event in boundary_events)
+                    )
                 else:
                     assert all(
                         instant(previous["availableAt"])
@@ -340,25 +374,28 @@ def main() -> int:
                     "historyContent",
                 }
                 assert not forbidden.intersection(segment)
-        target_texts.append(text)
+        for fragment in expected_fragment_found:
+            expected_fragment_found[fragment] |= fragment in text
+        for prefix in rejected_prefix_found:
+            rejected_prefix_found[prefix] |= text.startswith(prefix)
 
     if args.expect_target_count is not None:
         assert len(examples) == args.expect_target_count
     for fragment in args.expect_target_substring:
-        assert any(fragment in text for text in target_texts), fragment
+        assert expected_fragment_found[fragment], fragment
     for prefix in args.reject_target_prefix:
-        assert not any(text.startswith(prefix) for text in target_texts), prefix
+        assert not rejected_prefix_found[prefix], prefix
 
     counts = manifest["counts"]
     assert counts["convertedEvents"] == len(events)
-    assert counts["closedEpisodeEvents"] == len(write_events)
+    assert counts["closedEpisodeEvents"] == write_event_count
     assert counts["examples"] == len(examples)
     assert counts["sourceWrites"] == len(source_write_ids)
     print(json.dumps({
         "status": "passed",
-        "closedEpisodeEvents": len(write_events),
+        "closedEpisodeEvents": write_event_count,
         "lossBearingEpisodes": len(examples),
-        "multiWriteLossEpisodes": sum(row["episode"]["memberCount"] > 1 for row in examples),
+        "multiWriteLossEpisodes": multi_write_loss_count,
         "sourceMicroWrites": len(source_write_ids),
         "sourceMicroWritesInModelHistory": 0,
     }, sort_keys=True))

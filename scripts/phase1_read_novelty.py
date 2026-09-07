@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Dependency-aware model rendering for shadow Phase 1 READ novelty.
 
-Semantic READ events always retain their complete observed content. This module
-may shorten a retained model-facing READ only when the exact predecessor named
-by the reducer is itself retained as a complete, reconstructable state.
+Immutable surface evidence retains every complete selected pane. Semantic v23
+projects explicit scroll observations through its stable interior before this
+module runs. Predecessor-dependent novelty is rendered only when that exact
+predecessor remains reconstructable in the packed context.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ POSITIVE_NOVELTY_DECISIONS = {
         "render_grounded_stable_interior"
     ),
     "emit_contiguous_new_content": "render_contiguous_novel_content",
+    "emit_scroll_new_edge": "render_scroll_new_edge",
 }
 EMPTY_NOVELTY_DECISIONS = {
     "suppress_no_new_content": "render_empty_adjacent_repeat",
@@ -35,6 +37,7 @@ EMPTY_NOVELTY_DECISIONS = {
         "render_empty_high_precision_ambiguity"
     ),
     "suppress_nonsemantic_microglyph": "render_empty_low_information_change",
+    "suppress_unstable_scroll_edge": "render_empty_pending_stable_scroll_edge",
 }
 
 

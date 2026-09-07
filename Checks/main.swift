@@ -269,6 +269,54 @@ expect(
     "reflow comparison ignores OCR line wrapping"
 )
 expect(
+    adjacentCausalReadScrollFrontierDelta(
+        previousFull: "older paragraph\nthe stable model facing frontier phrase full",
+        previousModelFacing: "the stable model facing frontier phrase full",
+        current: "older paragraph\nthe stable model facing frontier phrase full\nnew continuation"
+    )?.emittedContent == "new continuation",
+    "scroll frontier emits only content beyond what the model previously saw"
+)
+expect(
+    adjacentCausalReadScrollFrontierDelta(
+        previousFull: "the stable model facing frontier phrase\nolder paragraph",
+        previousModelFacing: "the stable model facing frontier phrase",
+        current: "newly exposed heading\nthe stable model facing frontier phrase\nolder paragraph"
+    )?.emittedContent == "newly exposed heading",
+    "upward scroll frontier emits only the newly exposed leading edge"
+)
+expect(
+    adjacentCausalReadScrollFrontierDelta(
+        previousFull: "older paragraph\nthe stable model facing frontier phrase full",
+        previousModelFacing: "the stable model facing frontier phrase full",
+        current: "older paragraph\nthe stable model facing frontier phrose full\nnew continuation"
+    )?.emittedContent == "new continuation",
+    "scroll frontier tolerates one corrupted word at the exact viewport edge"
+)
+expect(
+    adjacentCausalReadScrollFrontierDelta(
+        previousFull: "older material\nunique stable overlap anchor phrase here\nclipped prior footer alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu",
+        previousModelFacing: "older material\nunique stable overlap anchor phrase here\nclipped prior footer alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu",
+        current: "unique stable overlap anchor phrase here\nnewly exposed coherent continuation demonstrates descending movement through unseen territory beyond this boundary zone revealing fresh concepts observations conclusions recommendations evidence consequences implications"
+    )?.emittedContent == "newly exposed coherent continuation demonstrates descending movement through unseen territory beyond this boundary zone revealing fresh concepts observations conclusions recommendations evidence consequences implications",
+    "scroll frontier searches inward past a clipped prior edge instead of replaying overlap"
+)
+let crossSensorOverlap = adjacentCausalReadUniqueTokenOverlap(
+    previous: "same terminal state wraps these exact meaningful words on one line",
+    current: "same terminal state wraps\nthese exact meaningful words on one line x"
+)
+expect(
+    crossSensorOverlap != nil
+        && crossSensorOverlap!.overlapCharacterCount >= 40,
+    "ordered unique-token evidence identifies a repeated cross-sensor state"
+)
+expect(
+    adjacentCausalReadTokenLCSEvidence(
+        previous: "alpha repeated terminal line beta repeated terminal line gamma stable output",
+        current: "alpha repeated terminal line\nbeta repeated terminal line gamma stable output x"
+    )?.overlapCharacterCount ?? 0 >= 50,
+    "cross-sensor LCS survives repeated words and changed line wrapping"
+)
+expect(
     adjacentCausalReadReflowDelta(
         previous: "Stable exact context before the heading phase1 semantic reducer and enough exact context after the heading",
         current: "Stable exact context before the heading phasel semantic reducer and enough exact context after the heading\nA genuinely new sentence is now available."
@@ -2418,6 +2466,201 @@ expect(
         == "disabled; approximate reflow overlap is audit-only",
     "v22 records that approximate overlap cannot suppress a READ"
 )
+let visualReadReductionV23 = fixtureRoot.appendingPathComponent("visual-read-reduction-v23")
+_ = try! Phase1SemanticReducer(configuration: .init(
+    reducerVersion: "phase1-semantic-v23",
+    readSurfaceEvidenceDirectory: visualReadSurfaceEvidenceV19
+)).reduce(
+    sourceDirectory: visualReadInput, outputDirectory: visualReadReductionV23
+)
+let visualReadV23Events = readFixtureJSONL(
+    visualReadReductionV23.appendingPathComponent("events.jsonl")
+)
+let visualReadV23Passive = visualReadV23Events.filter {
+    (($0["reduction"] as? [String: Any])?["samePaneSequence"] as? [String: Any]) != nil
+}
+expect(!visualReadV23Passive.isEmpty, "v23 tests actual passive consolidation")
+expect(visualReadV23Passive.allSatisfy { event in
+    let sequence = (event["reduction"] as! [String: Any])["samePaneSequence"] as! [String: Any]
+    return sequence["selection"] as? String == "final_observed_viewport"
+        && sequence["terminalViewportContentSHA256"] as? String
+            == sequence["selectedContentSHA256"] as? String
+        && event["capturedAt"] as? String == sequence["availableAt"] as? String
+}, "v23 selects final passive content at observation time, independently of closure")
+let visualReadReductionV24 = fixtureRoot.appendingPathComponent("visual-read-reduction-v24")
+_ = try! Phase1SemanticReducer(configuration: .init(
+    reducerVersion: "phase1-semantic-v24",
+    readSurfaceEvidenceDirectory: visualReadSurfaceEvidenceV19
+)).reduce(sourceDirectory: visualReadInput, outputDirectory: visualReadReductionV24)
+let visualReadV24Events = readFixtureJSONL(
+    visualReadReductionV24.appendingPathComponent("events.jsonl")
+)
+let comparedCheckpoint = visualReadV24Events.first {
+    ($0["sourceRecordIDs"] as? [String] ?? []).contains("visual-ocr-pre-write")
+}
+expect(comparedCheckpoint != nil, "v24 compares pre-WRITE captured content instead of discarding its trigger")
+expect(
+    (comparedCheckpoint?["readNovelty"] as? [String: Any])?["content"] as? String == "",
+    "v24 redundant pre-WRITE content is still suppressed by ordinary adjacent comparison"
+)
+expect(
+    comparedCheckpoint?["capturedAt"] as? String == "2026-01-01T00:00:01.650Z",
+    "v24 retains the actual pre-WRITE capture time"
+)
+let v24Manifest = try! JSONSerialization.jsonObject(
+    with: Data(contentsOf: visualReadReductionV24.appendingPathComponent("reduction.json"))
+) as! [String: Any]
+expect(v24Manifest["minimumAmbiguousRepeatFraction"] as? Double == 0.72,
+       "v24 sensor alternation does not lower the repeated-content threshold")
+
+// Small raw-authoritative regressions for the two v24 corrections. The same
+// sanitized evidence is replayed through both versions so these tests cannot
+// pass merely because a new candidate bypassed the old failure path.
+func reduceReadSequenceFixture(
+    name: String, records: [[String: Any]], version: String
+) -> [[String: Any]] {
+    let root = fixtureRoot.appendingPathComponent("\(name)-\(version)")
+    let source = root.appendingPathComponent("source")
+    let evidence = root.appendingPathComponent("evidence")
+    try! FileManager.default.createDirectory(
+        at: source.appendingPathComponent("screenshots"),
+        withIntermediateDirectories: true
+    )
+    try! FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
+    try! FileManager.default.copyItem(
+        at: visualReadInput.appendingPathComponent("session.json"),
+        to: source.appendingPathComponent("session.json")
+    )
+    try! FileManager.default.copyItem(
+        at: visualScreenshotURL,
+        to: source.appendingPathComponent("screenshots/visual-frame.png")
+    )
+    writeFixtureJSONL(records, to: source.appendingPathComponent("raw.jsonl"))
+    let rows: [[String: Any]] = records.enumerated().compactMap { index, record in
+        guard let type = record["recordType"] as? String,
+              ["screen_ocr_observation", "visual_ocr_observation"].contains(type)
+        else { return nil }
+        let content = record["content"] as! String
+        var row = visualV5Rows[0]
+        row["sourceRecordID"] = record["recordID"]
+        row["sourceRawLine"] = index + 1
+        row["capturedAt"] = record["capturedAt"]
+        row["evidenceID"] = "evidence-\(record["recordID"] as! String)"
+        row["jobID"] = row["evidenceID"]
+        let lines: [[String: Any]] = content.split(separator: "\n").enumerated().map { number, text in
+            ["text": String(text), "confidence": 1.0,
+             "boundingBox": ["x": 0.1, "y": 0.65 - Double(number) * 0.025,
+                             "width": 0.8, "height": 0.02]]
+        }
+        let hash = SHA256.hash(data: Data(content.utf8))
+            .map { String(format: "%02x", $0) }.joined()
+        row["content"] = content
+        row["contentSHA256"] = hash
+        row["recognizedLineCount"] = lines.count
+        row["lines"] = lines
+        row["comparisonContent"] = content
+        row["comparisonContentSHA256"] = hash
+        row["comparisonRecognizedLineCount"] = lines.count
+        row["comparisonLines"] = lines
+        return row
+    }
+    writeFixtureJSONL(rows, to: evidence.appendingPathComponent("read-surfaces.jsonl"))
+    writeFixtureJSONL([], to: evidence.appendingPathComponent("jobs.jsonl"))
+    writeFixtureJSONL([], to: evidence.appendingPathComponent("unresolved.jsonl"))
+    try! jsonData([
+        "schemaVersion": 1, "ruleVersion": "ax-pane-read-v5",
+        "sessionID": "visual-read-session",
+        "ruleSelection": ["includedRecordTypes": ["screen_ocr_observation", "visual_ocr_observation"]],
+        "counts": ["rawRecords": records.count, "readObservations": rows.count,
+                   "evidence": rows.count, "unresolved": 0],
+        "source": ["digestsSHA256": [
+            "session.json": fixtureSHA256(source.appendingPathComponent("session.json")),
+            "raw.jsonl": fixtureSHA256(source.appendingPathComponent("raw.jsonl")),
+        ]],
+        "artifacts": ["digestsSHA256": Dictionary(uniqueKeysWithValues:
+            ["jobs.jsonl", "read-surfaces.jsonl", "unresolved.jsonl"].map {
+                ($0, fixtureSHA256(evidence.appendingPathComponent($0)))
+            }
+        )],
+    ]).write(to: evidence.appendingPathComponent("read-surface-evidence.json"))
+    let output = root.appendingPathComponent("reduced")
+    _ = try! Phase1SemanticReducer(configuration: .init(
+        reducerVersion: version, readSurfaceEvidenceDirectory: evidence
+    )).reduce(sourceDirectory: source, outputDirectory: output)
+    return readFixtureJSONL(output.appendingPathComponent("events.jsonl"))
+}
+var returnedCheckpointFrame = visualFrameFixture(
+    id: "returned-terminal-frame", sequence: 10,
+    capturedAt: "2026-01-01T00:00:03.254Z"
+)
+var returnedCheckpoint = visualOCRFixture(
+    id: "returned-terminal-checkpoint", frameID: "returned-terminal-frame", sequence: 10,
+    capturedAt: "2026-01-01T00:00:03.254Z",
+    content: "git push\nWriting objects: 100% complete.\nmain -> main\n$",
+    evidenceReason: "pre_write_visual_checkpoint", triggerTypes: ["pre_write_visual_checkpoint"]
+)
+var returnedSurface = visualSurface
+returnedSurface["windowID"] = 8
+returnedSurface["windowTitle"] = "Terminal"
+returnedCheckpointFrame["surface"] = returnedSurface
+returnedCheckpoint["windowID"] = 8
+returnedCheckpoint["windowTitle"] = "Terminal"
+returnedCheckpoint["triggerSurface"] = returnedSurface
+let returnedCheckpointRecords = [coincidentPointerRead, returnedCheckpointFrame, returnedCheckpoint]
+let returnedV23 = reduceReadSequenceFixture(
+    name: "returned-pre-write", records: returnedCheckpointRecords, version: "phase1-semantic-v23"
+)
+let returnedV24 = reduceReadSequenceFixture(
+    name: "returned-pre-write", records: returnedCheckpointRecords, version: "phase1-semantic-v24"
+)
+let retainedReturnedCheckpoint = returnedV24.first {
+    ($0["sourceRecordIDs"] as? [String] ?? []).contains("returned-terminal-checkpoint")
+}
+expect(!returnedV23.contains {
+    ($0["sourceRecordIDs"] as? [String] ?? []).contains("returned-terminal-checkpoint")
+}, "v23 baseline demonstrates the blanket pre-WRITE exclusion")
+expect(
+    (retainedReturnedCheckpoint?["readNovelty"] as? [String: Any])?["content"] as? String
+        == returnedCheckpoint["content"] as? String,
+    "v24 retains new returned-terminal content observed immediately before writing"
+)
+expect(retainedReturnedCheckpoint?["capturedAt"] as? String == "2026-01-01T00:00:03.254Z",
+       "v24 returned-terminal READ availability is its actual screenshot time")
+
+let repeatedBuildText = """
+The compiler preserves the selected observation and its raw lineage.
+The result retains capture time, surface identity, and the original input interval.
+Building the local package requires no provider calls or data transmission.
+All intermediate screenshots remain available for subsequent interpretation.
+"""
+var crossSensorBefore = coincidentPointerRead
+crossSensorBefore["recordID"] = "cross-sensor-before"
+crossSensorBefore["content"] = "Previous build attempt was cancelled before its final report.\n" + repeatedBuildText
+let newCrossSensorParagraph = "Understood. I will preserve the final visible response rather than accumulate unseen output. The earlier screenshots remain raw evidence, while the model receives the state actually available before the next human action."
+let crossSensorAfterContent = "The new build completed and all checks passed successfully.\n" + repeatedBuildText + "\n" + newCrossSensorParagraph
+let crossSensorFrame = visualFrameFixture(
+    id: "cross-sensor-frame", sequence: 11, capturedAt: "2026-01-01T00:00:03.200Z"
+)
+let crossSensorAfter = visualOCRFixture(
+    id: "cross-sensor-after", frameID: "cross-sensor-frame", sequence: 11,
+    capturedAt: "2026-01-01T00:00:03.200Z", content: crossSensorAfterContent
+)
+let crossSensorRecords = [crossSensorBefore, crossSensorFrame, crossSensorAfter]
+let crossSensorV23 = reduceReadSequenceFixture(
+    name: "cross-sensor-new-paragraph", records: crossSensorRecords, version: "phase1-semantic-v23"
+)
+let crossSensorV24 = reduceReadSequenceFixture(
+    name: "cross-sensor-new-paragraph", records: crossSensorRecords, version: "phase1-semantic-v24"
+)
+let oldCrossSensorNovelty = crossSensorV23.last?["readNovelty"] as? [String: Any]
+let newCrossSensorNovelty = crossSensorV24.last?["readNovelty"] as? [String: Any]
+expect(oldCrossSensorNovelty?["reason"] as? String == "near_simultaneous_cross_sensor_state_repeated"
+       && oldCrossSensorNovelty?["content"] as? String == "",
+       "v23 baseline demonstrates new content lost by the weaker cross-sensor threshold")
+expect((newCrossSensorNovelty?["content"] as? String)?.contains(newCrossSensorParagraph) == true,
+       "v24 preserves a coherent new paragraph despite substantial repeated build output")
+expect(crossSensorV24.last?["capturedAt"] as? String == "2026-01-01T00:00:03.200Z",
+       "v24 new cross-sensor content retains its actual observation time")
 try! Data("tampered visual frame bytes".utf8).write(to: visualScreenshotURL)
 _ = try! Phase1SemanticReducer(configuration: .init(
     reducerVersion: "phase1-semantic-v14",

@@ -764,16 +764,27 @@ public struct CausalDatasetCompiler {
                 "phase1-semantic-v16", "phase1-semantic-v17",
                 "phase1-semantic-v18", "phase1-semantic-v19",
                 "phase1-semantic-v20", "phase1-semantic-v21",
-                "phase1-semantic-v22",
+                "phase1-semantic-v22", "phase1-semantic-v23", "phase1-semantic-v24",
             ].contains(
                 reduction?.string("reducerVersion") ?? ""
             ) {
-                datasetManifest["semanticReadProjection"] = [
+                let reducerVersion = reduction?.string("reducerVersion") ?? ""
+                var semanticReadProjection: [String: Any] = [
                     "sourceField": "readNovelty",
-                    "completeReadRemainsAuthoritative": true,
+                    "completeReadRemainsAuthoritative": ![
+                        "phase1-semantic-v23", "phase1-semantic-v24",
+                    ].contains(reducerVersion),
                     "compilerRendering": "none",
                     "requiredPackingRule": "novelty may be rendered only when its exact dependency is retained as a complete reconstructable READ state",
                 ]
+                if ["phase1-semantic-v23", "phase1-semantic-v24"].contains(reducerVersion) {
+                    semanticReadProjection["semanticEventContentAuthority"] =
+                        "selected pane OCR after stable scroll-interior projection"
+                    semanticReadProjection["completePaneAuthority"] =
+                        "immutable hash-bound READ surface evidence"
+                }
+                datasetManifest["semanticReadProjection"] =
+                    semanticReadProjection
             }
         }
         try writeJSONObject(datasetManifest, to: outputFiles[0], pretty: true)

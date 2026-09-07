@@ -12,6 +12,17 @@ from pathlib import Path
 IGNORE_LABEL = -100
 
 
+def v12_reducer_contract_valid(manifest: dict) -> bool:
+    source_version = manifest.get("source", {}).get("reducerVersion")
+    required_version = manifest.get("packing", {}).get(
+        "readNoveltyRendering", {}
+    ).get("requiredReducerVersion")
+    return (
+        source_version in {"phase1-semantic-v23", "phase1-semantic-v24"}
+        and required_version == source_version
+    )
+
+
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -36,8 +47,9 @@ def main() -> int:
         "phase1-token-pack-v4", "phase1-token-pack-v5", "phase1-token-pack-v6",
         "phase1-token-pack-v7", "phase1-token-pack-v8", "phase1-token-pack-v9",
         "phase1-token-pack-v10", "phase1-token-pack-v11",
+        "phase1-token-pack-v12",
     }:
-        raise ValueError("auditor requires phase1-token-pack-v4 through v11")
+        raise ValueError("auditor requires phase1-token-pack-v4 through v12")
     if manifest.get("packerVersion") == "phase1-token-pack-v10" and (
         manifest.get("source", {}).get("reducerVersion")
             != "phase1-semantic-v21"
@@ -48,6 +60,22 @@ def main() -> int:
             != "phase1-semantic-v22"
     ):
         raise ValueError("phase1-token-pack-v11 requires phase1-semantic-v22")
+    if manifest.get("packerVersion") == "phase1-token-pack-v12" and not (
+        v12_reducer_contract_valid(manifest)
+    ):
+        raise ValueError("phase1-token-pack-v12 requires matching semantic-v23 or v24 source and rendering contracts")
+    if manifest.get("packerVersion") == "phase1-token-pack-v12":
+        read_contract = manifest.get("packing", {}).get(
+            "readNoveltyRendering", {}
+        )
+        if read_contract.get("completeSemanticReadRemainsSourceAuthority") is not False:
+            raise ValueError("v12 model-facing READs must use the semantic projection")
+        if read_contract.get("completePaneRemainsInImmutableSurfaceEvidence") is not True:
+            raise ValueError("v12 must retain the complete selected pane as immutable evidence")
+        if read_contract.get("missingDependencyFallback") != (
+            "retain complete current semantic viewport"
+        ):
+            raise ValueError("v12 dependency fallback must use the semantic viewport")
     packed_path = directory / "packed-examples.jsonl"
     expected = manifest["artifactDigestsSHA256"]["packed-examples.jsonl"]
     if sha256(packed_path) != expected:
@@ -56,7 +84,7 @@ def main() -> int:
     if manifest["packerVersion"] in {
         "phase1-token-pack-v5", "phase1-token-pack-v6", "phase1-token-pack-v7",
         "phase1-token-pack-v8", "phase1-token-pack-v9", "phase1-token-pack-v10",
-        "phase1-token-pack-v11",
+        "phase1-token-pack-v11", "phase1-token-pack-v12",
     }:
         plans_path = directory / "context-plans.jsonl"
         expected_plans = manifest["artifactDigestsSHA256"].get("context-plans.jsonl")
@@ -98,7 +126,7 @@ def main() -> int:
         if manifest["packerVersion"] in {
             "phase1-token-pack-v6", "phase1-token-pack-v7", "phase1-token-pack-v8",
             "phase1-token-pack-v9", "phase1-token-pack-v10",
-            "phase1-token-pack-v11",
+            "phase1-token-pack-v11", "phase1-token-pack-v12",
         }
         else "history_plus_conditioning_query_only"
     )
@@ -164,7 +192,7 @@ def main() -> int:
             if manifest["packerVersion"] in {
                 "phase1-token-pack-v6", "phase1-token-pack-v7", "phase1-token-pack-v8",
                 "phase1-token-pack-v9", "phase1-token-pack-v10",
-                "phase1-token-pack-v11",
+                "phase1-token-pack-v11", "phase1-token-pack-v12",
             }:
                 instruction_ids = inputs[:instruction_count]
                 if (
@@ -254,6 +282,7 @@ def main() -> int:
                         manifest["packerVersion"] in {
                             "phase1-token-pack-v8", "phase1-token-pack-v9",
                             "phase1-token-pack-v10", "phase1-token-pack-v11",
+                            "phase1-token-pack-v12",
                         }
                         and rendering.get("decision") in {
                             "render_novel_content", "render_empty_adjacent_repeat",
@@ -262,6 +291,8 @@ def main() -> int:
                             "render_contiguous_novel_content",
                             "render_empty_high_precision_ambiguity",
                             "render_empty_low_information_change",
+                            "render_scroll_new_edge",
+                            "render_empty_pending_stable_scroll_edge",
                         }
                         and json.loads(span["packedSerialized"]).get("kind") == "read"
                         and isinstance(
@@ -280,6 +311,7 @@ def main() -> int:
                         manifest["packerVersion"] in {
                             "phase1-token-pack-v8", "phase1-token-pack-v9",
                             "phase1-token-pack-v10", "phase1-token-pack-v11",
+                            "phase1-token-pack-v12",
                         }
                         and rendering.get("schemaVersion") == 1
                         and rendering.get("rendererVersion")
@@ -289,7 +321,7 @@ def main() -> int:
                     decision = rendering.get("decision")
                     if decision in {
                         "render_novel_content", "render_grounded_stable_interior",
-                        "render_contiguous_novel_content",
+                        "render_contiguous_novel_content", "render_scroll_new_edge",
                     }:
                         read_rendering_counts["novelContentRendered"] += 1
                     elif decision in {
@@ -297,6 +329,7 @@ def main() -> int:
                         "render_empty_proven_no_novelty",
                         "render_empty_high_precision_ambiguity",
                         "render_empty_low_information_change",
+                        "render_empty_pending_stable_scroll_edge",
                     }:
                         read_rendering_counts["adjacentRepeatContentSuppressed"] += 1
                     elif decision == "render_complete_dependency_unavailable":
@@ -344,6 +377,7 @@ def main() -> int:
             if manifest["packerVersion"] in {
                 "phase1-token-pack-v8", "phase1-token-pack-v9",
                 "phase1-token-pack-v10", "phase1-token-pack-v11",
+                "phase1-token-pack-v12",
             }:
                 selected_count = record.get("modelInputTokenCountAfterContextSelection")
                 if not (
@@ -392,6 +426,7 @@ def main() -> int:
             if manifest["packerVersion"] in {
                 "phase1-token-pack-v8", "phase1-token-pack-v9",
                 "phase1-token-pack-v10", "phase1-token-pack-v11",
+                "phase1-token-pack-v12",
             }:
                 read_rendering_counts["tokensRemoved"] += (
                     record["modelInputTokenCountAfterContextSelection"] - input_count
@@ -419,14 +454,18 @@ def main() -> int:
             raise ValueError(f"manifest count disagrees: {key}")
     if manifest["packerVersion"] in {
         "phase1-token-pack-v8", "phase1-token-pack-v9", "phase1-token-pack-v10",
-        "phase1-token-pack-v11",
+        "phase1-token-pack-v11", "phase1-token-pack-v12",
     }:
         novelty_contract = manifest.get("packing", {}).get("readNoveltyRendering", {})
         shared_contract_valid = (
             novelty_contract.get("enabled") is True
             and novelty_contract.get("status") == "shadow_opt_in"
             and novelty_contract.get("missingDependencyFallback")
-                == "retain complete current READ"
+                == (
+                    "retain complete current semantic viewport"
+                    if manifest["packerVersion"] == "phase1-token-pack-v12"
+                    else "retain complete current READ"
+                )
         )
         historical_policy_valid = manifest["packerVersion"] in {
             "phase1-token-pack-v8", "phase1-token-pack-v9",
@@ -449,8 +488,16 @@ def main() -> int:
             and novelty_contract.get("ambiguousAdjacentDifferencePolicy")
                 == "retain the complete current READ when one contiguous novel region is unproven"
         )
+        v12_policy_valid = manifest["packerVersion"] == "phase1-token-pack-v12" and (
+            v12_reducer_contract_valid(manifest)
+            and novelty_contract.get("uncertainMicroglyphPolicy")
+                == "render an empty READ when the reducer proves a low-information adjacent change"
+            and novelty_contract.get("ambiguousAdjacentDifferencePolicy")
+                == "render empty when substantial ordered repetition is proven without one coherent new region; otherwise retain the current semantic viewport"
+        )
         if not shared_contract_valid or not (
             historical_policy_valid or v10_policy_valid or v11_policy_valid
+            or v12_policy_valid
         ):
             raise ValueError("dependency-aware READ novelty contract is incomplete")
         if (

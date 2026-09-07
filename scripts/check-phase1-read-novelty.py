@@ -80,12 +80,22 @@ events = {
         "decision": "suppress_ambiguous_adjacent_difference",
         "content": "", "dependsOnEventID": "k",
     }),
+    "m": event("m", "old frontier\ncoherent new edge", {
+        "decision": "emit_scroll_new_edge",
+        "content": "coherent new edge", "dependsOnEventID": "l",
+    }),
+    "n": event("n", "unstable edge", {
+        "decision": "suppress_unstable_scroll_edge",
+        "content": "", "dependsOnEventID": "m",
+    }),
 }
 
 rendered, counts = apply_dependency_aware_read_rendering(
     [
         block(events[key])
-        for key in ("a", "b", "c", "d", "g", "h", "i", "j", "k", "l")
+        for key in (
+            "a", "b", "c", "d", "g", "h", "i", "j", "k", "l", "m", "n",
+        )
     ],
     events,
     encode,
@@ -93,6 +103,7 @@ rendered, counts = apply_dependency_aware_read_rendering(
 payloads = [json.loads(value["serialized"]) for value in rendered]
 assert [value["content"] for value in payloads] == [
     "ABCD", "EF", "GH", "", "", "INTERIOR", "", "", "plus", "",
+    "coherent new edge", "",
 ]
 assert rendered[3]["tokenIDs"]
 assert rendered[5]["readRendering"]["decision"] == "render_grounded_stable_interior"
@@ -102,8 +113,12 @@ assert rendered[8]["readRendering"]["decision"] == "render_contiguous_novel_cont
 assert rendered[9]["readRendering"]["decision"] == (
     "render_empty_high_precision_ambiguity"
 )
-assert counts["novelContentRendered"] == 4
-assert counts["adjacentRepeatContentSuppressed"] == 5
+assert rendered[10]["readRendering"]["decision"] == "render_scroll_new_edge"
+assert rendered[11]["readRendering"]["decision"] == (
+    "render_empty_pending_stable_scroll_edge"
+)
+assert counts["novelContentRendered"] == 5
+assert counts["adjacentRepeatContentSuppressed"] == 6
 assert counts["completeFallbackUncertainMicroglyph"] == 0
 
 missing, missing_counts = apply_dependency_aware_read_rendering(
@@ -114,6 +129,17 @@ assert missing[0]["readRendering"]["decision"] == (
     "render_complete_dependency_unavailable"
 )
 assert missing_counts["completeFallbackDependencyUnavailable"] == 1
+
+missing_scroll, missing_scroll_counts = apply_dependency_aware_read_rendering(
+    [block(events["m"])], events, encode
+)
+assert json.loads(missing_scroll[0]["serialized"])["content"] == (
+    "old frontier\ncoherent new edge"
+)
+assert missing_scroll[0]["readRendering"]["decision"] == (
+    "render_complete_dependency_unavailable"
+)
+assert missing_scroll_counts["completeFallbackDependencyUnavailable"] == 1
 
 truncated, _ = apply_dependency_aware_read_rendering(
     [block(events["a"], truncated=True), block(events["b"])], events, encode

@@ -5,6 +5,10 @@ public struct Phase1SemanticReducerConfiguration: Sendable {
     public let reducerVersion: String
     public let readSurfaceEvidenceDirectory: URL?
 
+    fileprivate var usesSamePaneSequence: Bool {
+        ["phase1-semantic-v23", "phase1-semantic-v24"].contains(reducerVersion)
+    }
+
     public init(
         reducerVersion: String,
         readSurfaceEvidenceDirectory: URL? = nil
@@ -93,7 +97,7 @@ public struct Phase1SemanticReducer {
         let usesReconciledSemanticReads = [
             "phase1-semantic-v18", "phase1-semantic-v19",
             "phase1-semantic-v20", "phase1-semantic-v21",
-            "phase1-semantic-v22",
+            "phase1-semantic-v22", "phase1-semantic-v23", "phase1-semantic-v24",
         ].contains(configuration.reducerVersion)
         let dynamicReadBoundaries = usesReconciledSemanticReads
             ? reducerDynamicReadBoundaries(raw)
@@ -394,7 +398,7 @@ public struct Phase1SemanticReducer {
         dispositions.append(contentsOf: reconciledReadResult.dispositions)
         let dynamicVisualResult = reducerUsesVisualReadEvidence(
             configuration.reducerVersion
-        )
+        ) && !configuration.usesSamePaneSequence
             ? consolidateDynamicVisualReads(
                 candidates: reconciledReadResult.events,
                 writeBoundaries: writeOverlapBoundaries,
@@ -403,7 +407,7 @@ public struct Phase1SemanticReducer {
                 includeInterleavedObservations: usesReconciledSemanticReads
             )
             : ReducerOverlapResult(
-                events: coincidentReadResult.events,
+                events: reconciledReadResult.events,
                 dispositions: []
             )
         dispositions.append(contentsOf: dynamicVisualResult.dispositions)
@@ -414,7 +418,9 @@ public struct Phase1SemanticReducer {
             paneAwareSurfaceIdentity: configuration.reducerVersion
                 == "phase1-semantic-v13"
                 || reducerUsesVisualReadEvidence(configuration.reducerVersion),
-            mode: configuration.reducerVersion == "phase1-semantic-v22"
+            mode: configuration.usesSamePaneSequence
+                ? .semanticV23
+                : configuration.reducerVersion == "phase1-semantic-v22"
                 ? .semanticV22
                 : configuration.reducerVersion == "phase1-semantic-v21"
                 ? .semanticV21
@@ -433,7 +439,17 @@ public struct Phase1SemanticReducer {
                         : .legacy
         )
         dispositions.append(contentsOf: overlapResult.dispositions)
-        var events = overlapResult.events.sorted { $0.rawLine < $1.rawLine }.map(\.event)
+        let sequenceResult = configuration.usesSamePaneSequence
+            ? applySequenceAwareSemanticReads(
+                candidates: overlapResult.events,
+                writeBoundaries: writeOverlapBoundaries,
+                attentionBoundaries: dynamicReadBoundaries,
+                sessionID: sessionID,
+                preserveNovelCheckpoints: configuration.reducerVersion == "phase1-semantic-v24"
+            )
+            : overlapResult
+        dispositions.append(contentsOf: sequenceResult.dispositions)
+        var events = sequenceResult.events.sorted { $0.rawLine < $1.rawLine }.map(\.event)
         for index in events.indices { events[index]["sequence"] = index + 1 }
         let unresolved = dispositions.sorted {
             if $0.line != $1.line { return $0.line < $1.line }
@@ -504,13 +520,16 @@ public struct Phase1SemanticReducer {
                     || configuration.reducerVersion == "phase1-semantic-v20"
                     || configuration.reducerVersion == "phase1-semantic-v21"
                     || configuration.reducerVersion == "phase1-semantic-v22"
+                    || configuration.usesSamePaneSequence
                 ? "globally adjacent causal READs with the same app/window, strongly overlapping capture geometry, and compatible AX pane role; AX depth and object identity are supporting evidence only"
                 : configuration.reducerVersion == "phase1-semantic-v13"
                     || configuration.reducerVersion == "phase1-semantic-v14"
                 ? "process + window + display + stable selected AX pane; a pane change resets adjacent overlap"
                 : "process + window + display",
             "visualReadRule": reducerUsesVisualReadEvidence(configuration.reducerVersion)
-                ? "hash-verified visual frame -> OCR lineage; active-WRITE-overlapped frames never become READs; exact coincident pointer/visual observations are emitted once; uninterrupted progressive states on one dynamic surface emit only their final causally available viewport"
+                ? configuration.usesSamePaneSequence
+                    ? "hash-verified visual frame -> OCR lineage; active-WRITE-overlapped frames never become READs; same-pane passive progress emits the final observed viewport; scroll observations remain explicit directional transitions"
+                    : "hash-verified visual frame -> OCR lineage; active-WRITE-overlapped frames never become READs; exact coincident pointer/visual observations are emitted once; uninterrupted progressive states on one dynamic surface emit only their final causally available viewport"
                 : "not enabled",
             "previewAuthority": false,
         ]
@@ -530,9 +549,11 @@ public struct Phase1SemanticReducer {
             || configuration.reducerVersion == "phase1-semantic-v19"
             || configuration.reducerVersion == "phase1-semantic-v20"
             || configuration.reducerVersion == "phase1-semantic-v21"
-            || configuration.reducerVersion == "phase1-semantic-v22" {
-            reduction["semanticReadRule"] = configuration.reducerVersion
-                == "phase1-semantic-v22"
+            || configuration.reducerVersion == "phase1-semantic-v22"
+            || configuration.usesSamePaneSequence {
+            reduction["semanticReadRule"] = configuration.usesSamePaneSequence
+                ? "selected-pane OCR remains in immutable raw/surface evidence; scroll observations first use their stable 20 percent-inset authoritative-line projection, then ordered sequence overlap emits coherent newly exposed content; passive progress resolves to one settled state"
+                : configuration.reducerVersion == "phase1-semantic-v22"
                 ? "full selected-pane OCR is retained as semantic evidence; proven equivalent states render empty, one proven contiguous authoritative change renders that span, and every unproven difference retains the complete cleaned pane"
                 : configuration.reducerVersion == "phase1-semantic-v21"
                 ? "full selected-pane OCR is retained as semantic evidence; model-facing novelty is limited to one contiguous authoritative span under one alignment, substantial state changes retain the complete cleaned pane, and small disconnected or ambiguous differences are suppressed"
@@ -549,17 +570,22 @@ public struct Phase1SemanticReducer {
             reduction["adjacentReadNoveltyRule"] = "after exact normalized edge overlap, align OCR lines in order; a fuzzy line may differ by at most two nonnumeric characters, requires at least 24 characters of exact aligned line context, and only matched current lines are removable; ambiguous alignment retains the complete current READ"
         }
         if usesReconciledSemanticReads {
-            reduction["readObservationRule"] = "same-surface sensor observations are reconciled before semantic novelty; passive visual-response progress is represented by its final causally available state only within an uninterrupted attention interval and never crosses click, post-click, scroll, activation/focus, surface-transition, pre-WRITE, WRITE-onset, or surface boundaries"
+            reduction["readObservationRule"] = configuration.usesSamePaneSequence
+                ? "same-surface sensor observations are reconciled before semantic projection; passive visual-response progress resolves to the final observed viewport within one uninterrupted attention interval; explicit scrolling remains an ordered transition; neither crosses click, post-click, activation/focus, surface-transition, pre-WRITE, WRITE-onset, or surface boundaries"
+                : "same-surface sensor observations are reconciled before semantic novelty; passive visual-response progress is represented by its final causally available state only within an uninterrupted attention interval and never crosses click, post-click, scroll, activation/focus, surface-transition, pre-WRITE, WRITE-onset, or surface boundaries"
             reduction["dynamicReadBoundaryRule"] = "raw material-input intervals are ordered by firstActivityAt/lastActivityAt rather than append order; observations inside or derived from those intervals remain independent READ evidence and cannot participate in passive-state consolidation"
             reduction["dynamicReadBoundaryCount"] = dynamicReadBoundaries.count
-            reduction["readContentAuthority"] = [
-                "phase1-semantic-v19", "phase1-semantic-v20",
-                "phase1-semantic-v21", "phase1-semantic-v22",
-            ].contains(configuration.reducerVersion)
+            reduction["readContentAuthority"] = configuration.usesSamePaneSequence
+                ? "immutable surface evidence retains the complete selected AX pane; explicit scroll READs project authoritative full-pane OCR lines through the 20 percent top/bottom stable interior before adjacent overlap, while non-scroll semantic READs retain the complete cleaned pane"
+                : [
+                    "phase1-semantic-v19", "phase1-semantic-v20",
+                    "phase1-semantic-v21", "phase1-semantic-v22",
+                ].contains(configuration.reducerVersion)
                 ? "the complete selected AX pane is authoritative after removing only geometrically proven clipped OCR lines; a 20 percent top/bottom interior projection supplies independent OCR comparison evidence"
                 : "the complete selected AX pane is authoritative; a 20 percent top/bottom interior projection supports comparison but cannot remove edge content"
-            reduction["adjacentReadNoveltyRule"] = configuration.reducerVersion
-                == "phase1-semantic-v22"
+            reduction["adjacentReadNoveltyRule"] = configuration.usesSamePaneSequence
+                ? "interpret uninterrupted observations as an ordered same-pane sequence: explicit scrolls emit only a directionally proven edge relative to prior model-facing coverage, passive visual progress emits the final observed viewport, exact and substantially repeated OCR states emit empty, and unaligned large movements retain the complete viewport"
+                : configuration.reducerVersion == "phase1-semantic-v22"
                 ? "try exact contiguous overlap, then one ordered OCR-tolerant contiguous line block; equivalent states render empty, one verified contiguous authoritative span renders alone, and every other difference retains the complete cleaned state; approximate reflow overlap remains audit-only"
                 : configuration.reducerVersion == "phase1-semantic-v21"
                 ? "try exact contiguous overlap, then one ordered OCR-tolerant contiguous line block; rejected alignments are not evidence of repetition, comparison OCR can only veto, and unresolved differences retain the complete state unless at least two thirds of the current pane is independently proven repeated"
@@ -581,6 +607,36 @@ public struct Phase1SemanticReducer {
                 reduction["modelFacingReadRule"] = "exact equivalent state emits nothing; one verified contiguous authoritative change emits that span; every other difference emits the complete cleaned state"
                 reduction["ambiguousReadSuppression"] = "disabled; approximate reflow overlap is audit-only"
             }
+            if configuration.usesSamePaneSequence {
+                reduction["clippedOCRRule"] = "inherit v20's evidence-bound clipped-line removal; comparison OCR may veto unsupported peripheral novelty but never contributes model-facing words"
+                reduction["modelFacingReadRule"] = "scrolling emits one coherent newly exposed edge from an ordered same-pane frontier; passive visual progress emits the final observed viewport; exact and substantially repeated OCR states emit empty; large unaligned moves emit the complete viewport"
+                reduction["readSequenceRule"] = [
+                    "ruleVersion": "same-pane-read-sequence-v1",
+                    "scrollDirectionEvidence": "ordered OCR-tolerant token displacement across complete adjacent panes",
+                    "coverageAuthority": "ordered model-facing frontier from the immediately preceding same-pane sequence",
+                    "hardBoundaries": [
+                        "write_began", "application_activated", "click",
+                        "post_click_surface_observation",
+                        "pre_write_visual_checkpoint",
+                        "surface_transition_detected",
+                    ],
+                    "passiveClosure": [
+                        "visual_settlement", "material_action", "surface_change",
+                        "write_began", "collection_end",
+                    ],
+                    "coverageReset": "flush does not erase same-pane coverage; only a WRITE, application activation, proven surface transition, or incompatible captured surface resets it",
+                    "preWriteCheckpoint": configuration.reducerVersion == "phase1-semantic-v24"
+                        ? "ordinary captured READ evidence; suppress only by the content-comparison rules"
+                        : "raw/audit evidence only; never a new semantic READ",
+                    "passiveStateSelection": "final observed viewport; intermediate progress remains raw lineage",
+                    "largeScrollFallback": "complete current viewport",
+                ]
+            }
+        }
+        if configuration.reducerVersion == "phase1-semantic-v24" {
+            reduction["preWriteReadRule"] = "pre-WRITE observations close passive progress but are compared as ordinary captured READ evidence; fresh causally available content is retained and redundant same-pane content is suppressed"
+            reduction["minimumAmbiguousRepeatFraction"] = 0.72
+            reduction["crossSensorSuppressionRule"] = "sensor alternation alone never lowers the minimum repeated fraction"
         }
         try reducerWriteJSON(reduction, to: output.appendingPathComponent("reduction.json"))
         return Phase1SemanticReducerResult(
@@ -650,6 +706,7 @@ private enum ReducerReadOverlapMode: Equatable {
     case semanticV20
     case semanticV21
     case semanticV22
+    case semanticV23
 }
 private let semanticV21AmbiguousReadSuppressionMinimumRepeatedFraction =
     2.0 / 3.0
@@ -669,6 +726,8 @@ private func reducerUsesVisualReadEvidence(_ version: String) -> Bool {
         || version == "phase1-semantic-v20"
         || version == "phase1-semantic-v21"
         || version == "phase1-semantic-v22"
+        || version == "phase1-semantic-v23"
+        || version == "phase1-semantic-v24"
 }
 
 /// Returns raw interaction intervals that divide autonomous visual progress
@@ -735,7 +794,7 @@ private func loadReadSurfaceEvidence(
         ]
     case "phase1-semantic-v18", "phase1-semantic-v19",
          "phase1-semantic-v20", "phase1-semantic-v21",
-         "phase1-semantic-v22":
+         "phase1-semantic-v22", "phase1-semantic-v23", "phase1-semantic-v24":
         expectedRuleVersions = rawScreenOCRSchema >= 7
             ? ["ax-pane-read-v5", "ax-pane-read-v6", "ax-pane-read-v7"]
             : ["pointer-local-read-v1"]
@@ -745,7 +804,7 @@ private func loadReadSurfaceEvidence(
     default:
         guard configuration.readSurfaceEvidenceDirectory == nil else {
             throw Phase1SemanticReducerError.invalidManifest(
-                "--read-surface-evidence requires phase1-semantic-v11 through phase1-semantic-v22"
+                "--read-surface-evidence requires phase1-semantic-v11 through phase1-semantic-v24"
             )
         }
         return nil
@@ -2510,6 +2569,657 @@ private func reducerComparableString(_ value: Any?) -> String {
     return ""
 }
 
+/// v23 interprets READ observations as an ordered same-pane sequence after
+/// pane selection, OCR cleanup, and cross-sensor reconciliation. Scrolls use
+/// the prior model-facing frontier to expose one coherent edge. Autonomous
+/// visual progress is emitted once as the final observed viewport. Raw
+/// observations remain immutable and every composition retains its lineage.
+private func applySequenceAwareSemanticReads(
+    candidates: [ReducerCandidate],
+    writeBoundaries: [ReducerWriteBoundary],
+    attentionBoundaries: [ReducerDynamicReadBoundary],
+    sessionID: String,
+    preserveNovelCheckpoints: Bool
+) -> ReducerOverlapResult {
+    enum TimelineItem {
+        case candidate(Int)
+        case writeBoundary(ReducerWriteBoundary)
+        case attentionBoundary(ReducerDynamicReadBoundary)
+    }
+    func ordering(_ item: TimelineItem) -> (String, Int, Int) {
+        switch item {
+        case .candidate(let index):
+            let candidate = candidates[index]
+            return (candidate.overlapBoundaryAt, 1, candidate.rawLine)
+        case .writeBoundary(let boundary):
+            return (boundary.beganAt, 0, boundary.rawLine)
+        case .attentionBoundary(let boundary):
+            return (boundary.beganAt, 0, boundary.rawLine)
+        }
+    }
+    let timeline = (
+        candidates.indices.map(TimelineItem.candidate)
+            + writeBoundaries.map(TimelineItem.writeBoundary)
+            + attentionBoundaries.map(TimelineItem.attentionBoundary)
+    ).sorted { lhs, rhs in
+        let left = ordering(lhs)
+        let right = ordering(rhs)
+        if left.0 != right.0 { return left.0 < right.0 }
+        if left.1 != right.1 { return left.1 < right.1 }
+        return left.2 < right.2
+    }
+
+    struct SequenceState {
+        var previous: ReducerCandidate?
+        var modelFacingFrontier = ""
+        var scrollFrontierOpen = false
+    }
+    var state = SequenceState()
+    var output = [ReducerCandidate]()
+    var dispositions = [ReducerDisposition]()
+    var dynamicGroup = [ReducerCandidate]()
+    var pendingScroll = false
+    var pendingClosureReason = "collection_end"
+    var pendingClosureAt: String?
+    let materialBoundaryRecordIDs = Set(
+        attentionBoundaries.compactMap(\.sourceRecordID)
+    )
+
+    func sourceIDs(_ candidate: ReducerCandidate) -> [String] {
+        candidate.event["sourceRecordIDs"] as? [String] ?? []
+    }
+    func eventID(_ candidate: ReducerCandidate) -> String {
+        stringValue(candidate.event["eventID"]) ?? ""
+    }
+    func semanticContent(_ candidate: ReducerCandidate) -> String {
+        stringValue(candidate.event["content"]) ?? ""
+    }
+    func isMateriallyTriggered(_ candidate: ReducerCandidate) -> Bool {
+        !Set(sourceIDs(candidate)).isDisjoint(with: materialBoundaryRecordIDs)
+    }
+    func isPassiveDynamic(_ candidate: ReducerCandidate) -> Bool {
+        isDynamicVisualChainCandidate(
+            candidate, includeReconciledObservations: true
+        ) && !isMateriallyTriggered(candidate)
+    }
+    func isPreWriteCheckpointOnly(_ candidate: ReducerCandidate) -> Bool {
+        let triggers = Set(
+            stringArray(candidate.raw["triggerTypes"])
+                + stringArray(candidate.event["triggerTypes"])
+        )
+        return triggers == Set(["pre_write_visual_checkpoint"])
+    }
+    func sensorProvenances(_ candidate: ReducerCandidate) -> Set<String> {
+        var result = Set<String>()
+        if let value = stringValue(candidate.event["provenance"]) {
+            result.insert(value)
+        }
+        if let reduction = candidate.event["reduction"] as? [String: Any],
+           let reconciliation = reduction["observationReconciliation"]
+                as? [String: Any] {
+            result.formUnion(stringArray(reconciliation["memberProvenances"]))
+        }
+        return result
+    }
+    func isNearSimultaneousCrossSensorState(
+        _ previous: ReducerCandidate,
+        _ current: ReducerCandidate
+    ) -> Bool {
+        guard let priorAt = reducerTimestamp(previous.overlapBoundaryAt),
+              let currentAt = reducerTimestamp(current.overlapBoundaryAt),
+              currentAt.timeIntervalSince(priorAt) >= 0,
+              currentAt.timeIntervalSince(priorAt) <= 2.5 else { return false }
+        let prior = sensorProvenances(previous)
+        let next = sensorProvenances(current)
+        return prior.contains("visual_change_screen_ocr")
+            != next.contains("visual_change_screen_ocr")
+    }
+    func makeNovelty(
+        candidate: ReducerCandidate,
+        decision: String,
+        reason: String,
+        content: String,
+        previous: ReducerCandidate?,
+        alignment: String? = nil,
+        details: [String: Any] = [:]
+    ) -> [String: Any] {
+        var novelty: [String: Any] = [
+            "schemaVersion": 2,
+            "ruleVersion": "same-pane-read-sequence-v1",
+            "decision": decision,
+            "reason": reason,
+            "content": content,
+            "currentEventID": eventID(candidate),
+            "orderingField": "capturedAt",
+            "orderingTimestamp": candidate.overlapBoundaryAt,
+        ]
+        if let previous, decision != "full_state" {
+            novelty["dependsOnEventID"] = eventID(previous)
+        }
+        if let alignment { novelty["alignment"] = alignment }
+        for (key, value) in details { novelty[key] = value }
+        return novelty
+    }
+    func verifiedContent(
+        _ proposed: String,
+        candidate: ReducerCandidate
+    ) -> HighPrecisionReadNoveltyVerification? {
+        verifyHighPrecisionReadNovelty(
+            proposed,
+            authoritativeContent: semanticContent(candidate),
+            fullLines: reducerReadOCRLines(candidate.raw["_readSurfaceLines"]),
+            comparisonContent: candidate.comparisonContent,
+            comparisonBand: readComparisonVerticalBand(candidate.raw)
+        )
+    }
+    func stableScrollInterior(
+        _ candidate: ReducerCandidate
+    ) -> (content: String, removedLineCount: Int)? {
+        guard let comparison = candidate.comparisonContent,
+              !comparison.isEmpty,
+              let band = readComparisonVerticalBand(candidate.raw) else {
+            return nil
+        }
+        let complete = semanticContent(candidate)
+        let semanticLines = reducerReadOCRLines(
+            candidate.raw["_readSurfaceLines"]
+        ).filter { line in
+            guard let y = line.y, let height = line.height,
+                  y >= band.lowerBound - 0.005,
+                  y + height <= band.upperBound + 0.005 else { return false }
+            return readNoveltyIsStrictlyGrounded(line.text, in: complete)
+                && readNoveltyIsStrictlyGrounded(line.text, in: comparison)
+        }
+        let content = semanticLines.map(\.text).joined(separator: "\n")
+        guard content.count >= 24,
+              content.count >= max(24, complete.count / 4) else { return nil }
+        let completeLineCount = complete.split(whereSeparator: \.isNewline).count
+        return (content, max(0, completeLineCount - semanticLines.count))
+    }
+    func coherentUncoveredEdge(
+        _ proposed: String,
+        coverage: String
+    ) -> String? {
+        guard !coverage.isEmpty else { return proposed }
+        let lines = proposed.split(whereSeparator: \.isNewline).map(String.init)
+            .filter { !normalizedReadFragment($0).isEmpty }
+        guard !lines.isEmpty else { return "" }
+        let covered = lines.map {
+            readNoveltyIsStrictlyGrounded($0, in: coverage)
+        }
+        guard let first = covered.firstIndex(of: false),
+              let last = covered.lastIndex(of: false) else { return "" }
+        guard !covered[first...last].contains(true) else { return nil }
+        return lines[first...last].joined(separator: "\n")
+    }
+    func extendScrollCoverage(_ content: String, alignment: String) {
+        guard !content.isEmpty,
+              !readNoveltyIsStrictlyGrounded(
+                content, in: state.modelFacingFrontier
+              ) else { return }
+        if state.modelFacingFrontier.isEmpty {
+            state.modelFacingFrontier = content
+        } else if alignment.contains("upward") {
+            state.modelFacingFrontier = content + "\n" + state.modelFacingFrontier
+        } else {
+            state.modelFacingFrontier += "\n" + content
+        }
+    }
+    func processRead(_ source: ReducerCandidate, asScroll: Bool) {
+        var candidate = source
+        let completeCurrent = semanticContent(candidate)
+        var current = completeCurrent
+        if asScroll, let stable = stableScrollInterior(candidate),
+           stable.content != completeCurrent {
+            current = stable.content
+            candidate.event["content"] = current
+            if var reduction = candidate.event["reduction"] as? [String: Any] {
+                reduction["scrollStableInterior"] = [
+                    "ruleVersion": "scroll-stable-interior-v1",
+                    "completeContentSHA256": reducerSHA256String(completeCurrent),
+                    "projectedContentSHA256": reducerSHA256String(current),
+                    "completeCharacterCount": completeCurrent.count,
+                    "projectedCharacterCount": current.count,
+                    "removedPeripheralLineCount": stable.removedLineCount,
+                    "projectionOrder": "before_adjacent_sequence_overlap",
+                ]
+                candidate.event["reduction"] = reduction
+            }
+        }
+        guard let previous = state.previous,
+              let surface = adjacentReadSurfaceCompatibility(
+                previous.raw, candidate.raw
+              ) else {
+            candidate.event["readNovelty"] = makeNovelty(
+                candidate: candidate,
+                decision: "full_state",
+                reason: state.previous == nil
+                    ? "no_causal_predecessor" : "surface_changed",
+                content: current,
+                previous: nil,
+                details: ["sequenceTransition": asScroll ? "scroll" : "state"]
+            )
+            output.append(candidate)
+            state.previous = candidate
+            state.modelFacingFrontier = current
+            state.scrollFrontierOpen = asScroll
+            return
+        }
+        let prior = semanticContent(previous)
+        if let equivalent = adjacentCausalReadContiguousDelta(
+            previous: prior, current: current
+        ), equivalent.emittedContent.isEmpty {
+            candidate.event["readNovelty"] = makeNovelty(
+                candidate: candidate,
+                decision: "suppress_no_new_content",
+                reason: "complete_semantic_state_repeated",
+                content: "",
+                previous: previous,
+                alignment: equivalent.alignment,
+                details: [
+                    "sequenceTransition": asScroll ? "scroll" : "state",
+                    "surface": surface,
+                    "overlapCharacterCount": equivalent.overlapCharacterCount,
+                    "currentCharacterCount": equivalent.currentCharacterCount,
+                ]
+            )
+            output.append(candidate)
+            state.previous = candidate
+            state.scrollFrontierOpen = asScroll || state.scrollFrontierOpen
+            return
+        }
+
+        let delta: AdjacentCausalReadDelta?
+        if asScroll {
+            delta = adjacentCausalReadScrollFrontierDelta(
+                previousFull: prior,
+                // The immediate prior viewport establishes scroll geometry.
+                // Cumulative model-facing coverage is applied separately
+                // below, after one coherent edge has been reconstructed.
+                previousModelFacing: prior,
+                current: current
+            )
+        } else {
+            delta = adjacentCausalReadContiguousDelta(
+                previous: prior, current: current
+            )
+        }
+        if asScroll, let delta, !delta.emittedContent.isEmpty,
+           let verification = verifiedContent(
+               delta.emittedContent, candidate: candidate
+           ), !verification.content.isEmpty,
+           coherentUncoveredEdge(
+               verification.content, coverage: state.modelFacingFrontier
+           ) == "" {
+            candidate.event["readNovelty"] = makeNovelty(
+                candidate: candidate,
+                decision: "suppress_no_new_content",
+                reason: "directional_scroll_edge_already_delivered",
+                content: "",
+                previous: previous,
+                alignment: delta.alignment,
+                details: [
+                    "sequenceTransition": "scroll",
+                    "surface": surface,
+                    "proposedNovelCharacterCount":
+                        verification.content.count,
+                    "coverageReferenceCharacterCount":
+                        state.modelFacingFrontier.count,
+                ]
+            )
+            output.append(candidate)
+            state.previous = candidate
+            state.scrollFrontierOpen = true
+            return
+        }
+        if let delta, !delta.emittedContent.isEmpty,
+           let verification = verifiedContent(delta.emittedContent, candidate: candidate),
+           let uncovered = asScroll
+                ? coherentUncoveredEdge(
+                    verification.content, coverage: state.modelFacingFrontier
+                )
+                : verification.content,
+           !uncovered.isEmpty,
+           !readNoveltyIsStrictlyGrounded(uncovered, in: prior) {
+            let supportingLines = reducerReadOCRLines(
+                candidate.raw["_readSurfaceLines"]
+            )
+            if isolatedReadNoveltyMicroglyphs(
+                uncovered,
+                lines: supportingLines,
+                excludingLineIndices: []
+            ) != nil {
+                candidate.event["readNovelty"] = makeNovelty(
+                    candidate: candidate,
+                    decision: "suppress_nonsemantic_microglyph",
+                    reason: "isolated_tiny_ocr_glyph",
+                    content: "",
+                    previous: previous,
+                    alignment: delta.alignment,
+                    details: [
+                        "sequenceTransition": asScroll ? "scroll" : "state",
+                        "surface": surface,
+                    ]
+                )
+                output.append(candidate)
+                state.previous = candidate
+                state.scrollFrontierOpen = asScroll
+                return
+            }
+            let decision = asScroll
+                ? "emit_scroll_new_edge" : "emit_contiguous_new_content"
+            candidate.event["readNovelty"] = makeNovelty(
+                candidate: candidate,
+                decision: decision,
+                reason: asScroll
+                    ? "directional_scroll_frontier_proven"
+                    : "single_contiguous_authoritative_change",
+                content: uncovered,
+                previous: previous,
+                alignment: delta.alignment,
+                details: [
+                    "sequenceTransition": asScroll ? "scroll" : "state",
+                    "surface": surface,
+                    "overlapCharacterCount": delta.overlapCharacterCount,
+                    "currentCharacterCount": delta.currentCharacterCount,
+                    "proposedNovelCharacterCount": delta.emittedContent.count,
+                    "novelCharacterCount": uncovered.count,
+                    "removedUncorroboratedPeripheralLineCount":
+                        verification.removedPeripheralLines.count,
+                    "coverageReferenceCharacterCount":
+                        state.modelFacingFrontier.count,
+                ]
+            )
+            output.append(candidate)
+            state.previous = candidate
+            if asScroll {
+                extendScrollCoverage(uncovered, alignment: delta.alignment)
+            } else {
+                state.modelFacingFrontier = uncovered
+            }
+            state.scrollFrontierOpen = asScroll
+            return
+        }
+        if asScroll, let delta, !delta.emittedContent.isEmpty,
+           let verification = verifiedContent(delta.emittedContent, candidate: candidate),
+           verification.content.isEmpty,
+           !verification.rejectedDisconnectedResidue {
+            candidate.event["readNovelty"] = makeNovelty(
+                candidate: candidate,
+                decision: "suppress_unstable_scroll_edge",
+                reason: "new_scroll_edge_not_yet_stable_in_interior_ocr",
+                content: "",
+                previous: previous,
+                alignment: delta.alignment,
+                details: [
+                    "sequenceTransition": "scroll",
+                    "surface": surface,
+                    "proposedNovelCharacterCount": delta.emittedContent.count,
+                    "removedUncorroboratedPeripheralLineCount":
+                        verification.removedPeripheralLines.count,
+                ]
+            )
+            output.append(candidate)
+            state.previous = candidate
+            state.scrollFrontierOpen = true
+            return
+        }
+
+        // Preserve v22's independently evidenced tiny-glyph suppression when
+        // this candidate still follows the same predecessor. All other
+        // unproved changes remain complete rather than being thresholded away.
+        let preliminary = candidate.event["readNovelty"] as? [String: Any]
+        let preliminaryDecision = stringValue(preliminary?["decision"])
+        let preliminaryDependency = stringValue(preliminary?["dependsOnEventID"])
+        if preliminaryDecision == "suppress_nonsemantic_microglyph",
+           preliminaryDependency == eventID(previous) {
+            candidate.event["readNovelty"] = makeNovelty(
+                candidate: candidate,
+                decision: "suppress_nonsemantic_microglyph",
+                reason: "isolated_tiny_ocr_glyph",
+                content: "",
+                previous: previous,
+                details: [
+                    "sequenceTransition": asScroll ? "scroll" : "state",
+                    "surface": surface,
+                ]
+            )
+            output.append(candidate)
+            state.previous = candidate
+            state.scrollFrontierOpen = asScroll || state.scrollFrontierOpen
+            return
+        }
+
+        // If no single coherent new region survived the high-precision path,
+        // substantial ordered overlap is evidence of the same visible state,
+        // not a reason to replay the entire pane. Alternating sensor pathways
+        // receive slightly more tolerance only when they are near-simultaneous.
+        let crossSensor = isNearSimultaneousCrossSensorState(
+            previous, candidate
+        )
+        var approximate = adjacentCausalReadUniqueTokenOverlap(
+            previous: prior, current: current
+        )
+        let quickFraction = approximate.map {
+            Double($0.overlapCharacterCount)
+                / Double(max(1, $0.currentCharacterCount))
+        } ?? 0
+        if (crossSensor || quickFraction >= 0.25),
+           let reflow = adjacentCausalReadReflowDelta(
+                previous: prior, current: current
+           ), reflow.overlapCharacterCount
+                > (approximate?.overlapCharacterCount ?? 0) {
+            approximate = reflow
+        }
+        if (asScroll || crossSensor),
+           let lcs = adjacentCausalReadTokenLCSEvidence(
+                previous: prior, current: current
+           ), lcs.overlapCharacterCount
+                > (approximate?.overlapCharacterCount ?? 0) {
+            approximate = lcs
+        }
+        if let approximate {
+            let repeatedFraction = Double(approximate.overlapCharacterCount)
+                / Double(max(1, approximate.currentCharacterCount))
+            if repeatedFraction >= ((!preserveNovelCheckpoints && crossSensor) ? 0.40 : 0.72) {
+                candidate.event["readNovelty"] = makeNovelty(
+                    candidate: candidate,
+                    decision: "suppress_ambiguous_adjacent_difference",
+                    reason: crossSensor
+                        ? "near_simultaneous_cross_sensor_state_repeated"
+                        : "substantial_ordered_overlap_without_coherent_new_region",
+                    content: "",
+                    previous: previous,
+                    alignment: approximate.alignment,
+                    details: [
+                        "sequenceTransition": asScroll ? "scroll" : "state",
+                        "surface": surface,
+                        "overlapCharacterCount":
+                            approximate.overlapCharacterCount,
+                        "currentCharacterCount":
+                            approximate.currentCharacterCount,
+                        "repeatedFraction": repeatedFraction,
+                        "nearSimultaneousCrossSensor": crossSensor,
+                    ]
+                )
+                output.append(candidate)
+                state.previous = candidate
+                state.scrollFrontierOpen = asScroll
+                    || state.scrollFrontierOpen
+                return
+            }
+        }
+
+        candidate.event["readNovelty"] = makeNovelty(
+            candidate: candidate,
+            decision: "full_state",
+            reason: asScroll
+                ? "large_or_unaligned_scroll_preserve_complete_viewport"
+                : "sequence_alignment_unproven_preserve_complete_state",
+            content: current,
+            previous: nil,
+            details: [
+                "sequenceTransition": asScroll ? "scroll" : "state",
+                "surface": surface,
+            ]
+        )
+        output.append(candidate)
+        state.previous = candidate
+        state.modelFacingFrontier = current
+        state.scrollFrontierOpen = asScroll
+    }
+
+    func flushDynamic() {
+        defer { dynamicGroup.removeAll(keepingCapacity: true) }
+        guard !dynamicGroup.isEmpty else { return }
+        if dynamicGroup.count == 1 {
+            processRead(
+                dynamicGroup[0], asScroll: state.scrollFrontierOpen
+            )
+            return
+        }
+        // The final observed viewport is the useful response state. Earlier
+        // progress can be revised or scroll away without being part of that
+        // state; keep those observations as lineage, not stitched target text.
+        var kept = dynamicGroup.last!
+        let lineage = dynamicGroup.flatMap(sourceIDs).reduce(into: [String]()) {
+            values, value in
+            if !values.contains(value) { values.append(value) }
+        }
+        kept.event["sourceRecordIDs"] = lineage
+        kept.event["eventID"] = stableEventID(
+            sessionID: sessionID, lineage: lineage, ordinal: 0
+        )
+        let terminalViewport = semanticContent(kept)
+        let terminalObservationAt = kept.overlapBoundaryAt
+        let closureAt = pendingClosureAt ?? terminalObservationAt
+        kept.event["capturedAt"] = terminalObservationAt
+        kept.event["content"] = terminalViewport
+        if var reduction = kept.event["reduction"] as? [String: Any] {
+            reduction["samePaneSequence"] = [
+                "ruleVersion": "same-pane-read-sequence-v1",
+                "kind": "passive_dynamic",
+                "closureReason": pendingClosureReason,
+                "closureAt": closureAt,
+                "availableAt": terminalObservationAt,
+                "memberCount": dynamicGroup.count,
+                "memberObservationIDs": lineage,
+                "terminalViewportContentSHA256": reducerSHA256String(
+                    terminalViewport
+                ),
+                "selectedContentSHA256": reducerSHA256String(terminalViewport),
+                "selection": "final_observed_viewport",
+            ]
+            reduction["rawLineage"] = lineage
+            kept.event["reduction"] = reduction
+        }
+        for member in dynamicGroup.dropLast() {
+            dispositions.append(ReducerDisposition(
+                line: member.rawLine,
+                object: reducerUnresolved(
+                    sessionID: sessionID,
+                    raw: member.raw,
+                    line: member.rawLine,
+                    kind: "read",
+                    rule: "same_pane_read_sequence_v1",
+                    reason: "absorbed_into_completed_dynamic_read",
+                    details: [
+                        "keptEventID": eventID(kept),
+                        "closureReason": pendingClosureReason,
+                    ],
+                    sourceRecordIDs: sourceIDs(member)
+                )
+            ))
+        }
+        processRead(kept, asScroll: state.scrollFrontierOpen)
+    }
+
+    for item in timeline {
+        switch item {
+        case .writeBoundary(let boundary):
+            pendingClosureReason = "write_began"
+            pendingClosureAt = boundary.beganAt
+            flushDynamic()
+            state = SequenceState()
+            pendingScroll = false
+        case .attentionBoundary(let boundary):
+            let triggers = Set(boundary.triggerTypes)
+            pendingClosureAt = boundary.beganAt
+            if triggers.contains("scroll") {
+                pendingClosureReason = "scroll_began"
+                flushDynamic()
+                pendingScroll = true
+            } else {
+                pendingClosureReason = triggers.sorted().joined(separator: "+")
+                flushDynamic()
+                // Closing passive progress and forgetting prior coverage are
+                // different operations. A click or pre-WRITE checkpoint may
+                // leave the same pane unchanged; activation and a proven
+                // surface transition establish a genuine return/new surface.
+                if triggers.contains("application_activated")
+                    || triggers.contains("surface_transition_detected") {
+                    state = SequenceState()
+                } else {
+                    state.scrollFrontierOpen = false
+                }
+                pendingScroll = false
+            }
+        case .candidate(let index):
+            let candidate = candidates[index]
+            if candidate.kind == "write" {
+                pendingClosureReason = "write_event"
+                pendingClosureAt = candidate.overlapBoundaryAt
+                flushDynamic()
+                output.append(candidate)
+                state = SequenceState()
+                pendingScroll = false
+                continue
+            }
+            if !preserveNovelCheckpoints, isPreWriteCheckpointOnly(candidate) {
+                dispositions.append(ReducerDisposition(
+                    line: candidate.rawLine,
+                    object: reducerUnresolved(
+                        sessionID: sessionID,
+                        raw: candidate.raw,
+                        line: candidate.rawLine,
+                        kind: "read",
+                        rule: "same_pane_read_sequence_v1",
+                        reason: "pre_write_checkpoint_is_not_new_attention",
+                        details: [:],
+                        sourceRecordIDs: sourceIDs(candidate)
+                    )
+                ))
+                continue
+            }
+            let candidateIsScroll = pendingScroll
+                || stringArray(candidate.raw["triggerTypes"]).contains("scroll")
+                || stringArray(candidate.event["triggerTypes"]).contains("scroll")
+            if isPassiveDynamic(candidate), !candidateIsScroll {
+                if let prior = dynamicGroup.last,
+                   adjacentReadSurfaceCompatibility(prior.raw, candidate.raw) == nil {
+                    pendingClosureReason = "surface_changed"
+                    pendingClosureAt = candidate.overlapBoundaryAt
+                    flushDynamic()
+                    state = SequenceState()
+                }
+                dynamicGroup.append(candidate)
+                continue
+            }
+            pendingClosureReason = candidateIsScroll
+                ? "scroll_observation" : "settled_non_dynamic_observation"
+            pendingClosureAt = candidate.overlapBoundaryAt
+            flushDynamic()
+            processRead(candidate, asScroll: candidateIsScroll)
+            if !candidateIsScroll { state.scrollFrontierOpen = false }
+            pendingScroll = false
+        }
+    }
+    pendingClosureReason = "collection_end"
+    pendingClosureAt = dynamicGroup.last?.overlapBoundaryAt
+    flushDynamic()
+    return ReducerOverlapResult(events: output, dispositions: dispositions)
+}
+
 private func reducerRectangleOverlapOverSmallerArea(
     _ left: [String: Any]?,
     _ right: [String: Any]?
@@ -2541,6 +3251,8 @@ private func semanticReadNoveltyRuleVersion(
     _ mode: ReducerReadOverlapMode
 ) -> String {
     switch mode {
+    case .semanticV23:
+        return "same-pane-read-sequence-v1"
     case .semanticV22:
         return "adjacent-causal-read-high-precision-v2"
     case .semanticV21:
@@ -2564,7 +3276,7 @@ private func semanticReadUnprovenReason(
 ) -> String {
     switch mode {
     case .semanticV18, .semanticV19, .semanticV20, .semanticV21,
-         .semanticV22:
+         .semanticV22, .semanticV23:
         return fullDeltaAvailable
             ? "comparison_interior_alignment_unproven"
             : "conservative_reflow_alignment_unproven"
@@ -2811,7 +3523,7 @@ private func addSemanticReadComparisonAudit(
 ) {
     guard mode == .semanticV18 || mode == .semanticV19
         || mode == .semanticV20 || mode == .semanticV21
-        || mode == .semanticV22 else { return }
+        || mode == .semanticV22 || mode == .semanticV23 else { return }
     guard let previous else {
         novelty["comparisonProjection"] = [
             "role": "comparison_only",
@@ -2870,6 +3582,7 @@ private func applySemanticReadOverlap(
         || mode == .semanticV17 || mode == .semanticV18
         || mode == .semanticV19 || mode == .semanticV20
         || mode == .semanticV21 || mode == .semanticV22
+        || mode == .semanticV23
     if usesSemanticReadProjection {
         // Classify recurring interface chrome from the immutable session as a
         // whole, then apply that classification to every READ. This can only
@@ -2886,7 +3599,7 @@ private func applySemanticReadOverlap(
             )
             if mode == .semanticV18 || mode == .semanticV19
                 || mode == .semanticV20 || mode == .semanticV21
-                || mode == .semanticV22 {
+                || mode == .semanticV22 || mode == .semanticV23 {
                 comparisonScaffoldingTracker.observe(
                     surfaceKey: reducerReadScaffoldingSurfaceKey(raw)
                         + "|comparison-interior",
@@ -2926,12 +3639,14 @@ private func applySemanticReadOverlap(
                 lines: lines,
                 allowJoinedLineScaffolding: mode == .semanticV18
                     || mode == .semanticV19 || mode == .semanticV20
-                    || mode == .semanticV21 || mode == .semanticV22,
+                    || mode == .semanticV21 || mode == .semanticV22
+                    || mode == .semanticV23,
                 removeClippedOuterBoundaryLines: mode == .semanticV19
                     || mode == .semanticV20 || mode == .semanticV21
-                    || mode == .semanticV22,
+                    || mode == .semanticV22 || mode == .semanticV23,
                 additionalRemovalReasons: mode == .semanticV20
                     || mode == .semanticV21 || mode == .semanticV22
+                    || mode == .semanticV23
                     ? reducerAdditionalReadRemovalReasons(
                         candidate.event, requireStrongClippingEvidence: true
                     )
@@ -2942,7 +3657,7 @@ private func applySemanticReadOverlap(
             candidate.event["content"] = projection.content
             if (mode == .semanticV18 || mode == .semanticV19
                     || mode == .semanticV20 || mode == .semanticV21
-                    || mode == .semanticV22),
+                    || mode == .semanticV22 || mode == .semanticV23),
                let comparisonObserved = candidate.raw["_readComparisonContent"]
                     as? String {
                 let comparisonLines = reducerReadOCRLines(
@@ -2958,7 +3673,7 @@ private func applySemanticReadOverlap(
                     allowJoinedLineScaffolding: true,
                     removeClippedOuterBoundaryLines: mode == .semanticV19
                         || mode == .semanticV20 || mode == .semanticV21
-                        || mode == .semanticV22
+                        || mode == .semanticV22 || mode == .semanticV23
                 )
                 candidate.comparisonContent = comparisonProjection.content
                 if var reduction = candidate.event["reduction"] as? [String: Any] {
@@ -2967,6 +3682,7 @@ private func applySemanticReadOverlap(
                         projection: comparisonProjection,
                         hadLineEvidence: !comparisonLines.isEmpty,
                         ruleVersion: mode == .semanticV21 || mode == .semanticV22
+                            || mode == .semanticV23
                             ? "read-interface-scaffolding-v6"
                             : mode == .semanticV20
                             ? "read-interface-scaffolding-v5"
@@ -2982,6 +3698,7 @@ private func applySemanticReadOverlap(
                 projection: projection,
                 hadLineEvidence: !lines.isEmpty,
                 ruleVersion: mode == .semanticV21 || mode == .semanticV22
+                    || mode == .semanticV23
                     ? "read-interface-scaffolding-v6"
                     : mode == .semanticV20
                     ? "read-interface-scaffolding-v5"
@@ -2995,6 +3712,14 @@ private func applySemanticReadOverlap(
             }
 
             let completeCurrent = candidate
+            if mode == .semanticV23 {
+                // v23 uses this pass only for pane-level OCR cleanup. Its
+                // model-facing interpretation is constructed once, with the
+                // material-action timeline, by applySequenceAwareSemanticReads.
+                accepted.append(candidate)
+                previousCausalRead = completeCurrent
+                continue
+            }
             let currentEventID = stringValue(candidate.event["eventID"]) ?? ""
             guard let previous = previousCausalRead,
                   let surface = adjacentReadSurfaceCompatibility(
@@ -3026,6 +3751,7 @@ private func applySemanticReadOverlap(
             let previousContent = stringValue(previous.event["content"]) ?? ""
             let priorEventID = stringValue(previous.event["eventID"]) ?? ""
             let delta = mode == .semanticV21 || mode == .semanticV22
+                || mode == .semanticV23
                 ? adjacentCausalReadContiguousDelta(
                     previous: previousContent,
                     current: projection.content
@@ -3047,11 +3773,12 @@ private func applySemanticReadOverlap(
                 )
             let comparisonDelta = mode == .semanticV18 || mode == .semanticV19
                     || mode == .semanticV20 || mode == .semanticV21
-                    || mode == .semanticV22
+                    || mode == .semanticV22 || mode == .semanticV23
                 ? semanticReadComparisonDelta(previous: previous, current: candidate)
                 : nil
             let removedLineIndices = Set(projection.removed.map(\.line.index))
-            if mode == .semanticV21 || mode == .semanticV22 {
+            if mode == .semanticV21 || mode == .semanticV22
+                || mode == .semanticV23 {
                 var novelty: [String: Any] = [
                     "schemaVersion": 1,
                     "ruleVersion": semanticReadNoveltyRuleVersion(mode),
@@ -3181,7 +3908,7 @@ private func applySemanticReadOverlap(
                         : "full_state"
                     novelty["reason"] = suppress
                         ? "substantial_overlap_without_one_contiguous_novel_region"
-                        : mode == .semanticV22
+                        : mode == .semanticV22 || mode == .semanticV23
                             ? "candidate_alignment_unproven_preserve_complete_state"
                         : highPrecisionCandidates.isEmpty
                             ? "substantial_state_change_without_safe_contiguous_overlap"

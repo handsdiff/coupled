@@ -49,7 +49,9 @@ def load_json(path: Path) -> dict[str, Any]:
     return value
 
 
-def load_jsonl(path: Path) -> list[dict[str, Any]]:
+def load_jsonl(
+    path: Path, *, omit_fields: tuple[str, ...] = (),
+) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     with path.open(encoding="utf-8") as handle:
         for line_number, line in enumerate(handle, 1):
@@ -58,6 +60,8 @@ def load_jsonl(path: Path) -> list[dict[str, Any]]:
             value = json.loads(line)
             if not isinstance(value, dict):
                 raise ValueError(f"{path}:{line_number}: expected object")
+            for field in omit_fields:
+                value.pop(field, None)
             rows.append(value)
     return rows
 
@@ -250,7 +254,16 @@ def construct(
         raise ValueError("strict episodes require phase1-causal-v14+ source")
     source_events = load_jsonl(source / "events.jsonl")
     source_blocks = load_jsonl(source / "context-blocks.jsonl")
-    source_examples = load_jsonl(source / "examples.jsonl")
+    # Context is already stored once in context-blocks.jsonl. Holding its
+    # repeated serialization (and a second modelInput copy) for every example
+    # makes memory grow quadratically with the history length. Neither field
+    # is consulted below: episode contexts are rebuilt from block IDs.
+    source_examples = load_jsonl(
+        source / "examples.jsonl", omit_fields=(
+            "context", "modelInput", "contextEventIDs",
+            "contextSourceRecordIDs", "targetSourceRecordIDs", "sourceRecordIDs",
+        ),
+    )
     event_by_id = {row["sourceEventID"]: row for row in source_events}
     block_by_id = {row["contextBlockID"]: row for row in source_blocks}
     example_by_target = {row["targetEventID"]: row for row in source_examples}
@@ -526,8 +539,6 @@ def construct(
             )
         query = serialize_query(conditioning, model_facing_destination)
         context_ids = normalized_context(first, event["beganAt"], event["sourceEventID"])
-        serialized_blocks = [normalized_block_by_id[value]["serialized"] for value in context_ids]
-        context = "\n".join(serialized_blocks)
         target = model_target(adjudication["finalizedTarget"])
         target_record_ids = event["sourceRecordIDs"]
         context_record_ids = sorted({
@@ -556,8 +567,6 @@ def construct(
                 value for value in context_ids
                 if normalized_block_by_id[value]["contextBlockType"] == "semantic_event"
             ],
-            "context": context,
-            "modelInput": query if not context else context + "\n" + query,
             "target": target,
             "targetSourceRecordIDs": target_record_ids,
             "contextSourceRecordIDs": context_record_ids,
@@ -597,11 +606,26 @@ def construct(
         row["chronologicalOrdinal"] = ordinal
         row["experimentBlockID"] = f"block-{ordinal // 50 + 1:04d}"
 
+    def serialized_examples() -> Iterable[dict[str, Any]]:
+        # Materialize only the row being written. The on-disk schema and
+        # canonical bytes remain identical to eager context construction.
+        for row in episode_examples:
+            context = "\n".join(
+                normalized_block_by_id[value]["serialized"]
+                for value in row["contextBlockIDs"]
+            )
+            query = row["query"]
+            yield {
+                **row,
+                "context": context,
+                "modelInput": query if not context else context + "\n" + query,
+            }
+
     temporary = Path(tempfile.mkdtemp(prefix=f".{output.name}.", dir=output.parent))
     try:
         write_jsonl(temporary / "events.jsonl", normalized_events)
         write_jsonl(temporary / "context-blocks.jsonl", normalized_blocks)
-        write_jsonl(temporary / "examples.jsonl", episode_examples)
+        write_jsonl(temporary / "examples.jsonl", serialized_examples())
         write_jsonl(temporary / "episode-exclusions.jsonl", exclusions)
         write_jsonl(temporary / "episode-adjudications.jsonl", adjudications)
         for name in ("gaps.jsonl", "privacy-policy.json"):
@@ -635,6 +659,11 @@ def construct(
             "sourceCorpusID": manifest["corpusID"],
             "source": {
                 "path": str(source.resolve()),
+                **(
+                    {"reducerVersion": manifest["reducerVersion"]}
+                    if isinstance(manifest.get("reducerVersion"), str)
+                    else {}
+                ),
                 "digestsSHA256": source_hashes,
                 "adjudicationsSHA256": sha256(adjudications_path),
                 "candidateEvidenceSHA256": {

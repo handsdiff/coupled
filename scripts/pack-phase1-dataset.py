@@ -20,6 +20,10 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Iterable
+from collections.abc import Sequence
+from contextlib import ExitStack
+
+from phase1_jsonl import JSONLSequence
 
 from phase1_read_novelty import (
     RENDERER_VERSION as READ_NOVELTY_RENDERER_VERSION,
@@ -45,6 +49,8 @@ PACKER_VERSION = "phase1-token-pack-v7"
 DEPENDENCY_AWARE_PACKER_VERSIONS = {
     "phase1-semantic-v21": "phase1-token-pack-v10",
     "phase1-semantic-v22": "phase1-token-pack-v11",
+    "phase1-semantic-v23": "phase1-token-pack-v12",
+    "phase1-semantic-v24": "phase1-token-pack-v12",
 }
 DEFAULT_TOKENIZER = "Qwen/Qwen3.5-9B-Base"
 DEFAULT_PASTE_MARKER = "<|paste|>"
@@ -96,14 +102,14 @@ def load_jsonl(path: Path) -> list[dict[str, Any]]:
 
 def require_compiled_dataset(
     source: Path,
-) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, dict[str, Any]]]:
+) -> tuple[dict[str, Any], Sequence[dict[str, Any]], dict[str, dict[str, Any]]]:
     manifest_path = source / "dataset.json"
     examples_path = source / "examples.jsonl"
     events_path = source / "events.jsonl"
     if not manifest_path.is_file() or not examples_path.is_file() or not events_path.is_file():
         raise ValueError(f"{source} is not a compiled Phase 1 dataset")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    examples = load_jsonl(examples_path)
+    examples = JSONLSequence(examples_path)
     if manifest.get("conversionVersion") not in {
         "phase1-causal-v11",
         "phase1-causal-v12",
@@ -603,7 +609,7 @@ def pack_target(
     return target_ids, spans, paste_count
 
 
-def validate_padded_batch(records: list[dict[str, Any]], pad_token_id: int) -> dict[str, Any]:
+def validate_padded_batch(records: Sequence[dict[str, Any]], pad_token_id: int) -> dict[str, Any]:
     sample = records[: min(4, len(records))]
     if not sample:
         return {"exampleCount": 0, "passed": True}
@@ -672,7 +678,7 @@ def main() -> int:
         ):
             raise ValueError(
                 "--dependency-aware-read-novelty requires a compiled "
-                "phase1-semantic-v21 or v22 dataset that preserves readNovelty"
+                "phase1-semantic-v21 through v24 dataset that preserves readNovelty"
             )
     snapshot, resolved_revision = resolve_tokenizer_snapshot(
         arguments.tokenizer, arguments.revision, arguments.local_files_only
@@ -702,6 +708,7 @@ def main() -> int:
     temporary_parent = output.parent
     temporary_parent.mkdir(parents=True, exist_ok=True)
     temporary = Path(tempfile.mkdtemp(prefix=f".{output.name}.", dir=temporary_parent))
+    streams = ExitStack()
     try:
         tokenizer_directory = temporary / "tokenizer"
         source_tokenizer.save_pretrained(tokenizer_directory)
@@ -727,8 +734,10 @@ def main() -> int:
             raise AssertionError("literal EOS-shaped human text became structural EOS")
         truncation_self_audit = audit_truncation_implementations(reloaded_plain)
 
-        packed_records: list[dict[str, Any]] = []
-        context_plans: list[dict[str, Any]] = []
+        packed_path = temporary / "packed-examples.jsonl"
+        context_plans_path = temporary / "context-plans.jsonl"
+        packed_stream = streams.enter_context(packed_path.open("wb"))
+        context_stream = streams.enter_context(context_plans_path.open("wb"))
         total_paste_actions = 0
         total_input_tokens = 0
         total_input_tokens_discarded = 0
@@ -885,7 +894,7 @@ def main() -> int:
                 record["modelInputTokenCountAfterContextSelection"] = (
                     packed_input["selectedTokenCountBeforeReadRendering"]
                 )
-            packed_records.append(record)
+            packed_stream.write(json_bytes(record))
             retained_plan_blocks = []
             retained_serialized = []
             for span in packed_input["contextEventSpans"]:
@@ -910,7 +919,7 @@ def main() -> int:
                 else semantic_context + "\n" + example["query"]
             )
             semantic_input = arguments.task_instruction + "\n" + semantic_body
-            context_plans.append({
+            context_stream.write(json_bytes({
                 "schemaVersion": 1,
                 "packerVersion": packer_version,
                 "exampleID": example["exampleID"],
@@ -921,7 +930,7 @@ def main() -> int:
                 "rightEdgeQuerySHA256": hashlib.sha256(example["query"].encode()).hexdigest(),
                 "semanticModelInputSHA256": hashlib.sha256(semantic_input.encode()).hexdigest(),
                 "qwenModelInputTokenCount": len(input_ids),
-            })
+            }))
             total_paste_actions += paste_count
             total_input_tokens += len(input_ids)
             total_input_tokens_discarded += discarded
@@ -948,16 +957,14 @@ def main() -> int:
                 packed_input["partiallyRetainedContextEventCount"]
             )
 
+        streams.close()
+        packed_records = JSONLSequence(packed_path)
         padding_audit = validate_padded_batch(
             packed_records,
             eos_token_id
             if reloaded_source.pad_token_id is None
             else reloaded_source.pad_token_id,
         )
-        packed_path = temporary / "packed-examples.jsonl"
-        write_jsonl(packed_path, packed_records)
-        context_plans_path = temporary / "context-plans.jsonl"
-        write_jsonl(context_plans_path, context_plans)
 
         tokenizer_digests = {
             str(path.relative_to(tokenizer_directory)): sha256(path)
@@ -1072,15 +1079,24 @@ def main() -> int:
                 "requiredReducerVersion": source_reducer_version,
                 "selectionUsesCompleteReadTokens": True,
                 "dependencyRule": "render novelty only when dependsOnEventID is retained as a complete reconstructable READ state",
-                "missingDependencyFallback": "retain complete current READ",
+                "missingDependencyFallback": (
+                    "retain complete current semantic viewport"
+                    if source_reducer_version in {"phase1-semantic-v23", "phase1-semantic-v24"}
+                    else "retain complete current READ"
+                ),
                 "uncertainMicroglyphPolicy": "render an empty READ when the reducer proves a low-information adjacent change",
                 "ambiguousAdjacentDifferencePolicy": (
-                    "retain the complete current READ when one contiguous novel region is unproven"
+                    "render empty when substantial ordered repetition is proven without one coherent new region; otherwise retain the current semantic viewport"
+                    if source_reducer_version in {"phase1-semantic-v23", "phase1-semantic-v24"}
+                    else "retain the complete current READ when one contiguous novel region is unproven"
                     if source_reducer_version == "phase1-semantic-v22"
                     else "render an empty READ when substantial overlap exists without one contiguous novel region"
                 ),
                 "exactAdjacentRepeatRepresentation": "retain READ record with empty content",
-                "completeSemanticReadRemainsSourceAuthority": True,
+                "completeSemanticReadRemainsSourceAuthority": (
+                    source_reducer_version not in {"phase1-semantic-v23", "phase1-semantic-v24"}
+                ),
+                "completePaneRemainsInImmutableSurfaceEvidence": True,
             }
             manifest["counts"].update({
                 "modelInputTokensRemovedByContextTruncation": (
@@ -1098,6 +1114,7 @@ def main() -> int:
         (temporary / "packing.json").write_bytes(json_bytes(manifest))
         os.replace(temporary, output)
     except BaseException:
+        streams.close()
         shutil.rmtree(temporary, ignore_errors=True)
         raise
 

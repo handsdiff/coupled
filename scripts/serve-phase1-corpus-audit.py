@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import random
+import re
 import urllib.parse
 import webbrowser
 from collections import Counter, defaultdict
@@ -26,8 +27,8 @@ READ_PROVENANCE = {
         "description": "OCR was re-run inside a non-fallback AX-pane selection.",
     },
     "ax_fallback": {
-        "label": "AX v2 fallback",
-        "description": "AX-pane v2 ran, but its conservative selector retained the fallback region.",
+        "label": "AX pane fallback",
+        "description": "AX-pane selection ran, but retained a fallback region.",
     },
     "legacy": {
         "label": "Legacy pointer crop",
@@ -72,6 +73,41 @@ def load_jsonl(path: Path) -> list[dict[str, Any]]:
     except (OSError, json.JSONDecodeError) as error:
         raise AuditError(f"cannot read {path}: {error}") from error
     return rows
+
+
+class JSONLIndex:
+    """Random access to packed plans without retaining every repeated context."""
+
+    def __init__(self, path: Path, key: str):
+        self.path = path
+        self.offsets: dict[str, int] = {}
+        with path.open("rb") as handle:
+            while True:
+                offset = handle.tell()
+                line = handle.readline()
+                if not line:
+                    break
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                value = row.get(key) if isinstance(row, dict) else None
+                if not isinstance(value, str) or not value or value in self.offsets:
+                    raise AuditError(f"invalid or duplicate {key}: {path}")
+                self.offsets[value] = offset
+
+    def get(self, value: str) -> dict[str, Any] | None:
+        offset = self.offsets.get(value)
+        if offset is None:
+            return None
+        with self.path.open("rb") as handle:
+            handle.seek(offset)
+            return json.loads(handle.readline())
+
+    def __getitem__(self, value: str) -> dict[str, Any]:
+        row = self.get(value)
+        if row is None:
+            raise KeyError(value)
+        return row
 
 
 def load_example_projections(path: Path) -> list[dict[str, Any]]:
@@ -139,7 +175,8 @@ def classify_read_surface(event: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     selection = surface.get("surfaceSelection")
     if not isinstance(selection, dict):
         selection = {}
-    if surface.get("ruleVersion") == "ax-pane-read-v2":
+    version = re.fullmatch(r"ax-pane-read-v(\d+)", str(surface.get("ruleVersion", "")))
+    if version and int(version.group(1)) >= 2:
         if selection.get("isV1Fallback") is False:
             return "ax_tree", selection
         return "ax_fallback", selection
@@ -162,24 +199,25 @@ class AuditStore:
         packed: Path,
         sample_size: int,
         seed: int,
+        artifact_root: Path | None = None,
     ):
         self.project = project
         self.corpus = corpus.resolve()
         self.packed = packed.resolve()
         self.seed = seed
+        self.artifact_root = artifact_root.resolve() if artifact_root else None
         self.corpus_manifest = load_json(self.corpus / "corpus.json")
         self.packing_manifest = load_json(self.packed / "packing.json")
         self._validate_artifact_digests()
         self.examples = load_example_projections(self.corpus / "examples.jsonl")
         self.events = load_jsonl(self.corpus / "events.jsonl")
         self.blocks = load_jsonl(self.corpus / "context-blocks.jsonl")
-        self.plans = load_jsonl(self.packed / "context-plans.jsonl")
         self.example_by_id = self._index(self.examples, "exampleID", "examples")
         self.corpus_event_by_source_id = self._index(
             self.events, "sourceEventID", "corpus events"
         )
         self.block_by_id = self._index(self.blocks, "contextBlockID", "context blocks")
-        self.plan_by_id = self._index(self.plans, "exampleID", "context plans")
+        self.plan_by_id = JSONLIndex(self.packed / "context-plans.jsonl", "exampleID")
         self.read_provenance, self.session_read_counts = self._load_read_provenance()
         self.event_read_counts = self._event_read_counts()
         self.context_read_counts, self.example_context_shapes = self._context_read_counts()
@@ -214,6 +252,9 @@ class AuditStore:
         source = self.packing_manifest.get("source", {})
         if source.get("sessionID") != self.corpus_manifest.get("sessionID"):
             raise AuditError("packing and corpus identities differ")
+        for name in ("events.jsonl", "examples.jsonl", "context-blocks.jsonl"):
+            if source.get("digestsSHA256", {}).get(name) != corpus_digests.get(name):
+                raise AuditError(f"packing is not bound to supplied corpus: {name}")
 
     def _load_read_provenance(
         self,
@@ -221,13 +262,20 @@ class AuditStore:
         source = self.corpus_manifest.get("source", {})
         micro_path = Path(str(source.get("path", ""))).resolve()
         micro_manifest = load_json(micro_path / "corpus.json")
-        causal_candidates = list(
-            (self.project / "coupled-data").glob("*-causal-v1[56]*/dataset.json")
-        )
+        if self.artifact_root is not None:
+            causal_candidates = sorted(self.artifact_root.glob("*/dataset.json"))
+            semantic_candidates = [
+                path.parent / "events.jsonl"
+                for path in sorted(self.artifact_root.glob("*/reduction.json"))
+            ]
+        else:
+            causal_candidates = list(
+                (self.project / "coupled-data").glob("*-causal-v1[56]*/dataset.json")
+            )
+            semantic_candidates = list(
+                (self.project / "coupled-data").glob("*-semantic-v*/events.jsonl")
+            )
         causal_by_digest = artifact_path_by_digest(causal_candidates)
-        semantic_candidates = list(
-            (self.project / "coupled-data").glob("*-semantic-v1[345]*/events.jsonl")
-        )
         semantic_by_digest = artifact_path_by_digest(semantic_candidates)
         result: dict[str, dict[str, Any]] = {}
         sessions: dict[str, Counter[str]] = defaultdict(Counter)
@@ -550,7 +598,7 @@ function move(delta){const index=state.filtered.findIndex(r=>r.exampleID===state
 function eventText(p){if(p.kind==='read')return p.content||'';return pretty(p)}
 function identityAudit(p,prov){if(!prov)return null;return {modelFacingSource:p.source||prov.modelFacingSource||{},originalCapturedSource:compact({application:prov.originalApplication,windowTitle:prov.originalWindowTitle}),sourceDerivation:compact({normalizerVersion:prov.identityNormalizerVersion,category:prov.identityCategory,rule:prov.identityRule}),paneEvidence:compact({ruleVersion:prov.ruleVersion,captureScope:prov.captureScope,method:prov.method,reason:prov.reason,confidence:prov.confidence,selectedDepth:prov.selectedDepth,selectedRole:prov.selectedRole,selectedSubrole:prov.selectedSubrole})}}
 function renderEvents(d){$('events').innerHTML=d.retainedEvents.map((e,i)=>{const p=e.projection,prov=e.readProvenance,category=prov?.category||'write';const application=p.source?.application||p.destination?.application||p.application||'Unresolved app';const surface=p.source?.surfaceKind||p.source?.window||p.destination?.surfaceKind||'';const provenanceBadge=p.kind==='read'?`<span class="badge ${category}" title="${esc(prov.description)}">${esc(prov.label)}</span>`:'<span class="badge write">closed WRITE history</span>';const audit=identityAudit(p,prov);return `<details class="panel event" ${i>=d.retainedEvents.length-4?'open':''}><summary><span class="muted">${i+1}/${d.retainedEvents.length}</span><span class="badge ${p.kind==='read'?category:'write'}">${esc((p.kind||'event').toUpperCase())}</span><b>${esc(application)}</b>${surface?`<span class="muted">${esc(surface)}</span>`:''}${provenanceBadge}${e.contentTruncated?'<span class="badge ax_fallback">oldest event truncated</span>':''}<span class="spacer"></span><span class="muted">${esc(e.availableAt||'')}</span></summary><div class="panelbody auditgrid"><div><div class="subhead">${p.kind==='read'?'MODEL-FACING READ CONTENT':'COMPLETE MODEL-FACING WRITE EVENT'}</div><pre>${esc(eventText(p))}</pre></div>${audit?`<div><div class="subhead">READ SOURCE IDENTITY + EVIDENCE</div><pre>${esc(pretty(audit))}</pre></div>`:''}</div></details>`}).join('')}
-async function selectExample(id,updateURL){if(!state.filtered.some(r=>r.exampleID===id))return;state.selected=id;if(updateURL||hashID()!==id)setHash(id);drawList();document.querySelector('.item.active')?.scrollIntoView({block:'nearest'});const serial=++state.requestSerial;$('main').innerHTML='<div class="empty">Loading exact packed context…</div>';try{const d=await get('/api/example?id='+encodeURIComponent(id));if(serial!==state.requestSerial)return;const s=d.summary;const readCounts=Object.entries(s.retainedReadCounts||{}).map(([k,v])=>`<span class="badge ${k}">${v} ${esc(label(k))}</span>`).join('');$('main').innerHTML=`<div class="top"><h2>#${s.chronologicalOrdinal+1} · ${esc(s.application)} · closed substantive WRITE</h2><div class="nav"><button id="previous">← Previous</button><button id="next">Next →</button></div>${targetSessionBadge(s)}<span class="badge write">${s.microWriteCount} micro-WRITE${s.microWriteCount===1?'':'s'}</span>${readCounts}</div><section class="panel"><div class="panelhead"><h3>LOSS-BEARING CLOSED TARGET</h3><span class="spacer"></span><span class="badge write">authored content + paste marker + EOS</span></div><div class="panelbody target">${esc(d.targetText)}</div></section><div class="grid"><section class="panel"><div class="panelhead"><h3>MODEL-FACING WRITE DESTINATION</h3></div><div class="panelbody"><pre>${esc(pretty(d.modelFacingDestination))}</pre></div></section><section class="panel"><div class="panelhead"><h3>ORIGINAL PRE-MUTATION DESTINATION</h3></div><div class="panelbody"><pre>${esc(pretty(d.rawConditioningDestination))}</pre></div></section></div><div class="grid"><section class="panel"><div class="panelhead"><h3>EXACT PACKING PLAN</h3></div><div class="panelbody"><pre>${esc(pretty(d.contextPlan))}</pre></div></section><section class="panel"><div class="panelhead"><h3>EPISODE CONSTRUCTION</h3></div><div class="panelbody"><pre>${esc(pretty({targetMetadata:d.targetMetadata,episode:d.episode,targetMask:d.targetMask}))}</pre></div></section></div><section class="panel"><div class="panelhead"><h3>EXACT RETAINED MODEL HISTORY</h3><span class="spacer"></span><span class="muted">The Qwen v7 context plan over causal-v16 READ/WRITE serialization.</span></div><div class="panelbody" id="events"></div></section><section class="panel"><div class="panelhead"><h3>CONDITIONING QUERY</h3></div><div class="panelbody"><pre>${esc(pretty(d.conditioningQuery))}</pre></div></section>`;renderEvents(d);$('previous').onclick=()=>move(-1);$('next').onclick=()=>move(1)}catch(error){if(serial===state.requestSerial)$('main').innerHTML=`<pre>${esc(error.stack||error)}</pre>`}}
+async function selectExample(id,updateURL){if(!state.filtered.some(r=>r.exampleID===id))return;state.selected=id;if(updateURL||hashID()!==id)setHash(id);drawList();document.querySelector('.item.active')?.scrollIntoView({block:'nearest'});const serial=++state.requestSerial;$('main').innerHTML='<div class="empty">Loading exact packed context…</div>';try{const d=await get('/api/example?id='+encodeURIComponent(id));if(serial!==state.requestSerial)return;const s=d.summary;const readCounts=Object.entries(s.retainedReadCounts||{}).map(([k,v])=>`<span class="badge ${k}">${v} ${esc(label(k))}</span>`).join('');$('main').innerHTML=`<div class="top"><h2>#${s.chronologicalOrdinal+1} · ${esc(s.application)} · closed substantive WRITE</h2><div class="nav"><button id="previous">← Previous</button><button id="next">Next →</button></div>${targetSessionBadge(s)}<span class="badge write">${s.microWriteCount} micro-WRITE${s.microWriteCount===1?'':'s'}</span>${readCounts}</div><section class="panel"><div class="panelhead"><h3>LOSS-BEARING CLOSED TARGET</h3><span class="spacer"></span><span class="badge write">authored content + paste marker + EOS</span></div><div class="panelbody target">${esc(d.targetText)}</div></section><div class="grid"><section class="panel"><div class="panelhead"><h3>MODEL-FACING WRITE DESTINATION</h3></div><div class="panelbody"><pre>${esc(pretty(d.modelFacingDestination))}</pre></div></section><section class="panel"><div class="panelhead"><h3>ORIGINAL PRE-MUTATION DESTINATION</h3></div><div class="panelbody"><pre>${esc(pretty(d.rawConditioningDestination))}</pre></div></section></div><div class="grid"><section class="panel"><div class="panelhead"><h3>EXACT PACKING PLAN</h3></div><div class="panelbody"><pre>${esc(pretty(d.contextPlan))}</pre></div></section><section class="panel"><div class="panelhead"><h3>EPISODE CONSTRUCTION</h3></div><div class="panelbody"><pre>${esc(pretty({targetMetadata:d.targetMetadata,episode:d.episode,targetMask:d.targetMask}))}</pre></div></section></div><section class="panel"><div class="panelhead"><h3>EXACT RETAINED MODEL HISTORY</h3><span class="spacer"></span><span class="muted">${esc(state.meta.packerVersion)} over ${esc(state.meta.conversionVersion)} READ/WRITE serialization.</span></div><div class="panelbody" id="events"></div></section><section class="panel"><div class="panelhead"><h3>CONDITIONING QUERY</h3></div><div class="panelbody"><pre>${esc(pretty(d.conditioningQuery))}</pre></div></section>`;renderEvents(d);$('previous').onclick=()=>move(-1);$('next').onclick=()=>move(1)}catch(error){if(serial===state.requestSerial)$('main').innerHTML=`<pre>${esc(error.stack||error)}</pre>`}}
 async function init(){[state.meta,state.rows]=await Promise.all([get('/api/meta'),get('/api/examples')]);$('subtitle').textContent=`${state.meta.sample.method} · ${state.meta.episodeVersion} · ${state.meta.conversionVersion}`;const c=state.meta.counts,reads=c.corpusReadEvents;$('stats').innerHTML=`<div class="stat"><b id="visibleCount">${state.meta.sample.examples}</b>visible of ${c.lossBearingClosedWrites}</div><div class="stat"><b>${reads.ax_tree||0}</b>proper AX-pane READs</div><div class="stat"><b>${reads.ax_fallback||0}</b>fallback READs</div><div class="stat"><b>${reads.legacy||0}</b>legacy READs</div>`;$('legend').innerHTML=Object.entries(state.meta.readProvenanceLegend).filter(([k])=>k!=='unresolved').map(([k,v])=>`<div><span class="badge ${k}">${esc(v.label)}</span> <span class="muted">${esc(v.description)}</span></div>`).join('');[...new Set(state.rows.map(r=>r.application).filter(Boolean))].sort().forEach(v=>$('app').insertAdjacentHTML('beforeend',`<option>${esc(v)}</option>`));$('app').onchange=$('capture').onchange=$('search').oninput=apply;state.selected=hashID();apply();addEventListener('hashchange',()=>{const id=hashID();if(id&&id!==state.selected){state.selected=id;apply()}});addEventListener('keydown',event=>{if(event.target.matches('input,select,button'))return;if(event.key==='ArrowLeft')move(-1);if(event.key==='ArrowRight')move(1)})}
 init().catch(error=>$('main').innerHTML=`<pre>${esc(error.stack||error)}</pre>`)
 </script></body></html>'''
@@ -604,6 +652,10 @@ def main() -> int:
     parser.add_argument("--corpus", required=True, type=Path)
     parser.add_argument("--packed", required=True, type=Path)
     parser.add_argument(
+        "--artifact-root", type=Path,
+        help="directory containing per-session causal and reduced artifact subdirectories; sources are joined by exact digest",
+    )
+    parser.add_argument(
         "--sample-size", type=int, default=40,
         help="deterministic sample size; use 0 to review every example",
     )
@@ -620,6 +672,7 @@ def main() -> int:
         packed=arguments.packed,
         sample_size=arguments.sample_size,
         seed=arguments.seed,
+        artifact_root=arguments.artifact_root,
     )
     meta = store.meta()
     if arguments.check:

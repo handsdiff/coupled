@@ -1,4 +1,4 @@
-# Coupled checkpoint — 2026-09-03
+# Coupled checkpoint — 2026-09-06
 
 This is a snapshot of the current project state, not a changelog. Superseded
 designs, failed runs, and intermediate results belong in Git history:
@@ -75,7 +75,7 @@ projection therefore does not synthesize a full response from transient text
 that was never visible at once.
 
 The current review candidate is `ax-pane-read-v7` plus
-`phase1-semantic-v18`; neither is promoted merely by generating this artifact.
+`phase1-semantic-v24`; neither is promoted merely by generating this artifact.
 Pane v6 resolves each observation in capture-time order from either a
 trustworthy current AX pane or the last compatible pane proven in the same
 application process and window. Current browser document surfaces and repeated
@@ -97,14 +97,16 @@ interactions, different pointers, and different windows are not canonicalized.
 This fixes one physical state being represented as two READ surfaces without
 turning pane memory into a broad application heuristic.
 
-Pane-v6/v7 OCR keeps the complete selected pane as authoritative content. Its 20%
-vertical inset is comparison-only. Semantic v18 then removes only proven
-interface scaffolding, reconciles duplicate pointer/visual observations,
-records adjacent order-preserving novelty without destroying complete READ
-state, and consolidates passive dynamic responses to the last visible viewport.
-Clicks, scrolls, activation/focus changes, and pre-WRITE checkpoints remain hard
-consolidation boundaries. Packer v8 renders a READ delta only when its required
-predecessor survives context packing; otherwise it renders the complete state.
+Pane-v6/v7 OCR retains the complete selected pane and a separate 20% vertical-inset
+comparison observation. The v24 review pipeline removes interface scaffolding,
+reconciles pointer/visual observations, selects corroborated interior text for
+scrolls, records adjacent order-preserving novelty, and consolidates passive
+dynamic observations to the last visible viewport. Raw pane OCR remains intact.
+Material interactions and pre-WRITE checkpoints are intended consolidation
+boundaries. Packer v12 renders newly exposed text only when its required
+predecessor survives context packing; otherwise it restores the complete semantic
+state. The full-session audit below records where these rules still fail, so
+passing mechanical tests does not promote them to the canonical pipeline.
 
 The focused `phase1-visual-read-promotion-canary-1` is complete and immutable.
 It retained 28 promoted frames: 14 causally eligible frames each produced one
@@ -144,7 +146,7 @@ coordinates never bias the diff, there is no synthetic deletion fallback, and
 ambiguous evidence remains unresolved rather than inferred from keystrokes.
 
 The active pane-v2/semantic-v14 baseline selects an AX-defined READ panel from
-the retained full-window evidence. The pane-v7/semantic-v18 review candidate
+the retained full-window evidence. The pane-v7/semantic-v24 review candidate
 applies the stricter stateful pane policy above before any semantic
 deduplication. Causal v16 derives compact logical WRITE destinations and READ
 sources while preserving the original evidence. Proven VS Code terminal focus
@@ -390,6 +392,130 @@ latency projection, not proof that a live router knew the destination then.
   repeated READ tokens. Relative to v21/v10, conservative preservation adds
   259,825 model-input tokens. This is intentional redundancy rather than silent
   causal information loss.
+- Semantic-v23 is the sequence-aware READ shadow over the same immutable
+  September 2 evidence. Explicit scrolls first project authoritative pane OCR
+  through the stable 20-percent top/bottom interior and then emit one coherent
+  newly exposed edge. Exact/reflow-equivalent states emit empty; strongly
+  repeated cross-sensor states also emit empty rather than replaying a pane.
+  Passive visual progress resolves once to its final observed viewport. The
+  final verification removed intermediate-fragment accumulation: final content
+  takes precedence over reconstructing the response's transient process.
+  Click, scroll, activation, surface-transition,
+  pre-WRITE, and WRITE onset close passive groups; closing a group is distinct
+  from forgetting same-pane coverage. Pre-WRITE visual checkpoints remain raw
+  evidence and never become model-facing READs.
+- Two full v23 replays are byte-for-byte identical: `events.jsonl` SHA-256
+  `7c37e14517f1c08dd7331055a737c55e274dd9404f400d4c183157a74d92150f`
+  and `unresolved.jsonl` SHA-256
+  `5d7e82c544c6b87d306f40adb30ad67c8a7bf56e32ff63425721301179eae2d0`.
+  They contain 529 READs, 87 WRITEs, and 417 non-event dispositions. The
+  established sequence cases now behave as intended: ChatGPT 337→338 and
+  380→382→384→385 expose coherent scroll continuations once; Code 493→494 and
+  687–690 suppress repeated cross-sensor/reflow states; ChatGPT 504→505→507
+  retains readable continuation while suppressing the repeat; and Obsidian
+  477→478 emits the second viewport only from `continual learning...` onward,
+  searching inward past a clipped OCR edge rather than replaying preceding
+  paragraphs. Genuine returns after intervening work remain full READs.
+- Causal-v16 over v23 contains 616 converted events, 77 eligible micro-WRITE
+  examples, 10 target exclusions, zero context exclusions, and zero
+  rejections. End-to-end episode-v9 construction then produces 68 historical
+  closed WRITEs and 43 loss-bearing episodes (11 multi-WRITE targets), with no
+  micro-WRITEs in model-facing history. The episode manifest now propagates
+  the compatible source reducer version, enabling the same READ rendering in
+  actual episode packing rather than only in the micro-WRITE canary.
+  The audited episode Qwen 32K pack contains 854,921 input tokens and 1,011
+  target tokens including EOS; it removes 252,893 repeated READ tokens. Five
+  retained contexts require the documented complete-state fallback because
+  their overlap dependency is unavailable. This episode sample has no eligible
+  paste-action targets; the full contract suite separately tests paste masks.
+  Final artifacts use semantic-v23 `shadow-r20` (identical replay `r21`),
+  causal-v16 `r6`, episode-v9 `r2`, and episode Qwen pack-v12 `r2`.
+  Earlier r18/r19 and micro-WRITE packs remain reproducible development artifacts.
+- Final verification passes 184 assertions covering 41 established review rows,
+  all 35 passive groups, material-action boundaries, exact observation timing,
+  unchanged WRITE payloads, and closed-episode contexts. The source-linked
+  local report is `coupled-data/semantic-v23-verification/audit.json`; its
+  companion `verify.py` is review-only and never consumed by production.
+  Case 248's partially authored composer text is absent from its selected READ
+  and actual packed episode contexts. The subsequent September 6 user review
+  accepted the table OCR in 277/280, X-pane breadth, 477–478 repeat tradeoff,
+  and minor noise in 693; these are not outstanding cleanup blockers.
+  The review UI on port 8772 now uses final episode packing, opens with all
+  READs chronologically, and searches numeric review labels exactly.
+  The source-linked September 6 acceptance record covers 26 review rows.
+  Wider-session transfer remains a separate gate from that accepted snapshot.
+- The complete September 2, September 3, and September 4–6 source sessions
+  are stopped and hash-verified: 32,409 raw records, 979 finalized WRITE
+  attempts, and 9,423 PNGs. One last September 6 capture has pre-WRITE evidence
+  but no finalized attempt; SIGTERM does not flush an active WRITE in this
+  collector build. Raw integrity does not imply every human action was captured.
+  The completed local combined review is stored under
+  `coupled-data/sep02-04-semantic-v24-review-20260906` with bounded OCR batches
+  and a 6 GiB guard for larger construction stages. It is not a training freeze.
+  It has 4,042 reduced READs and 877 micro-WRITEs; episode normalization yields
+  3,992 READs, 665 closed WRITEs, and 387 current loss-bearing targets
+  (107 / 139 / 141 by source session). The remaining 278 closed WRITEs are
+  history-only. Twelve untrusted episode groups remain explicitly excluded.
+  Repeated reductions, 14,201 mechanical assertions, closed-corpus audits, and
+  the Qwen 32K packing audit pass. Nine grounded paste actions and exactly one
+  loss-bearing EOS per target survive packing. These are candidate counts,
+  not a statement that all targets are human-approved completed thoughts.
+- Semantic-v24 is an opt-in review candidate, not an automatic promotion of v23.
+  It sends pre-WRITE observations through ordinary content comparison instead
+  of blanket discard, and raises the cross-sensor ambiguous-repeat threshold
+  from 40% to 72%. The old snapshot preserves 25 of 26 approved rows; UI597
+  changes from empty to a 905-character viewport. In the approved v23 stream,
+  that acknowledgment appears in a later READ before the next WRITE. The
+  independent review subsequently confirmed an intervening switch to ChatGPT
+  and return to Code: that later reread is legitimate. Two occurrences alone
+  do not establish a regression. Compare repetition within the uninterrupted
+  Code sequence; do not blindly restore the earlier suppression.
+  The pre-WRITE correction is separately motivated by a missing terminal result.
+- The expanded source audit finds a fresh pane-selection limitation: 1,133 of
+  8,603 READ observations are selection-unresolved; 924 contain a named document
+  pane above the existing 95% window-area limit. Inspected examples include
+  readable fullscreen browser articles and Gemini responses. These counts are
+  not unique lost passages, and some other exclusions are legitimate. Pane
+  rules remain unchanged for the transfer test. Old UI116/601 app/pixel
+  mismatches remain a separate capture limitation. See the combined review's
+  `REVIEW_REPORT.md` and `pane-selection-quality-review.md` for raw-linked detail.
+- The full-day replay additionally removes recurring interface/ad lines in
+  approved X rows 396–399; panes, lineage, times, and post prose are unchanged.
+  Thus 21/26 full-day approval records are byte-identical, four reflect the
+  larger session's scaffolding calibration, and 597 is the threshold delta.
+- Fresh September 3 stationary-chat repeats remain: 263–264 repeats the same
+  response because stronger ordered overlap is attempted only for scrolling or
+  near-simultaneous sensor changes. Raw screenshots confirm the duplicate.
+  This is a comparison-coverage gap, not wrong pane selection; see
+  `fresh-repeat-review.md`. No new semantic patch is folded into this replay.
+  Some passive groups also start inside already-open material-input intervals;
+  the no-interior-boundary-start audit does not establish that every group is
+  entirely passive. Sampled surrounding events retained the content.
+- Combined construction now streams expanded histories and token records.
+  Old/new corpus, episode-review, and packed artifacts pass byte-equivalence
+  checks, including all 43 prior packed examples. The IO implementation is
+  separately fingerprinted in `construction-implementation.json`; the reducer,
+  OCR, target policy, serialization, masks, and tokenizer remain unchanged.
+  An audit-only stale v23 guard was corrected to require matching v23/v24
+  source and rendering contracts; its separate fingerprint is recorded in
+  `validation-implementation.json`. Generated artifacts did not change.
+- Fresh full-session checks reveal material remaining semantic failures:
+  lecture READ278 collapses different slides and omits two intermediate slides
+  from actual packed inputs; Gemini READ503 drops a sentence opener solely
+  because comparison OCR lacks a bullet glyph; stationary panes can still emit
+  full repeats. Source IDs and decoded-input proofs are in
+  `sep4-sequence-quality-review.md` and `fresh-repeat-review.md`.
+- Sep4-session READ1478 contains 488 characters of an ongoing human Code prompt.
+  The `->` versus OCR `→` difference defeats the exact-prefix authorship guard.
+  It enters four later packed contexts, not its own target. Separately, packed
+  target 56 is an unfinished Code prompt split by the episode navigation rule
+  before its continuous same-field completion. The completed successor is
+  history-only. These are real authorship/target-demarcation defects, not raw
+  file corruption; no case-specific repair was applied to this review corpus.
+- September 3 includes infrastructure credentials in a captured Wiki page.
+  The combined corpus is local and not privacy-redacted. Target exclusions
+  alone cannot prevent sensitive READ content appearing in later contexts;
+  no new external transmission is authorized by this review task.
 - `phase1-visual-read-promotion-canary-1` was stopped cleanly and reduced
   separately as a candidate-v14 validation trace; it does not alter the frozen
   semantic-v13 corpus.
@@ -415,19 +541,25 @@ Missing evidence stays unknown; these limits do not authorize guesses.
 
 ## Next step
 
-1. Manually review the pane-v7/semantic-v22 before/after UI, with particular
-   attention to current AX panes, recovered prior panes, the 16 unresolved
-   observations, browser chrome, VS Code editor/terminal transitions, passive
-   AI responses, material-action boundaries, complete-state fallbacks, bounded
-   ambiguous suppressions, and the named production cases.
-2. If that review finds no remaining material issue beyond the explicitly
-   deferred screen-occlusion case, apply the same pane-v7/semantic-v22 rules to
-   the untouched September 3 session and inspect its new edge cases before any
-   canonical-corpus promotion.
-3. Audit READ surfaces, WRITE destinations, closed-episode boundaries,
-   unresolved records, model-visible histories, loss-bearing targets, causal
-   masks, and packing before freezing the new corpus.
-4. Resume chronological score-before-update training only after that corpus
+Development checkpoint: the combined v24 implementation is reproducible but
+not training-ready. The independent September 6 review prioritizes ordinary
+same-pane repetition first (Sep3 263–264, 1138–1139; Sep4 327–328), with the
+approved scroll sequences and app-switch-and-return rereads preserved. Text
+grounding/authorship, pane selection, distinct-slide boundaries, and premature
+WRITE closure are subsequent separately reviewed changes. The reviewer also
+confirmed incomplete targets 87, 116, 212, and 215 in addition to target 56.
+
+1. Review the completed combined corpus: READs on port 8772, closed targets and
+   exact packed context on 8773, original approved comparison on 8774.
+   `review-guide.md` links the fresh failures by source identity. Full-day Before
+   panels use the recorded live preview; they are not the old pane-v2 baseline.
+2. Resolve the demonstrated lecture-state loss, interior OCR hole, authorship
+   contamination, incomplete-prompt target, fullscreen-pane exclusions, and
+   stationary-repeat comparison gap with general, separately versioned rules.
+   Preserve approved cases and the explicit UI597 tradeoff; no point fixes.
+3. Replay the same immutable evidence and compare both targets and actual packed
+   histories. Keep mechanical audit success separate from semantic approval.
+4. Resume chronological score-before-update training only after the corpus
    passes. Preserve exact inputs, outputs, routes, timing, and costs for later
    rescoring.
 

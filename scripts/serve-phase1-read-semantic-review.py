@@ -9,8 +9,10 @@ import json
 import mimetypes
 import urllib.parse
 from collections import Counter
+from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import RLock
 from typing import Any
 
 from phase1_read_novelty import (
@@ -57,6 +59,9 @@ def review_projection(
             "suppress_nonsemantic_microglyph": (
                 "No newly available text · OCR micro-change"
             ),
+            "suppress_unstable_scroll_edge": (
+                "No newly available text · scroll edge not stable yet"
+            ),
         }
         return "[No new READ text]", labels.get(
             decision, "No newly available text"
@@ -77,6 +82,8 @@ def review_projection(
         )
         if decision == "emit_stable_interior_after_clipped_boundary":
             label = "Stable interior text retained · clipped edge removed"
+        elif decision == "emit_scroll_new_edge":
+            label = "Newly exposed scroll edge retained"
         elif decision == "emit_contiguous_new_content":
             label = "New contiguous text retained" + suffix
         else:
@@ -112,8 +119,7 @@ def load_json(path: Path) -> dict[str, Any]:
     return value
 
 
-def load_jsonl(path: Path) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
+def iter_jsonl(path: Path) -> Iterator[dict[str, Any]]:
     with path.open(encoding="utf-8") as handle:
         for line_number, line in enumerate(handle, 1):
             if not line.strip():
@@ -121,12 +127,52 @@ def load_jsonl(path: Path) -> list[dict[str, Any]]:
             value = json.loads(line)
             if not isinstance(value, dict):
                 raise ReviewError(f"expected object at {path}:{line_number}")
-            rows.append(value)
-    return rows
+            yield value
+
+
+def load_jsonl(path: Path) -> list[dict[str, Any]]:
+    return list(iter_jsonl(path))
+
+
+def raw_review_index(path: Path) -> dict[str, dict[str, Any]]:
+    """Keep screenshot/geometry metadata, never complete AX trees or writes."""
+    keys = {
+        "recordID", "recordType", "sourceFrameRecordID", "capturedAt",
+        "screenshotRelativePath", "screenshotSHA256", "screenshotPixelWidth",
+        "screenshotPixelHeight", "windowBounds", "x", "y",
+        "rawInteractionX", "rawInteractionY", "semanticContentPointReason",
+        "appName", "bundleIdentifier", "windowTitle", "content",
+    }
+    result = {}
+    for row in iter_jsonl(path):
+        record_id = row.get("recordID")
+        if not record_id or not (
+            row.get("screenshotRelativePath")
+            or row.get("recordType") in {
+                "visual_ocr_observation", "screen_ocr_observation",
+            }
+            or row.get("recordType") == "read_observation"
+        ):
+            continue
+        item = {key: value for key, value in row.items() if key in keys}
+        surface = row.get("surface")
+        if isinstance(surface, dict):
+            item["surface"] = {"windowBounds": surface.get("windowBounds")}
+        result[str(record_id)] = item
+    return result
 
 
 def source_ids(row: dict[str, Any]) -> tuple[str, ...]:
     return tuple(str(value) for value in row.get("sourceRecordIDs", []) if value)
+
+
+def baseline_event_key(row: dict[str, Any]) -> tuple[Any, ...]:
+    event_id = row.get("eventID")
+    if event_id:
+        return ("event", str(event_id))
+    # Collector preview rows have no eventID. Different observations in a
+    # consolidated candidate must not all collapse under the key None.
+    return ("preview", row.get("sequence"), source_ids(row))
 
 
 def numeric(value: Any) -> float | None:
@@ -206,12 +252,13 @@ class ReviewStore:
             "phase1-semantic-v16", "phase1-semantic-v17",
             "phase1-semantic-v18", "phase1-semantic-v19",
             "phase1-semantic-v20", "phase1-semantic-v21",
-            "phase1-semantic-v22",
+            "phase1-semantic-v22", "phase1-semantic-v23", "phase1-semantic-v24",
         }:
             raise ReviewError(
-                "candidate must be phase1-semantic-v16 through v22"
+                "candidate must be phase1-semantic-v16 through v24"
             )
         self.candidate_version = str(candidate_version)
+        self.session_id = str(candidate_manifest.get("sessionID", ""))
         manifest_pairs = [(self.candidate, candidate_manifest)]
         if self.baseline is not None and base_manifest is not None:
             manifest_pairs.insert(0, (self.baseline, base_manifest))
@@ -247,13 +294,10 @@ class ReviewStore:
             str(row["sourceRecordID"]): row for row in load_jsonl(evidence_path)
         }
         unresolved_surface_rows = load_jsonl(self.surfaces / "unresolved.jsonl")
-        raw_rows = load_jsonl(self.source / "raw.jsonl")
-        raw_by_id = {
-            str(row["recordID"]): row for row in raw_rows if row.get("recordID")
-        }
+        raw_by_id = raw_review_index(self.source / "raw.jsonl")
         frame_by_ocr = {
             str(row["recordID"]): str(row["sourceFrameRecordID"])
-            for row in raw_rows
+            for row in raw_by_id.values()
             if row.get("recordType") == "visual_ocr_observation"
             and row.get("recordID") and row.get("sourceFrameRecordID")
         }
@@ -283,14 +327,16 @@ class ReviewStore:
         ]
         candidate_by_id = {str(row["eventID"]): row for row in candidate_reads}
         model_occurrences: dict[str, list[dict[str, Any]]] = {}
+        model_content_pool: dict[str, str] = {}
         packing_summary: dict[str, Any] | None = None
         if self.compiled is not None and self.packed is not None:
             packing_manifest = load_json(self.packed / "packing.json")
             if packing_manifest.get("packerVersion") not in {
                 "phase1-token-pack-v8", "phase1-token-pack-v9",
                 "phase1-token-pack-v10", "phase1-token-pack-v11",
+                "phase1-token-pack-v12",
             }:
-                raise ReviewError("packed review requires phase1-token-pack-v8 through v11")
+                raise ReviewError("packed review requires phase1-token-pack-v8 through v12")
             if packing_manifest.get("packing", {}).get(
                 "readNoveltyRendering", {}
             ).get("status") != "shadow_opt_in":
@@ -301,25 +347,34 @@ class ReviewStore:
             ).get("events.jsonl")
             if sha256(compiled_events_path) != expected_compiled_hash:
                 raise ReviewError("packed artifact is not bound to supplied compiled events")
-            compiled_events = {
-                str(item["sourceEventID"]): item
-                for item in load_jsonl(compiled_events_path)
-            }
+            # A shared episode corpus can span many sessions. Retain only this
+            # session's READ payloads while still validating all plan references.
+            compiled_ids = set()
+            compiled_events = {}
+            for item in iter_jsonl(compiled_events_path):
+                event_id = str(item["sourceEventID"])
+                compiled_ids.add(event_id)
+                if event_id in candidate_by_id:
+                    if item.get("sessionID") != self.session_id:
+                        raise ReviewError(f"compiled READ session differs: {event_id}")
+                    compiled_events[event_id] = item
             plan_path = self.packed / "context-plans.jsonl"
             expected_plan_hash = packing_manifest.get(
                 "artifactDigestsSHA256", {}
             ).get("context-plans.jsonl")
             if sha256(plan_path) != expected_plan_hash:
                 raise ReviewError("packed context-plan digest differs")
-            for plan in load_jsonl(plan_path):
+            for plan in iter_jsonl(plan_path):
                 for block in plan.get("retainedContextBlocks", []):
                     rendering = block.get("readRendering")
                     if not isinstance(rendering, dict):
                         continue
                     event_id = str(block.get("contextBlockID", ""))
+                    if event_id not in compiled_ids:
+                        raise ReviewError(f"packed block lacks compiled event: {event_id}")
                     compiled_event = compiled_events.get(event_id)
                     if compiled_event is None:
-                        raise ReviewError(f"packed block lacks compiled event: {event_id}")
+                        continue
                     serialized = block.get("serializedOverride")
                     if serialized is None:
                         serialized = compiled_event.get("serialized")
@@ -327,6 +382,9 @@ class ReviewStore:
                         model_payload = json.loads(serialized)
                     except (TypeError, json.JSONDecodeError) as error:
                         raise ReviewError(f"invalid packed READ projection: {event_id}") from error
+                    content = model_payload.get("content")
+                    if isinstance(content, str):
+                        content = model_content_pool.setdefault(content, content)
                     model_occurrences.setdefault(event_id, []).append({
                         "exampleID": plan.get("exampleID"),
                         "targetEventID": plan.get("targetEventID"),
@@ -334,7 +392,7 @@ class ReviewStore:
                         "dependencyAvailable": rendering.get("dependencyAvailable"),
                         "dependsOnEventID": rendering.get("dependsOnEventID"),
                         "contentTruncated": block.get("contentTruncated"),
-                        "modelFacingContent": model_payload.get("content"),
+                        "modelFacingContent": content,
                         "serializedSHA256": block.get("serializedSHA256"),
                     })
             packing_summary = {
@@ -351,7 +409,7 @@ class ReviewStore:
         for row in candidate_reads:
             ids = source_ids(row)
             baseline_candidates = {
-                str(item.get("eventID")): item
+                baseline_event_key(item): item
                 for source_id in ids
                 for item in base_reads_by_source.get(source_id, [])
             }
@@ -374,7 +432,7 @@ class ReviewStore:
             novelty = row.get("readNovelty", {})
             predecessor = candidate_by_id.get(str(novelty.get("dependsOnEventID", "")))
             image_keys: list[dict[str, Any]] = []
-            seen_image_hashes: set[str] = set()
+            image_by_frame: dict[str, dict[str, Any]] = {}
             for source_id in ids:
                 raw_id = frame_by_ocr.get(source_id, source_id)
                 raw = raw_by_id.get(raw_id, {})
@@ -382,23 +440,34 @@ class ReviewStore:
                 expected_hash = raw.get("screenshotSHA256")
                 if isinstance(relative, str) and isinstance(expected_hash, str):
                     path = (self.source / relative).resolve()
-                    if (
-                        self.source in path.parents and path.is_file()
-                        and expected_hash not in seen_image_hashes
-                    ):
-                        seen_image_hashes.add(expected_hash)
-                        image_key = f"{row['eventID']}:{len(image_keys)}"
-                        self.images[image_key] = (path, expected_hash)
-                        image_keys.append({
-                            "key": image_key,
-                            "sourceRecordID": source_id,
-                            "capturedAt": raw.get("capturedAt"),
-                            "recordType": raw.get("recordType"),
-                            "pixelWidth": raw.get("screenshotPixelWidth"),
-                            "pixelHeight": raw.get("screenshotPixelHeight"),
-                        })
+                    if self.source in path.parents and path.is_file():
+                        image = image_by_frame.get(raw_id)
+                        if image is None:
+                            image_key = f"{row['eventID']}:{len(image_keys)}"
+                            self.images[image_key] = (path, expected_hash)
+                            image = {
+                                "key": image_key,
+                                "sourceRecordID": source_id,
+                                "sourceFrameRecordID": raw_id,
+                                "sourceRecordIDs": [],
+                                "capturedAt": raw.get("capturedAt"),
+                                "recordType": raw.get("recordType"),
+                                "pixelWidth": raw.get("screenshotPixelWidth"),
+                                "pixelHeight": raw.get("screenshotPixelHeight"),
+                            }
+                            image_by_frame[raw_id] = image
+                            image_keys.append(image)
+                        image["sourceRecordIDs"].append(source_id)
+                        # Pane evidence belongs to the OCR observation linked
+                        # to this exact frame, not to its pixel hash. A later
+                        # identical frame can have different attention evidence.
+                        if source_id in evidence:
+                            observation = raw_by_id.get(source_id, raw)
+                            image["sourceRecordID"] = source_id
+                            image["recordType"] = observation.get("recordType")
             image_by_source = {
-                str(item.get("sourceRecordID")): item for item in image_keys
+                source_id: item for item in image_keys
+                for source_id in item["sourceRecordIDs"]
             }
             pane_evidence: list[dict[str, Any]] = []
             for source_id in ids:
@@ -532,6 +601,9 @@ class ReviewStore:
                 ),
                 "dynamicVisualConsolidation": row.get("reduction", {}).get(
                     "dynamicVisualConsolidation"
+                ),
+                "samePaneSequence": row.get("reduction", {}).get(
+                    "samePaneSequence"
                 ),
                 "modelOccurrences": occurrences,
                 "modelRenderingCounts": dict(sorted(rendering_counts.items())),
@@ -670,6 +742,7 @@ class ReviewStore:
                 "paneEvidence": pane_evidence,
                 "observationReconciliation": None,
                 "dynamicVisualConsolidation": None,
+                "samePaneSequence": None,
                 "modelOccurrences": [],
                 "modelRenderingCounts": {},
                 "modelChanged": False,
@@ -678,6 +751,15 @@ class ReviewStore:
                 "unresolvedReason": reason,
             })
         rows.sort(key=lambda row: (str(row.get("capturedAt") or ""), row["id"]))
+        baseline_kind = "collector_preview" if self.baseline_preview else "reviewed_semantic"
+        baseline_description = (
+            "Full-window OCR shown live during collection; not the original pane-v2 review."
+            if self.baseline_preview else
+            "Previously reviewed semantic READ projection (phase1-semantic-v14)."
+        )
+        for row in rows:
+            row["baselineKind"] = baseline_kind
+            row["baselineDescription"] = baseline_description
         self.rows = rows
         self.by_id = {row["id"]: row for row in rows}
         decisions = Counter(str(row["novelty"].get("decision", "missing")) for row in rows)
@@ -688,6 +770,8 @@ class ReviewStore:
         self.summary = {
             "status": "semantic_read_shadow_review_only_not_training_authority",
             "baselineVersion": baseline_version,
+            "baselineKind": baseline_kind,
+            "baselineDescription": baseline_description,
             "candidateVersion": self.candidate_version,
             "sourceRawSHA256": base_raw,
             "readCount": len(candidate_reads),
@@ -740,6 +824,84 @@ class ReviewStore:
         return result
 
 
+class ReviewSessions:
+    """Lazy session routing; at most one expanded ReviewStore lives in memory."""
+
+    def __init__(self, configurations: list[dict[str, Any]], factory=ReviewStore):
+        if not configurations:
+            raise ReviewError("sessions manifest must contain at least one session")
+        self.configurations: dict[str, dict[str, Any]] = {}
+        for configuration in configurations:
+            session_id = configuration.get("id")
+            if not isinstance(session_id, str) or not session_id.strip():
+                raise ReviewError("every review session needs a nonempty id")
+            if session_id in self.configurations:
+                raise ReviewError(f"duplicate review session id: {session_id}")
+            self.configurations[session_id] = configuration
+        self.factory = factory
+        self.lock = RLock()
+        self.cached_id: str | None = None
+        self.cached_store: ReviewStore | None = None
+
+    @classmethod
+    def from_manifest(cls, path: Path) -> ReviewSessions:
+        manifest = load_json(path)
+        sessions = manifest.get("sessions")
+        if not isinstance(sessions, list) or not all(
+            isinstance(item, dict) for item in sessions
+        ):
+            raise ReviewError("sessions manifest requires a sessions array")
+
+        def artifact(value: Any) -> Path | None:
+            if value is None:
+                return None
+            if not isinstance(value, str) or not value:
+                raise ReviewError("review artifact paths must be nonempty strings")
+            return (path.resolve().parent / value).resolve()
+
+        configurations = []
+        for item in sessions:
+            baseline = artifact(item.get("baseline"))
+            preview = artifact(item.get("baselinePreview"))
+            if (baseline is None) == (preview is None):
+                raise ReviewError("every session needs baseline or baselinePreview")
+            candidate = artifact(item.get("candidate"))
+            surfaces = artifact(item.get("readSurfaceEvidence"))
+            source = artifact(item.get("source"))
+            if any(value is None for value in (candidate, surfaces, source)):
+                raise ReviewError("every session needs candidate, readSurfaceEvidence, source")
+            compiled = artifact(manifest.get("compiled"))
+            packed = artifact(manifest.get("packed"))
+            if (compiled is None) != (packed is None):
+                raise ReviewError("sessions manifest needs both compiled and packed")
+            configurations.append({
+                "id": item.get("id"), "label": item.get("label") or item.get("id"),
+                "arguments": (baseline, preview, candidate, surfaces, source, compiled, packed),
+            })
+        return cls(configurations)
+
+    def index(self) -> list[dict[str, str]]:
+        return [{"id": item["id"], "label": str(item["label"])}
+                for item in self.configurations.values()]
+
+    def get(self, session_id: str = "") -> ReviewStore:
+        with self.lock:
+            session_id = session_id or next(iter(self.configurations))
+            if session_id not in self.configurations:
+                raise ReviewError(f"unknown review session: {session_id}")
+            if self.cached_id != session_id:
+                # Release the previous day before constructing the next; this is
+                # intentionally not an unbounded cache of raw/packed evidence.
+                self.cached_id = None
+                self.cached_store = None
+                self.cached_store = self.factory(
+                    *self.configurations[session_id]["arguments"]
+                )
+                self.cached_id = session_id
+            assert self.cached_store is not None
+            return self.cached_store
+
+
 HTML = r'''<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -783,13 +945,14 @@ img{display:block;max-width:100%;max-height:560px;margin:auto}.wide{grid-column:
     <div id="meta" class="muted"></div>
     <div id="stats" class="stats"></div>
     <div class="filters">
+      <select id="session" aria-label="Collection day" hidden></select>
       <select id="scope">
         <option value="canonicalized">Pane-v7 canonicalizations</option>
         <option value="changed">Changed READs</option>
         <option value="model-changed">Adjacent overlap removed</option>
         <option value="scaffolding">Interface text removed</option>
         <option value="unresolved">Unresolved / excluded panes</option>
-        <option value="">All READs</option>
+        <option value="" selected>All READs</option>
       </select>
       <select id="app"><option value="">All applications</option></select>
       <select id="pane"><option value="">All pane-selection methods</option></select>
@@ -802,6 +965,9 @@ img{display:block;max-width:100%;max-height:560px;margin:auto}.wide{grid-column:
 <script>
 const $=x=>document.getElementById(x);
 const esc=s=>String(s??'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const sessionID=new URLSearchParams(location.search).get('session')||'';
+function api(path){return path+(path.includes('?')?'&':'?')+'session='+encodeURIComponent(sessionID)}
+async function fetchJSON(path){const response=await fetch(path);let value;try{value=await response.json()}catch(error){throw Error(`HTTP ${response.status}: ${response.statusText}`)}if(!response.ok||value?.error)throw Error(value?.error||`HTTP ${response.status}: ${response.statusText}`);return value}
 let rows=[],filtered=[],index=0;
 function inScope(r,s){
   if(!s)return true;
@@ -838,19 +1004,23 @@ function paneSummary(p){
   const canonical=p.canonicalization?.sourceRecordID?` · canonical outer pane from ${esc(p.canonicalization.sourceRecordID)} after ${esc(p.canonicalization.intervalSeconds)}s`:'';
   return `<div class="paneinfo"><div class="primary ${resolutionClass}">${esc(p.ruleVersion)} · ${esc(p.method||'unknown')} · ${esc(p.confidence||'unknown')}</div><div>${esc(p.reason||'no reason')} · AX ${esc(role)}${p.selectedDepth==null?'':` · depth ${esc(p.selectedDepth)}`}${pointReason}${recovery}${canonical}</div><div class="muted">source ${esc(p.sourceRecordID)} · ROI ${esc(JSON.stringify(p.regionOfInterest||null))}</div></div>`;
 }
-function imagePanels(r){
+function imagePanels(r,selectedIndex=null){
   const values=r.images||[],panes=r.paneEvidence||[];
   if(!values.length)return '';
-  return `<section class="panel wide"><h2>Raw screenshot${values.length===1?'':'s'} · exact pane selection and pointer evidence</h2>${values.map((item,i)=>{
+  const i=selectedIndex===null?values.length-1:Math.max(0,Math.min(values.length-1,selectedIndex));
+  const selector=values.length>1?`<div class="shotmeta"><label>Observation <select id="observation">${values.map((item,n)=>`<option value="${n}" ${n===i?'selected':''}>${n+1}/${values.length} · ${esc(item.capturedAt)}${n===values.length-1?' · final observation':''}</option>`).join('')}</select></label><div class="muted">One screenshot is loaded at a time. Earlier observations remain available here.</div></div>`:'';
+  return `<section id="rawScreenshotPanel" class="panel wide"><h2>Raw screenshot${values.length===1?'':'s'} · exact pane selection and pointer evidence</h2>${selector}${[values[i]].map(item=>{
     const p=panes.find(value=>value.imageKey===item.key)||panes.find(value=>value.sourceRecordID===item.sourceRecordID);
     const raw=p?.rawPointer,semantic=p?.semanticPoint;
     const rawMarker=raw&&!samePoint(raw,semantic)?point(raw,'raw','Raw physical pointer'):'';
-    return `<div class="shot"><div class="muted shotmeta">${i+1}/${values.length} · ${esc(item.capturedAt)} · ${esc(item.recordType)} · ${esc(item.pixelWidth)}×${esc(item.pixelHeight)}</div><div class="shotstage"><img src="/api/image?id=${encodeURIComponent(item.key)}">${rect(p?.pane,'pane')}${rect(p?.comparison,'comparison')}${rawMarker}${point(semantic,'semantic','Semantic point used for AX pane selection')}</div>${paneSummary(p)}<div class="legend"><span><i class="lpane"></i>selected pane / authoritative OCR</span><span><i class="lcomparison"></i>comparison crop</span><span><i class="lsemantic"></i>semantic point</span><span><i class="lraw"></i>raw pointer when different</span></div></div>`;
+    return `<div class="shot"><div class="muted shotmeta">${i+1}/${values.length} · ${esc(item.capturedAt)} · ${esc(item.recordType)} · ${esc(item.pixelWidth)}×${esc(item.pixelHeight)}</div><div class="shotstage"><img decoding="async" src="${api('/api/image?id='+encodeURIComponent(item.key))}">${rect(p?.pane,'pane')}${rect(p?.comparison,'comparison')}${rawMarker}${point(semantic,'semantic','Semantic point used for AX pane selection')}</div>${paneSummary(p)}<div class="legend"><span><i class="lpane"></i>selected pane / authoritative OCR</span><span><i class="lcomparison"></i>comparison crop</span><span><i class="lsemantic"></i>semantic point</span><span><i class="lraw"></i>raw pointer when different</span></div></div>`;
   }).join('')}</section>`;
 }
+function bindImageSelection(r){const selector=$('observation');if(selector)selector.onchange=()=>{$('rawScreenshotPanel').outerHTML=imagePanels(r,Number(selector.value));bindImageSelection(r)}}
 function apply(){
   const scope=$('scope').value,a=$('app').value,p=$('pane').value,q=$('search').value.toLowerCase();
-  filtered=rows.filter(r=>inScope(r,scope)&&(!a||r.application===a)&&(!p||r.paneMethod===p)&&(!q||(r.sequence+' '+(r.baselineSequences||[]).join(' ')+' '+(r.sourceRecordIDs||[]).join(' ')+' '+r.windowTitle+' '+r.application+' '+r.paneMethod+' '+r.paneReason).toLowerCase().includes(q)));
+  const numberQuery=q.match(/^#?(\d+)$/);
+  filtered=rows.filter(r=>inScope(r,scope)&&(!a||r.application===a)&&(!p||r.paneMethod===p)&&(!q||(numberQuery?[r.sequence,...(r.baselineSequences||[])].includes(Number(numberQuery[1])):(r.sequence+' '+(r.baselineSequences||[]).join(' ')+' '+(r.sourceRecordIDs||[]).join(' ')+' '+r.windowTitle+' '+r.application+' '+r.paneMethod+' '+r.paneReason).toLowerCase().includes(q))));
   index=Math.min(index,Math.max(0,filtered.length-1));list();show();
 }
 function list(){
@@ -860,18 +1030,32 @@ function list(){
 async function show(){
   const s=filtered[index];
   if(!s){$('main').innerHTML='<div class="empty">No matching READs</div>';return}
-  const r=await(await fetch('/api/read?id='+encodeURIComponent(s.id))).json();
+  try{
+  const r=await fetchJSON(api('/api/read?id='+encodeURIComponent(s.id)));
+  if(filtered[index]?.id!==s.id)return;
   const recon=r.observationReconciliation?` · reconciled ${r.observationReconciliation.memberObservationIDs?.length||0} sensor observations`:'';
-  const dynamic=r.dynamicVisualConsolidation?` · settled ${r.dynamicVisualConsolidation.memberCount} dynamic states to the final state`:'';
+  const sequence=r.samePaneSequence?` · combined ${r.samePaneSequence.memberCount} passive observations at ${r.samePaneSequence.closureReason}`:'';
+  const dynamic=r.dynamicVisualConsolidation?` · settled ${r.dynamicVisualConsolidation.memberCount} dynamic states to the final state`:sequence;
+  const fallback=r.modelFallback?`<span class="tag warning">Some 32K contexts restore the full READ because its required predecessor was truncated</span>`:'';
   const currentSequence=r.candidateSequence!==r.sequence?` · current semantic event #${r.candidateSequence}`:'';
-  const originals=(r.baselineReads||[]).length?r.baselineReads.map(v=>`--- Original READ #${v.sequence} · ${v.capturedAt} ---\n${v.content||'[empty]'}`).join('\n\n'):r.baselineContent||'[No READ in the original version]';
+  const preview=r.baselineKind==='collector_preview';
+  const baselineTitle=preview?'Recorded live collector preview':'Original reviewed READ';
+  const baselineRowLabel=preview?'Live preview READ':'Original READ';
+  const originals=(r.baselineReads||[]).length?r.baselineReads.map(v=>`--- ${baselineRowLabel} #${v.sequence} · ${v.capturedAt} ---\n${v.content||'[empty]'}`).join('\n\n'):r.baselineContent||'[No corresponding baseline READ]';
   const baselineLabels=(r.baselineSequences||[]).map(v=>'#'+v).join(', ')||'#'+r.sequence;
-  $('main').innerHTML=`<div class="top"><h1>Review #${r.sequence} ${esc(r.application)} · ${esc(r.windowTitle)}</h1><span class="tag">${esc(outcomeLabel(r))}</span><span class="tag">${index+1} of ${filtered.length}</span></div><div class="muted">original baseline event${(r.baselineSequences||[]).length===1?'':'s'} ${esc(baselineLabels)}${esc(currentSequence)} · ${esc(r.capturedAt)} · cases are chronological within the selected filter${esc(recon)}${esc(dynamic)}</div><div class="grid">${imagePanels(r)}<section class="panel"><h2>Before · Original READ event${(r.baselineSequences||[]).length===1?'':'s'}</h2><pre>${esc(originals)}</pre></section><section class="panel"><h2>After · Newly available READ text</h2><pre>${esc(currentRead(r))}</pre></section></div>`;
+  $('main').innerHTML=`<div class="top"><h1>Review #${r.sequence} ${esc(r.application)} · ${esc(r.windowTitle)}</h1><span class="tag">${esc(outcomeLabel(r))}</span>${fallback}<span class="tag">${index+1} of ${filtered.length}</span></div><div class="muted">${esc(baselineRowLabel)} ${esc(baselineLabels)}${esc(currentSequence)} · ${esc(r.capturedAt)} · cases are chronological within the selected filter${esc(recon)}${esc(dynamic)}</div><div class="grid">${imagePanels(r)}<section class="panel"><h2>Before · ${esc(baselineTitle)}</h2><div class="muted shotmeta">${esc(r.baselineDescription)}</div><pre>${esc(originals)}</pre></section><section class="panel"><h2>After · Newly available READ text</h2><pre>${esc(currentRead(r))}</pre></section></div>`;
+  bindImageSelection(r);
+  }catch(error){if(filtered[index]?.id===s.id)$('main').textContent='Unable to load READ: '+(error.message||error)}
 }
-Promise.all([fetch('/api/summary').then(r=>r.json()),fetch('/api/index').then(r=>r.json())]).then(([s,x])=>{
+Promise.all([fetchJSON(api('/api/summary')),fetchJSON(api('/api/index')),fetchJSON('/api/sessions')]).then(([s,x,days])=>{
+  if(s.error||x.error)throw Error(s.error||x.error);
+  days.forEach(day=>{const option=document.createElement('option');option.value=day.id;option.textContent=day.label;$('session').appendChild(option)});
+  $('session').value=sessionID||days[0]?.id||'';
+  $('session').hidden=days.length<2;
+  $('session').onchange=()=>{location.href='/?session='+encodeURIComponent($('session').value)};
   rows=x;
-  if(!rows.some(r=>r.paneCanonicalized))$('scope').value='changed';
-  $('meta').textContent=`${s.baselineVersion} → ${s.candidateVersion} · shadow review`;
+  const dayLabel=days.find(day=>day.id===$('session').value)?.label;
+  $('meta').textContent=`${dayLabel?dayLabel+' · ':''}${s.baselineVersion} → ${s.candidateVersion} · shadow review`;
   $('stats').innerHTML=`<span class="tag">READs ${s.readCount}</span><span class="tag changed">changed ${s.changedReadCount}</span><span class="tag">unresolved ${s.unresolvedPaneObservationCount}</span>`;
   [...new Set(rows.map(r=>r.application).filter(Boolean))].sort().forEach(v=>$('app').insertAdjacentHTML('beforeend',`<option>${esc(v)}</option>`));
   [...new Set(rows.map(r=>r.paneMethod).filter(Boolean))].sort().forEach(v=>$('pane').insertAdjacentHTML('beforeend',`<option>${esc(v)}</option>`));
@@ -879,14 +1063,17 @@ Promise.all([fetch('/api/summary').then(r=>r.json()),fetch('/api/index').then(r=
   const requested=decodeURIComponent(location.hash.slice(1));
   const requestedIndex=filtered.findIndex(r=>r.id===requested||String(r.sequence)===requested);
   if(requestedIndex>=0){index=requestedIndex;list();show()}
+  else if(requested){filtered=[];$('items').innerHTML='';$('main').textContent='Requested READ was not found in this session: '+requested}
 }).catch(e=>$('main').textContent=e.stack||e);
 </script>'''
 
 
-def handler(store: ReviewStore) -> type[BaseHTTPRequestHandler]:
+def handler(repository: ReviewStore | ReviewSessions) -> type[BaseHTTPRequestHandler]:
+    request_lock = repository.lock if isinstance(repository, ReviewSessions) else RLock()
+
     class Handler(BaseHTTPRequestHandler):
-        def send_body(self, body: bytes, content_type: str) -> None:
-            self.send_response(200)
+        def send_body(self, body: bytes, content_type: str, status: int = 200) -> None:
+            self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
@@ -894,11 +1081,33 @@ def handler(store: ReviewStore) -> type[BaseHTTPRequestHandler]:
             self.wfile.write(body)
 
         def do_GET(self) -> None:  # noqa: N802
+            # Serialize session construction and responses, so concurrent image
+            # requests cannot retain the evicted day's expanded store.
+            with request_lock:
+                try:
+                    self.serve_get()
+                except (ReviewError, OSError, json.JSONDecodeError) as error:
+                    self.send_body(
+                        json.dumps({"error": str(error)}).encode(),
+                        "application/json", 409,
+                    )
+
+        def serve_get(self) -> None:
             parsed = urllib.parse.urlparse(self.path)
             query = urllib.parse.parse_qs(parsed.query)
             if parsed.path in {"/", "/index.html"}:
                 self.send_body(HTML.encode(), "text/html; charset=utf-8")
-            elif parsed.path == "/api/summary":
+                return
+            if parsed.path == "/api/sessions":
+                entries = repository.index() if isinstance(repository, ReviewSessions) else [
+                    {"id": "", "label": "Current session"}
+                ]
+                self.send_body(json.dumps(entries).encode(), "application/json")
+                return
+            store = repository.get(query.get("session", [""])[0]) if isinstance(
+                repository, ReviewSessions
+            ) else repository
+            if parsed.path == "/api/summary":
                 self.send_body(json.dumps(store.summary).encode(), "application/json")
             elif parsed.path == "/api/index":
                 self.send_body(json.dumps(store.index()).encode(), "application/json")
@@ -930,32 +1139,52 @@ def handler(store: ReviewStore) -> type[BaseHTTPRequestHandler]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    baseline_group = parser.add_mutually_exclusive_group(required=True)
+    parser.add_argument(
+        "--sessions", type=Path,
+        help="JSON manifest of per-session artifacts plus shared compiled/packed corpus; paths relative to manifest",
+    )
+    baseline_group = parser.add_mutually_exclusive_group()
     baseline_group.add_argument("--baseline", type=Path)
     baseline_group.add_argument(
         "--baseline-preview", type=Path,
         help="collector events.preview.jsonl from the same source session",
     )
-    parser.add_argument("--candidate", required=True, type=Path)
-    parser.add_argument("--read-surface-evidence", required=True, type=Path)
-    parser.add_argument("--source", required=True, type=Path)
+    parser.add_argument("--candidate", type=Path)
+    parser.add_argument("--read-surface-evidence", type=Path)
+    parser.add_argument("--source", type=Path)
     parser.add_argument("--compiled", type=Path)
     parser.add_argument("--packed", type=Path)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", default=8772, type=int)
     parser.add_argument("--check", action="store_true")
     arguments = parser.parse_args()
-    store = ReviewStore(
+    single_arguments = (
         arguments.baseline, arguments.baseline_preview, arguments.candidate,
-        arguments.read_surface_evidence, arguments.source,
-        arguments.compiled, arguments.packed,
+        arguments.read_surface_evidence, arguments.source, arguments.compiled, arguments.packed,
     )
+    if arguments.sessions:
+        if any(value is not None for value in single_arguments):
+            parser.error("--sessions cannot be combined with single-session artifact flags")
+        store = ReviewSessions.from_manifest(arguments.sessions)
+    else:
+        if not (arguments.baseline or arguments.baseline_preview) or any(
+            value is None for value in (
+                arguments.candidate, arguments.read_surface_evidence, arguments.source,
+            )
+        ):
+            parser.error("supply --sessions or baseline, candidate, read-surface-evidence, source")
+        store = ReviewStore(*single_arguments)
     if arguments.check:
-        print(json.dumps(store.summary, sort_keys=True))
+        result = (
+            {"sessions": [{**item, "summary": store.get(item["id"]).summary}
+                          for item in store.index()], "maximumCachedSessions": 1}
+            if isinstance(store, ReviewSessions) else store.summary
+        )
+        print(json.dumps(result, sort_keys=True))
         return 0
     server = ThreadingHTTPServer((arguments.host, arguments.port), handler(store))
     print(
-        f"Semantic READ {store.candidate_version} review: "
+        f"Semantic READ {'combined corpus' if isinstance(store, ReviewSessions) else store.candidate_version} review: "
         f"http://{arguments.host}:{arguments.port}"
     )
     try:
