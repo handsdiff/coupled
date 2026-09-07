@@ -40,6 +40,11 @@ SUPPORTED_RAW_EPISODE_V9_EXPERIMENT_CONTRACT = {
     "episodeVersion": "phase1-raw-episode-v9",
     "conversionVersion": "phase1-raw-episode-causal-v9",
 }
+SUPPORTED_RAW_EPISODE_V10_EXPERIMENT_CONTRACT = {
+    **SUPPORTED_RAW_EPISODE_EXPERIMENT_CONTRACT,
+    "episodeVersion": "phase1-raw-episode-v10",
+    "conversionVersion": "phase1-raw-episode-causal-v10",
+}
 
 
 def json_bytes(value: Any) -> bytes:
@@ -586,6 +591,7 @@ def audit(directory: Path) -> dict[str, Any]:
             SUPPORTED_RAW_EPISODE_V7_EXPERIMENT_CONTRACT,
             SUPPORTED_RAW_EPISODE_V8_EXPERIMENT_CONTRACT,
             SUPPORTED_RAW_EPISODE_V9_EXPERIMENT_CONTRACT,
+            SUPPORTED_RAW_EPISODE_V10_EXPERIMENT_CONTRACT,
         )
     ) and (
         manifest.get("rawEpisodeArchitecture", {}).get(
@@ -749,6 +755,7 @@ def audit(directory: Path) -> dict[str, Any]:
     if raw_episode:
         if manifest.get("episodeVersion") in {
             "phase1-raw-episode-v8", "phase1-raw-episode-v9",
+            "phase1-raw-episode-v10",
         }:
             architecture = manifest.get("rawEpisodeArchitecture", {})
             write_destination = manifest.get("writeDestination")
