@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import subprocess
 import sys
 from pathlib import Path
 
@@ -447,10 +446,6 @@ def main() -> int:
         for value in [row["label"], *row["writeEventIDs"]]
     }
     assert not [value for value in forbidden if value in production]
-
-    subprocess.run([
-        sys.executable, str(project / "scripts/check-phase1-episode-navigation.py"),
-    ], check=True)
 
     print(json.dumps({
         "status": "passed",

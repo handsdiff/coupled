@@ -23,8 +23,8 @@ from pathlib import Path
 from typing import Any
 
 
-EPISODE_VERSION = "phase1-raw-episode-v10"
-CONVERSION_VERSION = "phase1-raw-episode-causal-v10"
+EPISODE_VERSION = "phase1-raw-episode-v9"
+CONVERSION_VERSION = "phase1-raw-episode-causal-v9"
 DESTINATION_MEMBERSHIP_COMPARISON_VERSION = (
     "phase1-write-destination-membership-activation-v1"
 )
@@ -120,7 +120,7 @@ def same_episode_destination(
     right_key = normalized_destination_key(right)
     if left_key is None or right_key is None:
         raise ValueError(
-            f"{EPISODE_VERSION} requires normalized logicalDestinationKey "
+            "phase1-raw-episode-v9 requires normalized logicalDestinationKey "
             "on every WRITE primitive"
         )
     return left_key == right_key
@@ -321,8 +321,6 @@ def affected_region_compatible(
     local_start = local["characterOffset"]
     local_end = local_start + max(len(local["removedContent"]), len(local["content"]))
     touches = local_start <= current_end + 1 and local_end >= max(0, current_start - 1)
-    # Caret navigation inside a prompt is editing mechanics, not a new thought.
-    # Novel READs, submission, destination, and state continuity gate it separately.
     return prompt_surface or touches, {
         "episodeRegionBeforeNext": [current_start, current_end],
         "nextLocalRegion": [local_start, local_end],
@@ -1305,6 +1303,9 @@ def classify_episode(
     } and not prompt:
         closure_status = "closed_persistent_region"
         closure_reason = episode.close_reason
+    elif episode.close_reason == "affected_region_changed" and prompt:
+        closure_status = "closed_composition_region"
+        closure_reason = "new_composition_after_navigation_boundary"
     else:
         closure_status = "open_or_abandoned"
         closure_reason = episode.close_reason or "no_structural_closure"
@@ -1561,7 +1562,7 @@ def assemble(
         )
     ):
         raise ValueError(
-            f"{EPISODE_VERSION} requires a phase1-causal-v15+ corpus with "
+            "phase1-raw-episode-v9 requires a phase1-causal-v15+ corpus with "
             "an explicit WRITE-destination configuration"
         )
     primitive_manifest = load_json(primitives_path / "episode-review.json")
@@ -1677,6 +1678,15 @@ def assemble(
                 region_ok, region_evidence = affected_region_compatible(
                     before, current_after, right_after, is_prompt_surface(left)
                 )
+                if (
+                    is_prompt_surface(left)
+                    and left.get("boundaryReason") == "selection_navigation"
+                    and len(current_completion.strip()) >= MIN_PERSISTENT_CHARACTERS
+                    and region_evidence.get("nextLocalRegion", [0])[0]
+                        >= region_evidence.get("episodeRegionBeforeNext", [0, 0])[1]
+                ):
+                    region_ok = False
+                    region_evidence["navigationBeganNewFrontierComposition"] = True
             elif (
                 is_prompt_surface(left)
                 and continuous
