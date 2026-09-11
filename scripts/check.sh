@@ -38,6 +38,8 @@ swiftc \
 
 "$check_binary"
 python3 "$project_dir/scripts/check-phase1-jsonl.py"
+python3 "$project_dir/scripts/check-phase1-storage.py"
+python3 "$project_dir/scripts/check-phase1-example-storage.py"
 python3 "$project_dir/scripts/check-phase1-corpus-memory.py"
 python3 "$project_dir/scripts/check-phase1-packed-version.py"
 
@@ -69,6 +71,8 @@ python3 -m py_compile \
   "$project_dir/scripts/build-phase1-episode-review.py" \
   "$project_dir/scripts/construct-phase1-closed-episode-corpus.py" \
   "$project_dir/scripts/construct-phase1-raw-episode-corpus.py" \
+  "$project_dir/scripts/phase1_read_boundary.py" \
+  "$project_dir/scripts/check-phase1-read-boundary.py" \
   "$project_dir/scripts/audit-phase1-closed-episode-corpus.py" \
   "$project_dir/scripts/check-phase1-episode-regressions.py" \
   "$project_dir/scripts/check-phase1-raw-episode.py" \
@@ -158,6 +162,7 @@ python3 "$project_dir/scripts/check-phase1-subscription-responses.py"
 python3 "$project_dir/scripts/check-phase1-frontier-model-arc.py"
 python3 "$project_dir/scripts/check-phase1-episode-review.py"
 python3 "$project_dir/scripts/check-phase1-raw-episode.py"
+python3 "$project_dir/scripts/check-phase1-read-boundary.py"
 python3 "$project_dir/scripts/check-phase1-real-runners.py"
 python3 "$project_dir/scripts/check-phase1-prediction-metrics.py"
 python3 "$project_dir/scripts/check-phase1-cost-latency.py"
@@ -170,6 +175,12 @@ python3 "$project_dir/scripts/check-phase1-read-surface-v4.py"
 python3 "$project_dir/scripts/check-phase1-read-surface-v5.py"
 python3 "$project_dir/scripts/check-phase1-read-surface-v6.py"
 python3 "$project_dir/scripts/check-phase1-read-surface-v7.py"
+python3 "$project_dir/scripts/check-phase1-pane-order.py"
+python3 "$project_dir/scripts/check-phase1-read-repair.py"
+python3 "$project_dir/scripts/check-phase1-curated-repairs.py"
+python3 "$project_dir/scripts/check-phase1-reviewed-batch.py"
+python3 "$project_dir/scripts/check-phase1-pipeline-era-comparison.py"
+python3 "$project_dir/scripts/check-phase1-pipeline-era-packing.py"
 python3 "$project_dir/scripts/check-phase1-read-novelty.py"
 
 PYTHONPYCACHEPREFIX="$project_dir/.build/python-cache" \

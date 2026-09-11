@@ -35,7 +35,7 @@ def main() -> int:
     corpus = project / "coupled-data/phase1-raw-episode-corpus-v6-v10-review-20260820"
     semantic = project / "coupled-data/phase1-raw-episode-pack-v6-v10-canonical-20260820"
     inkling = project / "coupled-data/phase1-inkling-pack-v2-native-v5-20260821"
-    if not all(value.exists() for value in (corpus, semantic, inkling)):
+    if not all(value.exists() for value in (corpus / "examples.jsonl", semantic / "packed-examples.jsonl", inkling)):
         print("Phase 1 Inkling stability checks skipped: artifacts unavailable")
         return 0
     runner = load_runner(project)

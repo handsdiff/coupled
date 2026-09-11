@@ -124,8 +124,13 @@ public struct ReadInterfaceScaffoldingTracker: Sendable {
     private var seenBySurface = [String: [String: SeenLine]]()
     private var bottomContentStatesByBundle = [String: [String: Set<String>]]()
     private var recurrenceByLine = [String: SessionLineRecurrence]()
+    // Compatibility only. Recurrence across unrelated panes/apps does not
+    // establish that text is UI: source code and research notes recur too.
+    private let legacySessionBlacklist: Bool
 
-    public init() {}
+    public init(legacySessionBlacklist: Bool = false) {
+        self.legacySessionBlacklist = legacySessionBlacklist
+    }
 
     public mutating func project(
         surfaceKey: String,
@@ -221,14 +226,9 @@ public struct ReadInterfaceScaffoldingTracker: Sendable {
                 && isBottomPeripheral(line)
             let stableApplicationBottomChrome = applicationContentStateSupport >= 16
                 && isBottomPeripheral(line)
-            // Some applications expose the same fixed control through several
-            // differently sized AX panes, so its normalized position moves and
-            // can even cease to look peripheral. Exact text recurring across
-            // many independent central states and several surface identities
-            // is sufficient evidence that it is durable interface chrome.
-            // Leading UI bullets are ignored because OCR alternates between
-            // visually equivalent prompt-marker glyphs.
-            let stableSessionInterfaceText = sessionContentStateSupport >= 32
+            // Kept solely to reproduce reducers <=25, never new reductions.
+            let stableSessionInterfaceText = legacySessionBlacklist
+                && sessionContentStateSupport >= 32
                 && sessionSurfaceSupport >= 4
             if (stableAcrossWindows || stableSameWindowBottomChrome
                     || stableApplicationBottomChrome
@@ -285,7 +285,7 @@ public struct ReadInterfaceScaffoldingTracker: Sendable {
             lines: lines
         )
         guard let centralState, !bundleIdentifier.isEmpty else { return }
-        for line in lines where line.confidence >= 0.80 {
+        for line in lines where legacySessionBlacklist && line.confidence >= 0.80 {
             let normalized = recurrenceText(line.normalizedText)
             guard !normalized.isEmpty else { continue }
             var recurrence = recurrenceByLine[normalized]

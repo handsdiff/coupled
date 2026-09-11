@@ -60,6 +60,10 @@ def digest_text(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
 
+def has_native_order(row: dict[str, Any]) -> bool:
+    return (row.get("orderingVersion") or row.get("ocrOrderingVersion")) == "vision-native-order-v1"
+
+
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -181,7 +185,7 @@ def parse_arguments() -> argparse.Namespace:
         action="append",
         type=Path,
         default=[],
-        help="prior ocr-results.jsonl or read-surfaces.jsonl",
+        help="prior native-order ocr-results.jsonl or read-surfaces.jsonl; legacy sorted caches are not reused",
     )
     parser.add_argument(
         "--rule-version",
@@ -207,6 +211,7 @@ def main() -> int:
     source = arguments.input.expanduser().resolve()
     output = arguments.output.expanduser().resolve()
     ocr_source = arguments.ocr_source.expanduser().resolve()
+    ocr_source_hash = sha256(ocr_source)
     session_path = source / "session.json"
     raw_path = source / "raw.jsonl"
     for path in [session_path, raw_path, ocr_source]:
@@ -349,6 +354,7 @@ def main() -> int:
                 "region": region,
                 "projection": projection,
                 "ruleVersion": rule_version,
+                "ocrSourceSHA256": ocr_source_hash,
             }))
             jobs.append({
                 "jobID": job_id,
@@ -367,6 +373,8 @@ def main() -> int:
     reusable_by_region: dict[str, dict[str, Any]] = {}
     for reuse_path in arguments.reuse_results:
         for row in load_jsonl(reuse_path.expanduser().resolve()):
+            if not has_native_order(row):
+                continue
             job_id = row.get("jobID") or row.get("evidenceID")
             if isinstance(job_id, str) and not row.get("error"):
                 reusable[job_id] = row
@@ -382,12 +390,14 @@ def main() -> int:
                 and isinstance(comparison_region, dict)
                 and isinstance(comparison_content, str)
                 and isinstance(comparison_lines, list)
+                and row.get("comparisonOCROrderingVersion") == "vision-native-order-v1"
             ):
                 reusable_by_region[canonical([
                     screenshot_hash, comparison_region,
                 ])] = {
                     "content": comparison_content,
                     "lines": comparison_lines,
+                    "orderingVersion": "vision-native-order-v1",
                 }
     def reusable_result(job: dict[str, Any]) -> dict[str, Any] | None:
         return reusable.get(job["jobID"]) or reusable_by_region.get(canonical([
@@ -466,6 +476,7 @@ def main() -> int:
             "contentSHA256": digest_text(content),
             "recognizedLineCount": len(lines),
             "lines": lines,
+            "ocrOrderingVersion": authoritative.get("orderingVersion") or authoritative.get("ocrOrderingVersion") or "unversioned_custom_ocr",
         }
         if rule_version in {
             V5_SURFACE_RULE_VERSION, V6_SURFACE_RULE_VERSION,
@@ -478,6 +489,7 @@ def main() -> int:
                 "comparisonContentSHA256": digest_text(comparison["content"]),
                 "comparisonRecognizedLineCount": len(comparison["lines"]),
                 "comparisonLines": comparison["lines"],
+                "comparisonOCROrderingVersion": comparison.get("orderingVersion") or "unversioned_custom_ocr",
             })
         evidence.append(row)
 
@@ -501,7 +513,7 @@ def main() -> int:
             "digestsSHA256": {
                 "session.json": sha256(session_path),
                 "raw.jsonl": sha256(raw_path),
-                "ocrSource": sha256(ocr_source),
+                "ocrSource": ocr_source_hash,
             },
         },
         "ocr": {
@@ -509,6 +521,7 @@ def main() -> int:
             "recognitionLevel": "accurate",
             "usesLanguageCorrection": True,
             "automaticallyDetectsLanguage": True,
+            "observationOrders": sorted({row["ocrOrderingVersion"] for row in evidence}),
             "platform": platform.platform(),
         },
         "counts": {

@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from phase1_jsonl import JSONLSequence
+from phase1_example_storage import write_examples
+from phase1_storage import require_space
 
 
 ASSEMBLER_VERSION = "phase1-corpus-v2"
@@ -39,6 +41,11 @@ SUPPORTED_RAW_EPISODE_V9_EXPERIMENT_CONTRACT = {
     **SUPPORTED_RAW_EPISODE_EXPERIMENT_CONTRACT,
     "episodeVersion": "phase1-raw-episode-v9",
     "conversionVersion": "phase1-raw-episode-causal-v9",
+}
+SUPPORTED_RAW_EPISODE_V10_EXPERIMENT_CONTRACT = {
+    **SUPPORTED_RAW_EPISODE_EXPERIMENT_CONTRACT,
+    "episodeVersion": "phase1-raw-episode-v10",
+    "conversionVersion": "phase1-raw-episode-causal-v10",
 }
 
 
@@ -228,6 +235,7 @@ def assemble(
     output: Path,
     block_size: int = 50,
     privacy_policy_path: Path | None = None,
+    compact_examples: bool = False,
 ) -> dict[str, Any]:
     if len(input_paths) < 1:
         raise ValueError("at least one --input is required")
@@ -235,6 +243,7 @@ def assemble(
         raise ValueError("block size must be positive")
     if output.exists():
         raise ValueError(f"output already exists: {output}; use a fresh directory")
+    require_space(output.parent)
 
     privacy_policy = load_privacy_policy(privacy_policy_path)
     sessions = [load_session(path.expanduser().resolve()) for path in input_paths]
@@ -448,7 +457,7 @@ def assemble(
                     "modelInput": query if not context_text else context_text + "\n" + query,
                 }
 
-        write_jsonl(temporary / "examples.jsonl", expanded_examples())
+        storage = write_examples(temporary / "examples.jsonl", expanded_examples(), compact=compact_examples)
         write_jsonl(temporary / "gaps.jsonl", gaps)
         (temporary / "privacy-policy.json").write_bytes(
             json_bytes(privacy_policy_artifact)
@@ -550,6 +559,8 @@ def assemble(
                     "nonSchema7": non_schema7_count,
                 },
             }
+        if compact_examples:
+            manifest["exampleStorage"] = storage
         manifest["artifactDigestsSHA256"] = {
             name: sha256(temporary / name)
             for name in (
@@ -586,6 +597,7 @@ def audit(directory: Path) -> dict[str, Any]:
             SUPPORTED_RAW_EPISODE_V7_EXPERIMENT_CONTRACT,
             SUPPORTED_RAW_EPISODE_V8_EXPERIMENT_CONTRACT,
             SUPPORTED_RAW_EPISODE_V9_EXPERIMENT_CONTRACT,
+            SUPPORTED_RAW_EPISODE_V10_EXPERIMENT_CONTRACT,
         )
     ) and (
         manifest.get("rawEpisodeArchitecture", {}).get(
@@ -748,7 +760,7 @@ def audit(directory: Path) -> dict[str, Any]:
         raise ValueError("legacy corpus contains privacy redactions")
     if raw_episode:
         if manifest.get("episodeVersion") in {
-            "phase1-raw-episode-v8", "phase1-raw-episode-v9",
+            "phase1-raw-episode-v8", "phase1-raw-episode-v9", "phase1-raw-episode-v10",
         }:
             architecture = manifest.get("rawEpisodeArchitecture", {})
             write_destination = manifest.get("writeDestination")

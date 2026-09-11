@@ -38,7 +38,8 @@ def main() -> int:
     reference = (
         project / "coupled-data/phase1-raw-episode-pack-v6-v10-canonical-20260820"
     )
-    if root.is_dir() and reference.is_dir():
+    corpus = project / "coupled-data/phase1-raw-episode-corpus-v6-v10-review-20260820"
+    if root.is_dir() and reference.is_dir() and (corpus / "examples.jsonl").is_file():
         rows = {
             key: load_jsonl(root / key / "semantic-examples.jsonl")
             for key in WINDOWS
@@ -169,6 +170,8 @@ def main() -> int:
             assert report["status"] == "passed"
             assert set(report["summaries"]) == set(WINDOWS)
             assert all(value["examples"] == 174 for value in report["summaries"].values())
+    else:
+        print("Historical context-window integration skipped: local derived artifacts unavailable")
     print("phase1 context-window checks passed")
     return 0
 

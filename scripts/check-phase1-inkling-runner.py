@@ -95,7 +95,7 @@ def main() -> int:
         project / "coupled-data/phase1-raw-episode-corpus-v6-v10-review-20260820"
     )
     pack_path = project / "coupled-data/phase1-inkling-pack-v1-20260820"
-    if not corpus_path.is_dir() or not pack_path.is_dir():
+    if not (corpus_path / "examples.jsonl").is_file() or not pack_path.is_dir():
         print("Phase 1 Inkling runner checks skipped: canonical artifacts unavailable")
         return 0
 

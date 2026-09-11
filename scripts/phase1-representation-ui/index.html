@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Prepared READ comparison</title><link rel="stylesheet" href="/style.css"></head>
+<body>
+<header><h1>Full-context READ comparison</h1><p id="intro">Inspect the exact prepared inputs. This page cannot start or modify a run.</p></header>
+<section class="toolbar"><button id="previous">←</button><label>Example <select id="case"></select></label><button id="next">→</button><label>Comparison <select id="mode"></select></label><span id="case-meta"></span></section>
+<section class="explanation"><p id="scope"></p><p id="totals"></p><p id="case-boundary"></p></section>
+<section id="scoring-summary" class="scoring-summary"><p>Holistic scoring pending.</p></section>
+<section class="query"><details><summary>Shared instruction and cursor / destination / clipboard query</summary><h3>Instruction</h3><pre id="instruction"></pre><h3>Current query</h3><pre id="query"></pre></details><details><summary>Human answer — reference only, not part of the model input</summary><pre id="target"></pre></details></section>
+<main id="panels"></main>
+<footer>OCR and screenshots use the full captured window, without pane selection, deduplication, or older cleaned READs. Known-sensitive frames remain explicit redactions. Estimated input counts and actual sampled usage are labeled separately. Dollar values are API-equivalent comparisons, not subscription charges. Case 41 screenshots is capacity-blocked, not a failed prediction.</footer>
+<p id="error" role="alert"></p><script src="/app.js"></script>
+</body></html>

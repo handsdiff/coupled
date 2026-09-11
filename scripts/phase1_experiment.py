@@ -103,6 +103,9 @@ def canonical_sha256(value: Any) -> str:
 
 
 def load_jsonl(path: Path) -> list[dict[str, Any]]:
+    if path.name == "examples.jsonl":
+        from phase1_jsonl import JSONLSequence
+        return JSONLSequence(path)
     rows = []
     with path.open(encoding="utf-8") as handle:
         for line in handle:

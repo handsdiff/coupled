@@ -16,6 +16,9 @@ import shutil
 import tempfile
 from pathlib import Path
 from typing import Any, Iterable
+from phase1_example_storage import VERSION as STORAGE_VERSION, write_examples
+from phase1_jsonl import JSONLSequence
+from phase1_storage import require_space
 
 
 EPISODE_VERSION = "phase1-episode-v5"
@@ -53,6 +56,12 @@ def load_jsonl(
     path: Path, *, omit_fields: tuple[str, ...] = (),
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+    if path.name == "examples.jsonl":
+        for value in JSONLSequence(path):
+            for field in omit_fields:
+                value.pop(field, None)
+            rows.append(value)
+        return rows
     with path.open(encoding="utf-8") as handle:
         for line_number, line in enumerate(handle, 1):
             if not line.strip():
@@ -248,6 +257,8 @@ def construct(
     output: Path,
 ) -> dict[str, Any]:
     manifest = load_json(source / "corpus.json")
+    require_space(output.parent)
+    compact_examples = manifest.get("exampleStorage", {}).get("version") == STORAGE_VERSION
     if manifest.get("conversionVersion") not in {
         "phase1-causal-v14", "phase1-causal-v15", "phase1-causal-v16",
     }:
@@ -625,7 +636,7 @@ def construct(
     try:
         write_jsonl(temporary / "events.jsonl", normalized_events)
         write_jsonl(temporary / "context-blocks.jsonl", normalized_blocks)
-        write_jsonl(temporary / "examples.jsonl", serialized_examples())
+        storage = write_examples(temporary / "examples.jsonl", serialized_examples(), compact=compact_examples)
         write_jsonl(temporary / "episode-exclusions.jsonl", exclusions)
         write_jsonl(temporary / "episode-adjudications.jsonl", adjudications)
         for name in ("gaps.jsonl", "privacy-policy.json"):
@@ -746,6 +757,8 @@ def construct(
                 "episode-blocks.jsonl",
             )
         }
+        if compact_examples:
+            artifact["exampleStorage"] = storage
         (temporary / "corpus.json").write_bytes(canonical_bytes(artifact))
         (temporary / "dataset.json").write_bytes(canonical_bytes(artifact))
         if output.exists():

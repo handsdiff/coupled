@@ -21,10 +21,11 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from phase1_read_boundary import ReadBoundaryEvidence, VERSION as READ_BOUNDARY_VERSION
 
 
-EPISODE_VERSION = "phase1-raw-episode-v9"
-CONVERSION_VERSION = "phase1-raw-episode-causal-v9"
+EPISODE_VERSION = "phase1-raw-episode-v10"
+CONVERSION_VERSION = "phase1-raw-episode-causal-v10"
 DESTINATION_MEMBERSHIP_COMPARISON_VERSION = (
     "phase1-write-destination-membership-activation-v1"
 )
@@ -120,7 +121,7 @@ def same_episode_destination(
     right_key = normalized_destination_key(right)
     if left_key is None or right_key is None:
         raise ValueError(
-            "phase1-raw-episode-v9 requires normalized logicalDestinationKey "
+            "phase1-raw-episode-v10 requires normalized logicalDestinationKey "
             "on every WRITE primitive"
         )
     return left_key == right_key
@@ -434,42 +435,41 @@ def read_assessments(
     upper: dt.datetime,
     current_completion: str,
     application: str | None,
+    evidence_index: ReadBoundaryEvidence | None = None,
+    initial_field: str = "",
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    prior = {
-        event.get("serialized") for event in events
-        if event.get("sessionID") == session_id and event.get("kind") == "read"
-        and timestamp(event["availableAt"]) < onset
-    }
-    between = [
-        event for event in events
-        if event.get("sessionID") == session_id and event.get("kind") == "read"
-        and lower < timestamp(event["availableAt"]) < upper
-    ]
-    assessments: list[dict[str, Any]] = []
-    novel: list[dict[str, Any]] = []
-    normalized_completion = normalized_text(current_completion)
+    index = evidence_index or ReadBoundaryEvidence(events)
+    def iso(value: dt.datetime) -> str:
+        return value.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    return index.between(session_id, iso(onset), iso(lower), iso(upper), current_completion, application, initial_field)
+
+
+def structural_partition_read_assessments(events, session_id, onset, lower, upper, completion, application):
+    """Preserve v9 closure classification where another gate forbids a merge.
+
+    This compatibility rule never grants permission to join episodes. Every
+    joinable boundary instead uses the evidence-based classifier above.
+    """
+    prior = {event.get("serialized") for event in events
+             if event["sessionID"] == session_id and event["kind"] == "read"
+             and timestamp(event["availableAt"]) < onset}
+    between = [event for event in events
+               if event["sessionID"] == session_id and event["kind"] == "read"
+               and lower < timestamp(event["availableAt"]) < upper]
+    normalized_completion = normalized_text(completion)
+    assessments, blocking = [], []
     for event in between:
         status = "novel_causally_available_read"
         if event.get("serialized") in prior:
             status = "exact_repeat_available_at_episode_onset"
-        else:
-            content = normalized_text(serialized_content(event))
-            source = json.loads(event.get("serialized", "{}")).get("source", {})
-            same_app = source.get("application") == application
-            if (
-                same_app and len(normalized_completion) >= 12
-                and normalized_completion in content
-            ):
-                status = "self_derived_active_composition_read"
-        assessment = {
-            "eventID": event["sourceEventID"],
-            "availableAt": event["availableAt"],
-            "status": status,
-        }
-        assessments.append(assessment)
+        elif (json.loads(event.get("serialized", "{}")).get("source", {}).get("application") == application
+              and len(normalized_completion) >= 12
+              and normalized_completion in normalized_text(serialized_content(event))):
+            status = "self_derived_active_composition_read"
+        assessments.append({"eventID": event["sourceEventID"], "availableAt": event["availableAt"], "status": status})
         if status == "novel_causally_available_read":
-            novel.append(event)
-    return assessments, novel
+            blocking.append(event)
+    return assessments, blocking
 
 
 @dataclass
@@ -1347,6 +1347,9 @@ def classify_episode(
         or entire_field_selected
         or episode.onset_partition_reason == "novel_read"
     )
+    boundary_uncertain = "read_novelty_unresolved" in {
+        episode.onset_partition_reason, episode.close_reason,
+    }
     if (
         prompt and not onset_proven and isinstance(after, str)
         and reconstruction_status.startswith("reconstructed")
@@ -1393,6 +1396,7 @@ def classify_episode(
         reconstruction_status == "reconstructed"
         and closure_status.startswith("closed_")
         and onset_proven
+        and not boundary_uncertain
         and not pure_paste
         and not unresolved_paste
         and not unresolved_authorship
@@ -1409,6 +1413,9 @@ def classify_episode(
     elif target is None:
         loss_status = "ineligible"
         loss_reason = reconstruction_reason
+    elif boundary_uncertain:
+        loss_status = "ineligible"
+        loss_reason = "read_boundary_novelty_unresolved"
     elif pure_paste:
         loss_status = "ineligible"
         loss_reason = "pure_paste_history_only"
@@ -1476,6 +1483,10 @@ def classify_episode(
                 row["status"] == "novel_causally_available_read"
                 for row in episode.read_assessments
             ),
+            "unresolvedInterveningReadCount": sum(
+                row["status"] == "unresolved_read_novelty"
+                for row in episode.read_assessments
+            ),
             "noNovelCausallyAvailableReadDuringCandidate": not any(
                 row["status"] == "novel_causally_available_read"
                 for row in episode.read_assessments
@@ -1491,7 +1502,7 @@ def classify_episode(
         },
         "mechanicalGates": {
             "passed": continuity and same_destination and not any(
-                row["status"] == "novel_causally_available_read"
+                row["status"] in {"novel_causally_available_read", "unresolved_read_novelty"}
                 for row in episode.read_assessments
             )
         },
@@ -1548,7 +1559,12 @@ def assemble(
     output: Path,
     project: Path,
     projection: Any,
+    read_surface_evidence: tuple[Path, ...] = (),
 ) -> dict[str, Any]:
+    implementation_hashes = {name: sha256(project / "scripts" / name) for name in (
+        "construct-phase1-raw-episode-corpus.py", "phase1_read_boundary.py",
+        "construct-phase1-closed-episode-corpus.py",
+    )}
     manifest = load_json(corpus / "corpus.json")
     write_destination = manifest.get("writeDestination")
     if not (
@@ -1562,7 +1578,7 @@ def assemble(
         )
     ):
         raise ValueError(
-            "phase1-raw-episode-v9 requires a phase1-causal-v15+ corpus with "
+            "phase1-raw-episode-v10 requires a phase1-causal-v15+ corpus with "
             "an explicit WRITE-destination configuration"
         )
     primitive_manifest = load_json(primitives_path / "episode-review.json")
@@ -1599,10 +1615,18 @@ def assemble(
         if path is None:
             raise ValueError(f"session has no raw journal: {event['sessionID']}")
         needed_by_path.setdefault(path, set()).update(event.get("sourceRecordIDs", []))
+    raw_read_views: list[dict[str, Any]] = []
+    raw_input_hashes: dict[str, str] = {}
     for path, needed in needed_by_path.items():
+        raw_input_hashes[str(path.relative_to(project))] = sha256(path)
         with path.open(encoding="utf-8") as handle:
             for line in handle:
                 row = json.loads(line)
+                if row.get("recordType") in {"screen_ocr_observation", "visual_ocr_observation"}:
+                    raw_read_views.append({key: row.get(key) for key in (
+                        "recordID", "recordType", "sessionID", "appName", "capturedAt", "content",
+                        "contentWasTruncated", "windowID", "screenshotSHA256", "sourceFrameRecordID",
+                    )})
                 if row.get("recordID") in needed:
                     raw_records[row["recordID"]] = row
     missing_raw = set().union(*needed_by_path.values()) - set(raw_records)
@@ -1612,6 +1636,33 @@ def assemble(
             f"first={sorted(missing_raw)[0]}"
         )
 
+    pane_views: list[dict[str, Any]] = []
+    pane_input_hashes: dict[str, str] = {}
+    for directory in sorted(read_surface_evidence):
+        evidence_manifest_path = directory / "read-surface-evidence.json"
+        evidence_manifest = load_json(evidence_manifest_path)
+        path = directory / "read-surfaces.jsonl"
+        digest = sha256(path)
+        expected = evidence_manifest["artifacts"]["digestsSHA256"]["read-surfaces.jsonl"]
+        if digest != expected:
+            raise ValueError("read-surface evidence digest mismatch")
+        source_raw = raw_path_by_session.get(evidence_manifest["sessionID"])
+        expected_raw = evidence_manifest["source"]["digestsSHA256"]["raw.jsonl"]
+        if source_raw is None or raw_input_hashes[str(source_raw.relative_to(project))] != expected_raw:
+            raise ValueError("read-surface evidence belongs to another raw journal")
+        pane_input_hashes[str(path.relative_to(project))] = digest
+        pane_input_hashes[str(evidence_manifest_path.relative_to(project))] = sha256(evidence_manifest_path)
+        with path.open(encoding="utf-8") as handle:
+            for line in handle:
+                pane = json.loads(line)
+                if hashlib.sha256(pane["content"].encode()).hexdigest() != pane["contentSHA256"]:
+                    raise ValueError("pane content digest mismatch")
+                pane_views.append({key: pane[key] for key in (
+                    "sourceRecordID", "capturedAt", "content", "evidenceID", "screenshotSHA256",
+                )})
+    read_evidence_index = ReadBoundaryEvidence(events, raw_read_views, pane_views)
+    del raw_read_views
+    del pane_views
     by_session: dict[str, list[dict[str, Any]]] = {}
     for primitive in primitives:
         event = event_by_id[primitive["memberWriteEventIDs"][0]]
@@ -1634,12 +1685,6 @@ def assemble(
             current_completion = ""
             if isinstance(before, str) and isinstance(current_after, str):
                 current_completion = minimal_edit(before, current_after)["content"]
-            assessments, novel = read_assessments(
-                events, session_id, timestamp(current.first["beganAt"]), lower, upper,
-                current_completion,
-                (left.get("modelFacingDestination") or {}).get("application")
-                    or left.get("application"),
-            )
             raw_same_destination = (
                 stable_destination(left) == stable_destination(right)
             )
@@ -1678,15 +1723,8 @@ def assemble(
                 region_ok, region_evidence = affected_region_compatible(
                     before, current_after, right_after, is_prompt_surface(left)
                 )
-                if (
-                    is_prompt_surface(left)
-                    and left.get("boundaryReason") == "selection_navigation"
-                    and len(current_completion.strip()) >= MIN_PERSISTENT_CHARACTERS
-                    and region_evidence.get("nextLocalRegion", [0])[0]
-                        >= region_evidence.get("episodeRegionBeforeNext", [0, 0])[1]
-                ):
-                    region_ok = False
-                    region_evidence["navigationBeganNewFrontierComposition"] = True
+                # Navigation alone does not close an unsubmitted prompt.
+                # Destination, state, region and submission checks remain.
             elif (
                 is_prompt_surface(left)
                 and continuous
@@ -1706,6 +1744,15 @@ def assemble(
             submitted = left.get("boundaryReason") in {
                 "return_pressed", "submission_boundary"
             } or (is_prompt_surface(left) and "return" in set(left.get("inputHints", [])))
+            application = (left.get("modelFacingDestination") or {}).get("application") or left.get("application")
+            read_args = (events, session_id, timestamp(current.first["beganAt"]), lower, upper,
+                         current_completion, application)
+            if same_destination and continuous and region_ok and not submitted:
+                assessments, novel = read_assessments(
+                    *read_args, read_evidence_index, before if isinstance(before, str) else "",
+                )
+            else:
+                assessments, novel = structural_partition_read_assessments(*read_args)
             if same_destination and continuous and region_ok and not novel and not submitted:
                 current.primitives.append(following)
                 current.read_assessments.extend(assessments)
@@ -1725,7 +1772,9 @@ def assemble(
             if submitted:
                 reason = "prior_submission"
             elif novel:
-                reason = "novel_read"
+                reason = "novel_read" if any(
+                    row["status"] == "novel_causally_available_read" for row in assessments
+                ) else "read_novelty_unresolved"
             elif not same_destination:
                 reason = "destination_changed"
             elif not continuous:
@@ -1760,6 +1809,13 @@ def assemble(
         candidates.append(candidate)
         decisions.append(decision)
 
+    # Never publish a corpus interpreted against a changing source journal.
+    for relative_path, digest in {**raw_input_hashes, **pane_input_hashes}.items():
+        if sha256(project / relative_path) != digest:
+            raise ValueError(f"source evidence changed during construction: {relative_path}")
+    for name, digest in implementation_hashes.items():
+        if sha256(project / "scripts" / name) != digest:
+            raise ValueError(f"implementation changed during construction: {name}")
     temporary = Path(tempfile.mkdtemp(prefix="raw-episode-v1-", dir=output.parent))
     adjudications_path = temporary / "episode-decisions.jsonl"
     candidates_path = temporary / "episode-candidates.jsonl"
@@ -1804,6 +1860,13 @@ def assemble(
         "semanticPrimitivesSHA256": sha256(primitives_path / "episode-candidates.jsonl"),
         "productionConsumesRegressionFixture": False,
         "stateMachineVersion": EPISODE_VERSION,
+        "readBoundaryPolicy": READ_BOUNDARY_VERSION,
+        "readBoundaryScope": "otherwise_joinable_same_destination_continuous_composition",
+        "unrelatedStructuralPartitions": "v9_closure_classification_preserved",
+        "readBoundaryEvidenceRawSHA256": raw_input_hashes,
+        "readBoundaryPaneEvidenceSHA256": pane_input_hashes,
+        "implementationSHA256": implementation_hashes,
+        "navigationAloneClosesPrompt": False,
         "separateStatuses": [
             "reconstructionStatus", "closureStatus", "lossEligibility",
         ],
@@ -1840,6 +1903,8 @@ def main() -> int:
     parser.add_argument("--corpus", required=True, type=Path)
     parser.add_argument("--primitives", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--read-surface-evidence", action="append", type=Path, default=[],
+                        help="Optional hash-bound retained full-pane OCR; repeat per session")
     args = parser.parse_args()
     project = Path(__file__).resolve().parent.parent
     projection = load_module(
@@ -1850,7 +1915,8 @@ def main() -> int:
     if output.exists():
         raise ValueError(f"output already exists: {output}")
     artifact = assemble(
-        args.corpus.resolve(), args.primitives.resolve(), output, project, projection
+        args.corpus.resolve(), args.primitives.resolve(), output, project, projection,
+        tuple(path.resolve() for path in args.read_surface_evidence),
     )
     print(json.dumps(artifact["counts"], sort_keys=True))
     return 0

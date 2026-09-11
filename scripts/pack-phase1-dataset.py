@@ -24,6 +24,7 @@ from collections.abc import Sequence
 from contextlib import ExitStack
 
 from phase1_jsonl import JSONLSequence
+from phase1_storage import require_space
 
 from phase1_read_novelty import (
     RENDERER_VERSION as READ_NOVELTY_RENDERER_VERSION,
@@ -132,6 +133,7 @@ def require_compiled_dataset(
         "phase1-raw-episode-causal-v7",
         "phase1-raw-episode-causal-v8",
         "phase1-raw-episode-causal-v9",
+        "phase1-raw-episode-causal-v10",
     }:
         raise ValueError(
             "packer requires a supported causal or episode-causal conversion"
@@ -707,6 +709,7 @@ def main() -> int:
         raise ValueError("paste marker encoding contains structural EOS")
 
     temporary_parent = output.parent
+    require_space(temporary_parent)
     temporary_parent.mkdir(parents=True, exist_ok=True)
     temporary = Path(tempfile.mkdtemp(prefix=f".{output.name}.", dir=temporary_parent))
     streams = ExitStack()
@@ -764,6 +767,7 @@ def main() -> int:
         }
         context_token_cache: dict[str, tuple[str, list[int]]] = {}
         for example in examples:
+            require_space(temporary)
             segments = example.get("target", {}).get("segments")
             if not isinstance(segments, list):
                 raise ValueError(f"example {example.get('exampleID')} has invalid input or target")
@@ -796,6 +800,7 @@ def main() -> int:
                     "phase1-raw-episode-causal-v7",
                     "phase1-raw-episode-causal-v8",
                     "phase1-raw-episode-causal-v9",
+                    "phase1-raw-episode-causal-v10",
                 }:
                     # v2 deliberately removes micro-WRITEs from model-facing
                     # events. Their IDs remain immutable audit lineage on the

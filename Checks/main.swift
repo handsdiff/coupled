@@ -532,7 +532,7 @@ expect(
             == "stable_application_bottom_interface_text",
     "strong application-level recurrence survives pane-geometry changes"
 )
-var sessionInterfaceTracker = ReadInterfaceScaffoldingTracker()
+var sessionInterfaceTracker = ReadInterfaceScaffoldingTracker(legacySessionBlacklist: true)
 for index in 0..<32 {
     sessionInterfaceTracker.observe(
         surfaceKey: "session-pane-\(index % 4)",
@@ -566,8 +566,34 @@ expect(
             .supportingDistinctContentStateCount == 32
         && sessionInterfaceProjection.removed.first?
             .supportingDistinctWindowCount == 4,
-    "strong exact session recurrence survives pane, app, position, and UI-bullet changes"
+    "legacy reducers reproduce their former session-wide text blacklist"
 )
+var substantiveRecurrenceTracker = ReadInterfaceScaffoldingTracker()
+let recurringSubstance = ["import json",
+    "emphasis on data collection since 'algorithms' get smarter and cheaper by default"]
+for index in 0..<40 {
+    substantiveRecurrenceTracker.observe(
+        surfaceKey: "revisited-pane-\(index % 5)",
+        bundleIdentifier: index.isMultiple(of: 2) ? "fixture.editor" : "fixture.browser",
+        windowTitle: "Window \(index)",
+        lines: [ReadOCRLineEvidence(index: 0, text: "Distinct body \(index)", confidence: 1,
+            x: 0.1, y: 0.45, width: 0.7, height: 0.025)] + recurringSubstance.enumerated().map {
+                ReadOCRLineEvidence(index: $0.offset + 1, text: $0.element, confidence: 1,
+                    x: 0.1, y: 0.55 + Double($0.offset) * 0.05, width: 0.7, height: 0.025)
+            }
+    )
+}
+let substantiveRecurrenceProjection = substantiveRecurrenceTracker.project(
+    surfaceKey: "new-pane", bundleIdentifier: "fixture.editor", windowTitle: "Notes",
+    observedContent: recurringSubstance.joined(separator: "\n"),
+    lines: recurringSubstance.enumerated().map {
+        ReadOCRLineEvidence(index: $0.offset, text: $0.element, confidence: 1,
+            x: 0.1, y: 0.55 + Double($0.offset) * 0.05, width: 0.7, height: 0.025)
+    }
+)
+expect(substantiveRecurrenceProjection.content == recurringSubstance.joined(separator: "\n")
+    && substantiveRecurrenceProjection.removed.isEmpty,
+    "recurring body text/code across applications remains readable; repetition is not UI identity")
 expect(
     firstPrescannedProjection.content == "Central state 0"
         && firstPrescannedProjection.removed.first?.reason
@@ -2778,6 +2804,16 @@ let newCrossSensorV25 = reduceReadSequenceFixture(
 )
 expect(((newCrossSensorV25.last?["readNovelty"] as? [String: Any])?["content"] as? String)?.contains(newCrossSensorParagraph) == true,
        "v25 preserves v24's new cross-sensor paragraph rather than reinstating the weak threshold")
+let ordinaryV26 = reduceReadSequenceFixture(
+    name: "ordinary-pane", records: ordinaryPaneRecords, version: "phase1-semantic-v26"
+)
+expect(NSDictionary(dictionary: ordinaryV26.last ?? [:]).isEqual(to: ordinaryV25.last ?? [:]),
+       "v26 removal of the session blacklist preserves ordinary adjacent-repeat behavior")
+let newCrossSensorV26 = reduceReadSequenceFixture(
+    name: "cross-sensor-new-paragraph", records: crossSensorRecords, version: "phase1-semantic-v26"
+)
+expect(((newCrossSensorV26.last?["readNovelty"] as? [String: Any])?["content"] as? String)?.contains(newCrossSensorParagraph) == true,
+       "v26 preserves a genuinely new cross-sensor paragraph")
 try! Data("tampered visual frame bytes".utf8).write(to: visualScreenshotURL)
 _ = try! Phase1SemanticReducer(configuration: .init(
     reducerVersion: "phase1-semantic-v14",

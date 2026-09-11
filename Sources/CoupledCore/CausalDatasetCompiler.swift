@@ -764,7 +764,7 @@ public struct CausalDatasetCompiler {
                 "phase1-semantic-v16", "phase1-semantic-v17",
                 "phase1-semantic-v18", "phase1-semantic-v19",
                 "phase1-semantic-v20", "phase1-semantic-v21",
-                "phase1-semantic-v22", "phase1-semantic-v23", "phase1-semantic-v24", "phase1-semantic-v25",
+                "phase1-semantic-v22", "phase1-semantic-v23", "phase1-semantic-v24", "phase1-semantic-v25", "phase1-semantic-v26",
             ].contains(
                 reduction?.string("reducerVersion") ?? ""
             ) {
@@ -772,12 +772,12 @@ public struct CausalDatasetCompiler {
                 var semanticReadProjection: [String: Any] = [
                     "sourceField": "readNovelty",
                     "completeReadRemainsAuthoritative": ![
-                        "phase1-semantic-v23", "phase1-semantic-v24", "phase1-semantic-v25",
+                        "phase1-semantic-v23", "phase1-semantic-v24", "phase1-semantic-v25", "phase1-semantic-v26",
                     ].contains(reducerVersion),
                     "compilerRendering": "none",
                     "requiredPackingRule": "novelty may be rendered only when its exact dependency is retained as a complete reconstructable READ state",
                 ]
-                if ["phase1-semantic-v23", "phase1-semantic-v24", "phase1-semantic-v25"].contains(reducerVersion) {
+                if ["phase1-semantic-v23", "phase1-semantic-v24", "phase1-semantic-v25", "phase1-semantic-v26"].contains(reducerVersion) {
                     semanticReadProjection["semanticEventContentAuthority"] =
                         "selected pane OCR after stable scroll-interior projection"
                     semanticReadProjection["completePaneAuthority"] =

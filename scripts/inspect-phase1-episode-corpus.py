@@ -36,6 +36,9 @@ def load_json(path: Path) -> dict[str, Any]:
 
 
 def load_jsonl(path: Path) -> list[dict[str, Any]]:
+    if path.name == "examples.jsonl":
+        from phase1_jsonl import JSONLSequence
+        return JSONLSequence(path)
     rows: list[dict[str, Any]] = []
     try:
         with path.open() as handle:

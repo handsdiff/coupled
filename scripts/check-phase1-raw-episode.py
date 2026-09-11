@@ -50,8 +50,11 @@ def main() -> int:
             "content": "status output\nensure you keep memory usage",
         }, sort_keys=True),
     }
+    earlier_read = {**authored_read, "sourceEventID": "read-before",
+                    "availableAt": "2025-12-31T23:59:59.000Z",
+                    "serialized": json.dumps({"kind": "read", "source": {"application": "Visual Studio Code"}, "content": "status output"})}
     assessments, novel = reducer.read_assessments(
-        [authored_read], "session-1",
+        [earlier_read, authored_read], "session-1",
         reducer.timestamp("2026-01-01T00:00:00.000Z"),
         reducer.timestamp("2026-01-01T00:00:03.000Z"),
         reducer.timestamp("2026-01-01T00:00:05.000Z"),

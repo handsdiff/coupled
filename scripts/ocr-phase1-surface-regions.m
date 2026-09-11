@@ -64,16 +64,9 @@ static NSDictionary *processJob(NSDictionary *job) {
         };
     }
 
-    NSArray<VNRecognizedTextObservation *> *observations = [request.results sortedArrayUsingComparator:^NSComparisonResult(VNRecognizedTextObservation *left, VNRecognizedTextObservation *right) {
-        CGFloat verticalDifference = fabs(CGRectGetMidY(left.boundingBox) - CGRectGetMidY(right.boundingBox));
-        if (verticalDifference > 0.02) {
-            return CGRectGetMidY(left.boundingBox) > CGRectGetMidY(right.boundingBox)
-                ? NSOrderedAscending : NSOrderedDescending;
-        }
-        if (CGRectGetMinX(left.boundingBox) == CGRectGetMinX(right.boundingBox)) return NSOrderedSame;
-        return CGRectGetMinX(left.boundingBox) < CGRectGetMinX(right.boundingBox)
-            ? NSOrderedAscending : NSOrderedDescending;
-    }];
+    // Preserve Vision's observation sequence. The former fixed 0.02 row
+    // tolerance could sort different lines horizontally and transpose words.
+    NSArray<VNRecognizedTextObservation *> *observations = request.results;
     NSMutableArray *lines = [NSMutableArray array];
     NSMutableArray<NSString *> *strings = [NSMutableArray array];
     for (VNRecognizedTextObservation *observation in observations) {
@@ -88,6 +81,7 @@ static NSDictionary *processJob(NSDictionary *job) {
     }
     return @{
         @"jobID": jobID,
+        @"orderingVersion": @"vision-native-order-v1",
         @"regionOfInterest": regionValue,
         @"content": [strings componentsJoinedByString:@"\n"],
         @"recognizedLineCount": @(lines.count),

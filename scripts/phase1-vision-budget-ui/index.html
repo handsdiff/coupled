@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Astra · Text budget comparison</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
+<body><main>
+<h1>Astra · More text history versus screenshots</h1>
+<p>Same 69 intended WRITEs. Expanded text uses each case’s original screenshot token budget. Screenshot answers and grades are reused—not rerun.</p>
+<p>This is a history-budget comparison, not an equal-duration or isolated modality test. <a href="/report">Read analysis</a> · <a href="http://127.0.0.1:8782">Original review</a></p>
+<div id="summary"></div><p id="authority" class="muted"></p><p id="error" role="alert"></p>
+<nav><label>Show <select id="filter"><option value="all">All cases</option><option value="clean_gain">Cleaned improved with more history</option><option value="clean_loss">Cleaned became worse</option><option value="raw_gain">Raw OCR improved</option><option value="raw_loss">Raw OCR became worse</option><option value="image_only">Screenshot passes, both expanded texts fail</option><option value="text_only">Expanded text passes, screenshot fails</option></select></label><input id="search" placeholder="Case number or target text" aria-label="Find case"><select id="cases" aria-label="Select case"></select><button id="prev">Previous</button><button id="next">Next</button><span id="position"></span></nav>
+<section id="case" hidden><h2 id="heading"></h2><p id="meta" class="muted"></p><h3>What you wrote</h3><pre id="target" class="target"></pre>
+<details><summary>Conditioning: destination, cursor and clipboard</summary><pre id="query"></pre></details>
+<h2>Expanded text and reused screenshot baseline</h2><div id="answers" class="grid"></div>
+<h2>Original shorter text answers</h2><p class="muted">Original raw OCR covered the recent screenshot interval and retained older cleaned history. Expanded raw OCR has no cleaned READs anywhere.</p><div id="original" class="grid two"></div>
+<section id="context" hidden><div class="row"><h3 id="context-title"></h3><button id="close-context">Close context</button></div><pre id="context-text"></pre></section>
+<details id="screenshots"><summary id="frame-title">Original screenshots</summary><p id="interval"></p><div class="row"><button id="frame-prev">Previous frame</button><input type="range" id="frame-index" min="0" value="0" aria-label="Screenshot index"><button id="frame-next">Next frame</button><a id="frame-full" target="_blank" rel="noreferrer">Full size</a></div><p id="frame-meta"></p><img id="frame-image" alt="Original causal screenshot"></details>
+</section></main></body></html>

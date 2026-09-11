@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Coupled · Astra / Sol comparison</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header><div class="brand"><span>Coupled</span> · Model comparison</div><div id="run-label" class="muted">Loading frozen results…</div><a href="/report" target="_blank" rel="noreferrer">Full report ↗</a></header>
+  <div id="error" role="alert" hidden></div>
+  <div class="layout">
+    <aside aria-label="Examples">
+      <div class="filters">
+        <label for="search">Find an example</label><input id="search" type="search" placeholder="Number, target, or prediction…">
+        <div class="filter-row"><select id="app" aria-label="Application"><option value="">All apps</option></select><select id="day" aria-label="Collection day"><option value="">All days</option></select></div>
+        <select id="eligibility" aria-label="Scoring eligibility"><option value="all">All 377 examples</option><option value="substantive">Substantive · scored</option><option value="excluded">Excluded from holistic score</option></select>
+        <select id="outcome" aria-label="Prediction outcome"><option value="all">All outcomes</option><option value="any">At least one useful prediction</option><option value="none">No useful prediction · scored</option><option value="astra_only">Astra passes, Sol does not</option><option value="sol_only">Sol passes, Astra does not</option><option value="pipeline">Old/new pass judgments differ</option><option value="astra_pipeline">Astra old/new judgments differ</option><option value="sol_pipeline">Sol old/new judgments differ</option></select>
+        <div class="filter-row"><button id="random">Random example</button><button id="reset">Reset filters</button></div>
+        <p id="count" class="muted" aria-live="polite"></p>
+      </div>
+      <nav id="examples" aria-label="Example list"></nav>
+    </aside>
+    <main>
+      <div class="detail-head">
+        <div class="title-row"><h1 id="case-title">Loading results…</h1><div class="navigation"><button id="previous" title="Previous filtered example (K)" aria-label="Previous example">←</button><button id="next" title="Next filtered example (J)" aria-label="Next example">→</button></div></div>
+        <div id="case-meta" class="muted"></div>
+        <div class="tabs" role="tablist" aria-label="Review view"><button data-tab="predictions" role="tab" aria-selected="true">Original predictions</button><button data-tab="repeatability" role="tab" aria-selected="false" hidden>Repeated answers</button><button data-tab="context" role="tab" aria-selected="false">Old / new context</button><button data-tab="summary" role="tab" aria-selected="false">Overall results</button></div>
+      </div>
+      <div id="detail" aria-live="polite"></div>
+    </main>
+  </div>
+</body>
+</html>

@@ -16,6 +16,7 @@ from typing import Any
 class JSONLSequence(Sequence[dict[str, Any]]):
     def __init__(self, path: Path):
         self.path = Path(path)
+        self._shared_context = None
         self._identity = self._stat()
         self._offsets: list[tuple[int, int]] = []
         with self.path.open("rb") as handle:
@@ -37,6 +38,8 @@ class JSONLSequence(Sequence[dict[str, Any]]):
     def _unchanged(self) -> None:
         if self._stat() != self._identity:
             raise ValueError(f"immutable JSONL artifact changed: {self.path}")
+        if self._shared_context is not None:
+            self._shared_context.unchanged()
 
     def _decode(self, line: bytes, number: int) -> dict[str, Any]:
         try:
@@ -45,6 +48,16 @@ class JSONLSequence(Sequence[dict[str, Any]]):
             raise ValueError(f"{self.path}:{number}: invalid JSON") from error
         if not isinstance(value, dict):
             raise ValueError(f"{self.path}:{number}: expected a JSON object")
+        if "_sharedContext" in value:
+            from phase1_example_storage import SharedContextResolver
+            marker = value["_sharedContext"]
+            if not isinstance(marker, dict):
+                raise ValueError("invalid shared-context marker")
+            if self._shared_context is None:
+                self._shared_context = SharedContextResolver(
+                    self.path.with_name("context-blocks.jsonl"), marker.get("blocksSHA256")
+                )
+            value = self._shared_context.expand(value)
         return value
 
     def __len__(self) -> int:

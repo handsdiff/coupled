@@ -95,6 +95,7 @@ def main() -> int:
             "phase1-raw-episode-v6",
             "phase1-raw-episode-v7", "phase1-raw-episode-v8",
             "phase1-raw-episode-v9",
+            "phase1-raw-episode-v10",
         }:
             raise ValueError("audit requires a supported raw episode version")
         if conversion_version not in {
@@ -106,11 +107,29 @@ def main() -> int:
             "phase1-raw-episode-causal-v7",
             "phase1-raw-episode-causal-v8",
             "phase1-raw-episode-causal-v9",
+            "phase1-raw-episode-causal-v10",
         }:
             raise ValueError("audit requires a supported raw causal version")
         architecture = manifest.get("rawEpisodeArchitecture") or {}
         assert architecture.get("sourceAuthority") == "immutable_raw_journals"
         assert architecture.get("productionConsumesRegressionFixture") is False
+        if episode_version == "phase1-raw-episode-v10":
+            assert architecture.get("readBoundaryPolicy") == "phase1-read-boundary-evidence-v1"
+            assert architecture.get("navigationAloneClosesPrompt") is False
+            project = Path(__file__).resolve().parent.parent
+            for group in ("readBoundaryEvidenceRawSHA256", "readBoundaryPaneEvidenceSHA256"):
+                evidence = architecture.get(group)
+                assert isinstance(evidence, dict)
+                for relative, expected in evidence.items():
+                    path = (project / relative).resolve()
+                    if not path.is_relative_to(project) or digest(path) != expected:
+                        raise ValueError(f"READ-boundary source digest mismatch: {relative}")
+            implementation = architecture.get("implementationSHA256") or {}
+            assert set(implementation) == {
+                "construct-phase1-raw-episode-corpus.py", "phase1_read_boundary.py",
+                "construct-phase1-closed-episode-corpus.py",
+            }
+            assert all(re.fullmatch(r"[0-9a-f]{64}", value) for value in implementation.values())
     elif (
         episode_version not in {"phase1-episode-v4", "phase1-episode-v5"}
         or conversion_version not in {
@@ -163,11 +182,18 @@ def main() -> int:
         "phase1-raw-episode-v6",
         "phase1-raw-episode-v7", "phase1-raw-episode-v8",
         "phase1-raw-episode-v9",
+        "phase1-raw-episode-v10",
     }:
         raw_candidates = load_jsonl(root / "raw-episode-candidates.jsonl")
         for candidate in raw_candidates:
             adjudication = adjudication_by_candidate[candidate["candidateID"]]
             state_machine = candidate.get("episodeStateMachine") or {}
+            if episode_version == "phase1-raw-episode-v10":
+                assert candidate.get("causalEvidence", {}).get("unresolvedInterveningReadCount") == 0
+                if "read_novelty_unresolved" in {
+                    state_machine.get("closeReason"), state_machine.get("onsetPartitionReason"),
+                }:
+                    assert adjudication.get("lossEligibility") == "ineligible"
             closure_evidence = candidate.get("closureEvidence") or {}
             if (
                 state_machine.get("closeReason") == "session_end"

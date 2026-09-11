@@ -6,7 +6,7 @@ public struct Phase1SemanticReducerConfiguration: Sendable {
     public let readSurfaceEvidenceDirectory: URL?
 
     fileprivate var usesSamePaneSequence: Bool {
-        ["phase1-semantic-v23", "phase1-semantic-v24", "phase1-semantic-v25"].contains(reducerVersion)
+        ["phase1-semantic-v23", "phase1-semantic-v24", "phase1-semantic-v25", "phase1-semantic-v26"].contains(reducerVersion)
     }
 
     public init(
@@ -97,7 +97,7 @@ public struct Phase1SemanticReducer {
         let usesReconciledSemanticReads = [
             "phase1-semantic-v18", "phase1-semantic-v19",
             "phase1-semantic-v20", "phase1-semantic-v21",
-            "phase1-semantic-v22", "phase1-semantic-v23", "phase1-semantic-v24", "phase1-semantic-v25",
+            "phase1-semantic-v22", "phase1-semantic-v23", "phase1-semantic-v24", "phase1-semantic-v25", "phase1-semantic-v26",
         ].contains(configuration.reducerVersion)
         let dynamicReadBoundaries = usesReconciledSemanticReads
             ? reducerDynamicReadBoundaries(raw)
@@ -436,7 +436,10 @@ public struct Phase1SemanticReducer {
                     ? .semanticV16
                     : configuration.reducerVersion == "phase1-semantic-v15"
                         ? .destructiveV15
-                        : .legacy
+                        : .legacy,
+            legacySessionBlacklist: (16...25).contains {
+                configuration.reducerVersion == "phase1-semantic-v\($0)"
+            }
         )
         dispositions.append(contentsOf: overlapResult.dispositions)
         let sequenceResult = configuration.usesSamePaneSequence
@@ -446,7 +449,7 @@ public struct Phase1SemanticReducer {
                 attentionBoundaries: dynamicReadBoundaries,
                 sessionID: sessionID,
                 preserveNovelCheckpoints: configuration.reducerVersion != "phase1-semantic-v23",
-                compareOrdinarySamePaneStates: configuration.reducerVersion == "phase1-semantic-v25"
+                compareOrdinarySamePaneStates: ["phase1-semantic-v25", "phase1-semantic-v26"].contains(configuration.reducerVersion)
             )
             : overlapResult
         dispositions.append(contentsOf: sequenceResult.dispositions)
@@ -634,13 +637,16 @@ public struct Phase1SemanticReducer {
                 ]
             }
         }
-        if ["phase1-semantic-v24", "phase1-semantic-v25"].contains(configuration.reducerVersion) {
+        if ["phase1-semantic-v24", "phase1-semantic-v25", "phase1-semantic-v26"].contains(configuration.reducerVersion) {
             reduction["preWriteReadRule"] = "pre-WRITE observations close passive progress but are compared as ordinary captured READ evidence; fresh causally available content is retained and redundant same-pane content is suppressed"
             reduction["minimumAmbiguousRepeatFraction"] = 0.72
             reduction["crossSensorSuppressionRule"] = "sensor alternation alone never lowers the minimum repeated fraction"
         }
-        if configuration.reducerVersion == "phase1-semantic-v25" {
+        if ["phase1-semantic-v25", "phase1-semantic-v26"].contains(configuration.reducerVersion) {
             reduction["ordinarySamePaneComparisonRule"] = "after coherent contiguous novelty fails, apply ordered reflow and exact-token LCS evidence to every adjacent compatible reading state, regardless of sensor type or elapsed time; retain a proven coherent displaced edge before suppressing a repeat and advance viewport coverage; retain the v24 repeat threshold and all sequence resets; never compare across application/surface returns or WRITE boundaries"
+        }
+        if configuration.reducerVersion == "phase1-semantic-v26" {
+            reduction["sessionWideTextBlacklist"] = "disabled: repetition across unrelated panes or applications does not establish interface authorship; retain known controls, peripheral geometry rules, and adjacent same-pane overlap"
         }
         try reducerWriteJSON(reduction, to: output.appendingPathComponent("reduction.json"))
         return Phase1SemanticReducerResult(
@@ -733,6 +739,7 @@ private func reducerUsesVisualReadEvidence(_ version: String) -> Bool {
         || version == "phase1-semantic-v23"
         || version == "phase1-semantic-v24"
         || version == "phase1-semantic-v25"
+        || version == "phase1-semantic-v26"
 }
 
 /// Returns raw interaction intervals that divide autonomous visual progress
@@ -799,7 +806,7 @@ private func loadReadSurfaceEvidence(
         ]
     case "phase1-semantic-v18", "phase1-semantic-v19",
          "phase1-semantic-v20", "phase1-semantic-v21",
-         "phase1-semantic-v22", "phase1-semantic-v23", "phase1-semantic-v24", "phase1-semantic-v25":
+         "phase1-semantic-v22", "phase1-semantic-v23", "phase1-semantic-v24", "phase1-semantic-v25", "phase1-semantic-v26":
         expectedRuleVersions = rawScreenOCRSchema >= 7
             ? ["ax-pane-read-v5", "ax-pane-read-v6", "ax-pane-read-v7"]
             : ["pointer-local-read-v1"]
@@ -809,7 +816,7 @@ private func loadReadSurfaceEvidence(
     default:
         guard configuration.readSurfaceEvidenceDirectory == nil else {
             throw Phase1SemanticReducerError.invalidManifest(
-                "--read-surface-evidence requires phase1-semantic-v11 through phase1-semantic-v25"
+                "--read-surface-evidence requires phase1-semantic-v11 through phase1-semantic-v26"
             )
         }
         return nil
@@ -3615,7 +3622,8 @@ private func applySemanticReadOverlap(
     writeBoundaries: [ReducerWriteBoundary],
     sessionID: String,
     paneAwareSurfaceIdentity: Bool,
-    mode: ReducerReadOverlapMode
+    mode: ReducerReadOverlapMode,
+    legacySessionBlacklist: Bool = false
 ) -> ReducerOverlapResult {
     enum TimelineItem {
         case candidate(Int)
@@ -3645,8 +3653,8 @@ private func applySemanticReadOverlap(
         return left.2 < right.2
     }
     var deduplicator = AdjacentViewportDeduplicator()
-    var scaffoldingTracker = ReadInterfaceScaffoldingTracker()
-    var comparisonScaffoldingTracker = ReadInterfaceScaffoldingTracker()
+    var scaffoldingTracker = ReadInterfaceScaffoldingTracker(legacySessionBlacklist: legacySessionBlacklist)
+    var comparisonScaffoldingTracker = ReadInterfaceScaffoldingTracker(legacySessionBlacklist: legacySessionBlacklist)
     let usesSemanticReadProjection = mode == .semanticV16
         || mode == .semanticV17 || mode == .semanticV18
         || mode == .semanticV19 || mode == .semanticV20

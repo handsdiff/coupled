@@ -46,7 +46,7 @@ def main() -> int:
         / "coupled-data/phase1-experiment-1-corpus-v2-unredacted-canonical-20260818"
     )
     packed_path = Path(str(corpus_path) + "-qwen-pack-v7")
-    if not (corpus_path.is_dir() and packed_path.is_dir()):
+    if not ((corpus_path / "examples.jsonl").is_file() and (packed_path / "packed-examples.jsonl").is_file()):
         print("Phase 1 real-runner checks skipped: local frozen artifacts unavailable")
         return 0
 
@@ -521,7 +521,7 @@ def main() -> int:
         project
         / "coupled-data/phase1-raw-episode-pack-v6-v10-canonical-20260820"
     )
-    if raw_episode_corpus.is_dir() and raw_episode_pack.is_dir():
+    if (raw_episode_corpus / "examples.jsonl").is_file() and (raw_episode_pack / "packed-examples.jsonl").is_file():
         episode_manifest, episode_examples, _, _ = validate_inputs(
             raw_episode_corpus, raw_episode_pack
         )
