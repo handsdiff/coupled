@@ -21,7 +21,49 @@ manual repairs are allowed for this experiment and retain their evidence.
 | Correct loss | Native Qwen packing masks the complete input and supervises completion plus one native terminator. The SDK causal shift is checked per row; generation receives no target tokens. |
 | Continual updates | Independent old/new cohorts; score before updating, train each new block once, continue optimizer state, never train the final block. |
 
-## Final bounded cleanup
+## September 11 reviewer-driven cleanup
+
+The previous bounded cleanup below was not a corpus-wide cleanliness proof.
+The independent reviewer found remaining false boundaries, scrambled prose,
+duplicate screens and wrong-source labels in the actual native inputs.
+
+The current artifact is
+`coupled-data/sep02-10-cleanliness-review-20260911/corpus-v1/new`:
+
+- 655 targets, 1,134 historical WRITEs, 6,767 READs.
+- Seven exact-state composition repairs replace eleven targets and three
+  history-only fragments. Eight self-derived boundary READs are removed.
+- All 6,775 prior READs were screened; 3,766 local native OCR jobs supply
+  ordering evidence. Automatic changes retain the original strings. Where
+  native column-first order would detach table labels, only ordering *within*
+  fixed original column runs is allowed. Exact one-to-one observation evidence
+  is required; unproven layouts/recognition/partial-delta correspondences stay
+  unchanged rather than being guessed.
+- Fourteen finite screenshot-backed READ reviews correct glyphs, foreground
+  sources, sidebar/status fragments and a row-preserving timeline. Five
+  actual wrong-app labels are corrected, with two additional source-title
+  clarifications. Evidence, reasons and source hashes remain local sidecars.
+- After these repairs, exact adjacent equality or a substantial exact
+  suffix/prefix overlap is rechecked on the same source. No fuzzy substring
+  blacklist, no cross-WRITE merging, no removal of genuinely new remainder.
+  The later representation is used only with its predecessor retained;
+  otherwise the full corrected fallback remains available to packing.
+- 648 unaffected target/query/mask/time contracts, 1,127 unrelated historical
+  WRITEs and all 26 user-approved golden READ records are unchanged. The
+  actual historical experiment arm is untouched.
+
+The reviewer’s concrete cases are checked against actual native context plans:
+former examples 12–22 have the corrected foreground sources; 420–426 no longer
+receive the duplicate waiting screen; 460–467 retain coherent timeline rows
+once, followed by the newly exposed response; 474–475 become one target.
+Numbers here refer to the previous `packs-v3/new` cohort, not renumbered UI IDs.
+
+The neighboring-note scan covers 84 adjacent same-note neighborhoods touching
+eligible targets. Continuous state alone is **not** a merge rule: independent
+bullets and genuinely new responses stay separate. It exposed the additional
+six repairs beyond the reviewer’s motivating split.
+
+## Earlier bounded cleanup retained
 
 The local `final-reviews-v2.json` and resulting `batch-changes.jsonl` bind:
 
@@ -47,12 +89,12 @@ not prove a universal theory of where all thoughts end.
   Clipboard changes, new inbound information or uncertain authorship prevented
   a single proven target. Their final content is retained in history; this is
   not equivalent to recovering all their possible supervision.
-- Two inspected neighboring-note boundaries remain conservative: a field-state
-  discontinuity before “given that sol seems to have improved”, and a later
-  READ with four unexplained OCR words before another continuation of the
-  parenthetical. We did not claim either proves genuinely novel information,
-  and did not relax the evidence gates merely to merge them. Both continuations
-  remain in history.
+- A field-state discontinuity before “given that sol seems to have improved”
+  still prevents a proven merge. The later parenthetical continuation previously
+  blocked by OCR and a character-count footer is now repaired. Another reviewed
+  neighborhood (former 524–526) includes finishing a previous word and beginning
+  a new bullet in one raw interval. Its best thought boundary has not been
+  adjudicated; do not describe the target abstraction as universally solved.
 - Previous user-accepted small edge/OCR omissions, table tradeoffs and the
   deferred lecture-slide/chart-return behavior remain deferred. This batch does
   not reopen pane selection or invent missing observations.
@@ -64,6 +106,12 @@ not prove a universal theory of where all thoughts end.
 - Residual interface text or OCR imperfections may remain outside the reviewed
   examples. “Zero tracked defects” was a registry count, not an error-rate
   estimate; do not present it as exhaustive data cleanliness.
+- The broad ordering screen is not a visual error-rate survey. In its latest
+  reconciliation, 539 layouts, 226 line correspondences, 188 partial-delta
+  cases and 38 nonexact source projections lacked an automatic proof; some
+  are separately repaired by the finite reviews. These are *dispositions*, not
+  that many confirmed bad READs or bad training examples. The audit files retain
+  the individual IDs instead of silently calling them clean.
 
 ## Experiment interpretation
 

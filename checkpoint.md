@@ -19,7 +19,7 @@ Compare **whole pipelines**, not just READ cleanup:
 - **Old:** September 1 commit `f6a2e713c378adc4e2f989b76882d9a14159b526`;
   pane v2, semantic v13, causal v15, raw episodes v8, historical packer v7.
   It retains its own targets and ignores later dynamic visual READ records.
-- **New:** `coupled-data/sep02-10-curated-repair-20260911/paired-v11-checked/new`.
+- **New:** `coupled-data/sep02-10-cleanliness-review-20260911/corpus-v1/new`.
   Best reviewed construction, including source-backed manual repairs.
 - Same September 2–10 source sessions. Do not force shared targets, counts,
   episode boundaries or histories. `paired-*/old` is a READ-only diagnostic,
@@ -27,57 +27,68 @@ Compare **whole pipelines**, not just READ cleanup:
 
 | Prepared quantity | Old | New |
 |---|---:|---:|
-| Eligible targets | 664 | 659 |
-| Historical WRITEs | 1,138 | 1,141 |
-| READs | 5,158 | 6,775 |
+| Eligible targets | 664 | 655 |
+| Historical WRITEs | 1,138 | 1,134 |
+| READs | 5,158 | 6,767 |
 | Training examples | 650 | 650 |
-| Post-warmup opportunities per model | 614 | 609 |
+| Post-warmup opportunities per model | 614 | 605 |
 | Chronological blocks | 14 | 14 |
 
 The old cohort excludes five credential-related targets. Common privacy rules
 also apply to context. This is not a guarantee of finding every secret.
 
-## Final cleanup and quality limits
+## Reviewer-driven cleanup and quality limits
 
-- Joined former new-pack 561–562 into the complete note using four continuous
-  raw attempts; removed the self-derived READ that falsely divided it.
-- Folded the immediate parenthetical refinement into former target 570 using
-  ten continuous raw attempts. No intervening READ or clipboard change.
-- Removed two exact, screenshot-confirmed terminal-footer projections,
-  including the repeated state's full-context fallback.
-- Preserved all 657 other target/query/mask/time contracts, all unrelated
-  historical WRITEs and READs, and all 26 golden READ records from the preceding
-  cleaned corpus. The historical experiment arm is unchanged.
+- Screened all 6,775 retained READs; reran accurate local OCR for 3,766 unique
+  image/region jobs. Native ordering is evidence, not unconditional authority:
+  table/column relationships stay fixed, and new recognition strings are not
+  automatically adopted. Unproven correspondences remain explicit.
+- Repaired seven compositions, including the reviewer's 474–475 false split
+  and six additional continuations/revisions. Eleven targets and three
+  history-only fragments become seven complete targets; eight self-derived
+  boundary READs are removed. Initial queries and causal onset remain intact.
+- Fourteen screenshot-backed READ adjudications fix wrong-source overlays,
+  sidebar/status fragments, specific OCR glyphs and the timeline's row order.
+  Exact adjacent overlap is rechecked after correction; dependencies retain
+  the full fallback when earlier context is unavailable.
+- Against `paired-v11-checked`: 648 unaffected target/query/mask/time contracts,
+  1,127 unrelated historical WRITEs and all 26 golden READs are unchanged.
+  3,157 retained READ records change; 3,610 remain identical. The actual
+  historical experiment arm remains byte-identical.
 
 See [readiness and explicit limitations](docs/DATASET-READINESS.md). Seven earlier
-compositions remain history-only. Two inspected neighboring continuations still
-lack a safe merge proof. Accepted edge/OCR tradeoffs and coverage gaps remain
-documented. There is **no claim of zero dataset error** or universal rules for
-all manually repaired cases.
+compositions remain history-only. Some discontinuities and composition-boundary
+judgments remain unresolved. Accepted edge/OCR tradeoffs and coverage gaps are
+not reopened. There is **no claim of zero dataset error**, exhaustive visual
+certification, or universal rules for all manually repaired cases.
 
 ## Frozen preparation locations
 
 Under `coupled-data/sep02-10-pipeline-era-comparison-20260911/`:
 
-- `revision-v2/comparison.json`: independent sources and curation provenance.
-- `packs-v3/{old,new}`: native Qwen inputs, targets, blocks and audits.
-- `revision-v2/execution-checks.json`: no-network schedule/recovery checks.
-- `revision-v2/execution-plan.json`: exact recipe, hashes and cost assumptions.
+- `revision-v3/comparison.json`: independent sources and curation provenance.
+- `packs-v4/{old,new}`: native Qwen inputs, targets and blocks.
+- `revision-v3/`: current native audits, execution checks and offline plan.
 
-Earlier `packs-v2`, `comparison.json` and `execution-plan.json` are superseded
-preparations, not prior model results. No provider calls or training were made.
+Earlier `packs-v2`, `packs-v3` and `revision-v2/execution-plan.json` are superseded
+preparations, not prior model results. Do not launch the old plan. No provider
+calls or training were made during this cleanup.
 
-All **1,323 native rows** passed prompt reconstruction, masking, one-EOS and
-SDK-shift checks. Both arms reproduce byte-identically; the old arm also matches
-its preceding pack. The no-network executor passed 2,446 generations, 2,546 NLL
-calls and 1,300 updates, including interrupted training/scoring/checkpoint saves.
-All eleven recent composed WRITEs appear intact in the first later native input.
-BPB is recorded from existing NLL results without extra provider calls; see
-[its exact definition](docs/likelihood-metrics.md).
+The corpus audit passes strict causality, reconstruction of the seven joins,
+the unaffected-record comparison, and 76 reference-packed canaries per arm.
+All 1,319 native SDK rows pass prompt reconstruction, masks, causal shift and
+native termination checks. The new pack repeats byte-for-byte; the old pack
+matches the prior frozen arm. The no-network executor rehearsal passes 2,438
+simulated generations, 2,538 NLL calls and 1,300 updates, including interrupted
+training/scoring/checkpoint recovery. These tests do not certify semantic
+cleanliness or live GPU behavior. BPB uses existing NLL results without extra
+provider calls; see [its exact definition](docs/likelihood-metrics.md).
 
-Plan fingerprint: `0f74496321312a2f37b2038ba9a0e6ee2e306962bf7858cc9a39846f932fea59`.
-The September-10-rate uncached/max-output estimate is **$435.09**, excluding
-preflight and retries. This is not approved spending or a current price quote.
+The previous plan fingerprint and cost estimate are obsolete for this corpus.
+The regenerated `revision-v3/execution-plan.json` fingerprint is
+`061bffe2cfa1da25325c781a58164435fdbfe6c71704edc7cf7e8f9a59419099`.
+Its planning rates are dated September 10, not a fresh quote; pricing and budget
+still require separate approval. Preparation is not permission to launch.
 
 Recipe: Qwen/Qwen3.8-27B, reasoning off; fresh rank-32 adapter per pipeline,
 attention/MLP/unembedding; seed 17, batch one, Adam 2e-4, betas .9/.95,

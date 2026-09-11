@@ -128,7 +128,16 @@ def main():
         assert h.sha(a.input/'batch-read-changes.json') == manifest['batchReadChangesSHA256']
         assert h.sha(a.input/'batch-reviews.json') == manifest['batchReviewsSHA256']
         curator = h.load_module('apply-phase1-reviewed-batch')
-        rebuilt, rebuilt_reads, _ = curator.make_batch(Path(manifest['parentCorpus']), spec)
+        if spec.get('version') == 'read-quality-materialization-v1':
+            from types import SimpleNamespace
+            quality=h.load_module('apply-phase1-read-quality-repairs')
+            rebuilt,rebuilt_reads,rebuilt_spec,_=quality.materialize(SimpleNamespace(
+                input=Path(manifest['parentCorpus']),manual=Path(spec['manualReview']),
+                order_audit=Path(spec['orderAudit']),write_reviews=Path(spec['writeReview']) if spec.get('writeReview') else None,
+                output=a.input),verify_only=True)
+            assert rebuilt_spec==spec,'READ quality review does not reproduce'
+        else:
+            rebuilt, rebuilt_reads, _ = curator.make_batch(Path(manifest['parentCorpus']), spec)
         assert rebuilt == batch and rebuilt_reads == batch_reads, 'Batch does not reproduce from bound evidence'
         for c in batch:
             assert common_writes[c['event']['sourceEventID']] == c['event']

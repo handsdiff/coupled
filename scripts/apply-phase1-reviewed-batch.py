@@ -108,7 +108,7 @@ def verify_persistent_insertion(records):
     return algorithm.normalize_authored_content(edit['content']), edit
 
 
-def make_batch(source, spec):
+def make_batch(source, spec, read_overrides=None):
     h.require(spec['version'] in {'phase1-manual-composition-batch-v1', 'phase1-manual-composition-batch-v2'}, 'Unsupported review version')
     h.require(spec['reviewedBy'] == 'assistant_raw_and_screenshot_review', 'Missing adjudicator')
     writes = list(h.rows(source / 'common-write-events.jsonl'))
@@ -119,6 +119,9 @@ def make_batch(source, spec):
         original[i] = r['targetEventID']
     by_write = {e['sourceEventID']: e for e in writes}
     new_reads = {r['sourceEventID']: r for r in h.rows(source / 'new/events.jsonl') if r['kind'] == 'read'}
+    if read_overrides:
+        h.require(set(read_overrides)<=new_reads.keys(),'READ override is not in source corpus')
+        new_reads.update(read_overrides)
     needed = {}
     frames = {}
     for r in spec['writes']:
@@ -220,7 +223,7 @@ def make_batch(source, spec):
                     draft = algorithm.normalize_authored_content(algorithm.minimal_edit(endpoint(attempts[0],'before')['value'], endpoint(prior[-1],'after')['value'])['content'])
                     result = assessor.assess(read, onset, draft, template['modelFacingDestination']['application'],
                                              initial_field=endpoint(attempts[0],'before')['value'])
-                    h.require(result['status'] in h.NON_NOVEL, 'Novel or unexplained READ')
+                    h.require(result['status'] in h.NON_NOVEL, 'Novel or unexplained READ: '+review['name']+' '+read['sourceEventID']+' '+json.dumps(result.get('boundaryEvidence',{}).get('unexplainedRuns',[])))
                     assessments.append(result)
                 h.require(review.get('closureReason') and review.get('closureEventID') in new_reads.keys() | by_write.keys(), 'Unbound closure review')
                 closure = (new_reads | by_write)[review['closureEventID']]
