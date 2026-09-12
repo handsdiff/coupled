@@ -10,17 +10,13 @@ from __future__ import annotations
 import argparse
 import copy
 import hashlib
-import importlib.util
 import json
-import os
 from pathlib import Path
 import resource
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 PREP = ROOT / 'coupled-data/sep02-10-training-prep-20260910'
-os.environ['HF_HUB_OFFLINE'] = '1'
-os.environ['TRANSFORMERS_OFFLINE'] = '1'
 sys.path.insert(0, str(PREP / 'runtime'))
 from phase1_qwen38_execution import NativeRows, canonical, file_hash, fingerprint, require
 from phase1_qwen35_native import MODEL_SPECS, native_runtime_from_tokenizer, render_native_row

@@ -47,6 +47,8 @@ python3 "$project_dir/scripts/check-phase1-qwen38-preflight.py"
 
 PYTHONPYCACHEPREFIX="$project_dir/.build/python-cache" \
 python3 -m py_compile \
+  "$project_dir/scripts/run-phase1-qwen-model-preflights.py" \
+  "$project_dir/scripts/check-phase1-qwen-model-execution.py" \
   "$project_dir/scripts/prepare-phase1-qwen-model-preflights.py" \
   "$project_dir/scripts/check-phase1-qwen-model-preparation.py" \
   "$project_dir/scripts/audit-phase1-qwen38-preflight.py" \
