@@ -63,3 +63,33 @@ with tempfile.TemporaryDirectory() as d:
     reset=m.Calls(m.Journal(Path(d)/'bad-restoration',{}),prices,5)
     rejected(lambda:m.phases(FakeBridge(weights_only=True),reset,rows,selection,'new'))
 print('PASS: 5 probes, 3 unique updates, explicit restoration fork; no silent replay; pre-dispatch budget; weights-only restore rejected')
+
+class OverfitFake(FakeBridge):
+    def nll(self,sampler,row):
+        loss=.01 if sampler['weight']>=5 else 2.
+        return {'targetLogprobs':[-loss]*2,'weightedNLLSum':2*loss,'lossBearingTokens':2,'meanNLL':loss}
+    def train(self,state,row):
+        result=super().train(state,row)
+        return {**result,**self.nll(state,row)}
+    def generate(self,sampler,row):
+        return {'prediction':'the exact authored thought' if sampler['weight']>=5 else 'not learned',
+                'latencySeconds':.01,'stopReason':'stop'}
+
+with tempfile.TemporaryDirectory() as d:
+    free={'train':0.,'prefill':0.,'sample':0.}
+    rows={str(i):{'exampleID':str(i),'promptTokenCount':32000,'lossBearingTokenCount':32,'trainingDatumPositions':32031} for i in range(20)}
+    journal=m.Journal(Path(d)/'extended',{});calls=m.Calls(journal,free,20)
+    seen=[]
+    cap=m.capability_phase(calls,rows,{'probeIDs':list(rows),'generationSeeds':[17,18,19,20]},
+        lambda row,seed:(seen.append((row['exampleID'],seed)) or {'prediction':'candidate'}))
+    assert len(seen)==80 and len(set(seen))==80
+    extra={'overfitIDs':list(rows)[:10],'cases':[{'exampleID':e,'targetText':'the exact authored thought'} for e in rows],
+           'overfitEpochsMaximum':10,'overfitEvaluationEpochs':[5,10],
+           'earlyStop':{'maximumMeanNLL':.25,'maximumNLLRatioToBase':.25,'minimumNormalizedExactMatches':8}}
+    fake=OverfitFake();progress=[]
+    result=m.overfit_phase(fake,calls,rows,extra,progress.append)
+    assert result['status']=='passed_memorization_only' and result['epochsCompleted']==5
+    assert len(fake.trained)==50 and all(fake.trained.count(e)==5 for e in extra['overfitIDs'])
+    assert result['snapshots'][0]['normalizedExactMatches']==10
+    assert len([r for r in journal.records if r.get('operation')=='train' and r['kind']=='operation_begin'])==50
+print('PASS: 20 cases x 4 distinct seeds; fresh 10-example overfit; exact target checks; epoch-5 early stop')

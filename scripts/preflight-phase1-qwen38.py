@@ -8,6 +8,7 @@ the explicit branch comparison tests optimizer restoration, not a crash retry.
 from __future__ import annotations
 
 import argparse
+from collections import defaultdict
 import datetime as dt
 import importlib.metadata
 import importlib.util
@@ -28,7 +29,7 @@ from phase1_qwen38_execution import (ContractError, Journal, NativeRows, TinkerB
     canonical, datum_from_row, file_hash, fingerprint, plain, require, utc,
     verify_execution_binding)
 
-VERSION = 'phase1-qwen38-live-preflight-v1'
+VERSION = 'phase1-qwen38-live-preflight-v2'
 PRICING_URL = 'https://tinker-docs.thinkingmachines.ai/tinker/models.json'
 PACKAGES = ('tinker', 'tinker-cookbook', 'transformers', 'tokenizers', 'torch')
 
@@ -90,6 +91,37 @@ def selection(pack):
                  for e in probes]}, rows
 
 
+def additional_selection(pack):
+    """Frozen outcome-independent coverage: five substantive writes per app."""
+    cohort=[json.loads(l) for l in (pack/'cohort.jsonl').open()]
+    groups=defaultdict(list)
+    for e in cohort:
+        text=e['targetText'].strip()
+        if len(text)>=60 and len(text.split())>=8 and '<|paste|>' not in text:
+            groups[e['modelFacingDestination']['application']].append(e)
+    require(len(groups)==4 and all(len(g)>=5 for g in groups.values()),'Insufficient application coverage')
+    selected=[]
+    for app,group in sorted(groups.items()):
+        selected.extend(group[round(i*(len(group)-1)/4)] for i in range(5))
+    selected.sort(key=lambda e:e['targetBeganAt'])
+    training=[]
+    for app in sorted(groups):
+        group=[e for e in selected if e['modelFacingDestination']['application']==app]
+        training.extend([group[1],group[3]])
+    training+=sorted([e for e in selected if e not in training],
+                     key=lambda e:(-len(e['targetText']),e['exampleID']))[:2]
+    require(len(selected)==20 and len(training)==10,'Wrong additional-test size')
+    rows=NativeRows(pack/'native-rows.jsonl')
+    return {'pipeline':'new','selectionRule':'five within-app chronological quantiles; >=60 chars and >=8 words; no paste',
+        'probeIDs':[e['exampleID'] for e in selected], 'overfitIDs':[e['exampleID'] for e in training],
+        'generationSeeds':[17,18,19,20], 'overfitEpochsMaximum':10,'overfitEvaluationEpochs':[5,10],
+        'earlyStop':{'maximumMeanNLL':.25,'maximumNLLRatioToBase':.25,'minimumNormalizedExactMatches':8},
+        'cases':[{'exampleID':e['exampleID'],'cohortNumber':next(i+1 for i,v in enumerate(cohort) if v['exampleID']==e['exampleID']),
+                  'application':e['modelFacingDestination']['application'],'targetText':e['targetText'],
+                  'fullSequenceTokenSHA256':rows[e['exampleID']]['fullSequenceTokenSHA256'],
+                  'promptTokenCount':rows[e['exampleID']]['promptTokenCount']} for e in selected]}
+
+
 def prepare(args):
     plan = json.loads(args.execution_plan.read_text()); verify_execution_binding(plan)
     require(not args.output.exists(), 'Use a new preflight directory')
@@ -103,20 +135,29 @@ def prepare(args):
         cost+=4*charge('nll',rows[tr[0]],prices)
         cost+=sum(charge('train',rows[e],prices) for e in tr)+charge('train',rows[tr[2]],prices)
         arms[arm]['maximumTokenCostUSD']=cost;total+=cost
+    additional=additional_selection(Path(plan['arms']['new']['packDirectory']))
+    # All additional operations share the same journal and ceiling with the
+    # original ten old/new occurrences. No independent per-test budgets.
+    cap_cost=sum(4*charge('generation',rows[e],prices) for e in additional['probeIDs'])
+    epoch_cost=sum(charge('train',rows[e],prices) for e in additional['overfitIDs'])
+    base_cost=sum(charge('nll',rows[e],prices) for e in additional['overfitIDs'])
+    eval_cost=sum(charge('generation',rows[e],prices)+charge('nll',rows[e],prices) for e in additional['overfitIDs'])
+    additional['maximumTokenCostUSD']={'multipleGeneration':cap_cost,'overfit':10*epoch_cost+base_cost+2*eval_cost}
+    total+=sum(additional['maximumTokenCostUSD'].values())
     result={'version':VERSION,'executionPlan':str(args.execution_plan.resolve()),'planSHA256':fingerprint(plan),
-        'runtime':runtime(),'arms':arms,'pricesPerMillionTokens':prices,'maximumTokenCostUSD':total,
-        'storageReserveUSD':.25,'hardCeilingUSD':5.,'projectID':args.project_id,
+        'runtime':runtime(),'arms':arms,'additionalTests':additional,'pricesPerMillionTokens':prices,'maximumTokenCostUSD':total,
+        'storageReserveUSD':.25,'hardCeilingUSD':20.,'projectID':args.project_id,
         'checkpointTTLSeconds':3600,'maximumRepeatedBranchLogprobDifference':.005,
         'sourceOfProjectPrivacy':'Previously user-confirmed dedicated private project; SDK does not expose grants',
-        'purpose':'Live format, masked updates, finite NLL/BPB, optimizer restoration, latency and cost—not efficacy',
-        'maximumOperations':{'generation':20,'nll':28,'train':8},
+        'purpose':'Live infrastructure + known-answer overfit + frozen-model predictive range; no generalization claim',
+        'maximumOperations':{'generation':120,'nll':58,'train':108},
         'retryPolicy':'No automatic full sampling retries, no automatic replay of uncertain paid operations',
         'mainExperimentAuthorized':False,'preparedAt':utc()}
-    require(total+.25 <= 5.,'Preflight exceeds its bounded ceiling')
+    require(total+.25 <= 20.,'Preflight exceeds its bounded ceiling')
     args.output.mkdir(parents=True)
     save(args.output/'preparation.json',result)
-    print(json.dumps({'status':'prepared','maximumTokenCostUSD':total,'hardCeilingUSD':5.,
-                      'uniqueExampleOccurrences':10,'providerCalls':0},indent=2))
+    print(json.dumps({'status':'prepared','maximumTokenCostUSD':total,'hardCeilingUSD':20.,
+                      'originalProbeOccurrences':10,'additionalNewPipelineCases':20,'providerCalls':0},indent=2))
 
 
 class NoAutomaticResampling:
@@ -202,6 +243,51 @@ class JournaledBridge:
     def checkpoint(self,handle,name):return self.bridge.checkpoint(self.clients[handle['clientHandle']],name)
 
 
+def capability_phase(calls,rows,spec,generate):
+    scores={}
+    for eid in spec['probeIDs']:
+        scores[eid]=[]
+        for seed in spec['generationSeeds']:
+            value=calls.call(f'capability/{eid}/seed-{seed}','generation',rows[eid],
+                             lambda eid=eid,seed=seed:generate(rows[eid],seed))
+            scores[eid].append({'seed':seed,**value})
+    return {'status':'complete_pending_holistic_review','scores':scores}
+
+
+def overfit_phase(bridge,calls,rows,spec,progress):
+    ids=spec['overfitIDs'];targets={e['exampleID']:e['targetText'] for e in spec['cases']}
+    base=bridge.sampler();baseline={}
+    for eid in ids:
+        baseline[eid]=calls.call(f'overfit/base/{eid}','nll',rows[eid],lambda eid=eid:bridge.nll(base,rows[eid]))
+    trainer=calls.call('overfit/fresh-adapter','admin',rows[ids[0]],lambda:bridge.trainer('overfit-new-disposable'))
+    snapshots=[];base_mean=sum(v['weightedNLLSum'] for v in baseline.values())/sum(v['lossBearingTokens'] for v in baseline.values())
+    for epoch in range(1,spec['overfitEpochsMaximum']+1):
+        order=sorted(ids,key=lambda e:(fingerprint({'seed':17,'epoch':epoch,'exampleID':e}),e))
+        step_results=[]
+        for position,eid in enumerate(order):
+            step_results.append(calls.call(f'overfit/epoch-{epoch}/step-{position}/{eid}','train',rows[eid],
+                                          lambda eid=eid:bridge.train(trainer,rows[eid])))
+        progress({'epoch':epoch,'trainingNLL':sum(v['weightedNLLSum'] for v in step_results)/sum(v['lossBearingTokens'] for v in step_results)})
+        if epoch not in spec['overfitEvaluationEpochs']:continue
+        checkpoint=calls.call(f'overfit/checkpoint-{epoch}','admin',rows[ids[0]],lambda:bridge.checkpoint(trainer,f'preflight-overfit-{epoch}'))
+        sampler=bridge.sampler(checkpoint['samplerCheckpointPath']);scores={}
+        for eid in ids:
+            gen=calls.call(f'overfit/eval-{epoch}/{eid}/generation','generation',rows[eid],lambda eid=eid:bridge.generate(sampler,rows[eid]))
+            nll=calls.call(f'overfit/eval-{epoch}/{eid}/nll','nll',rows[eid],lambda eid=eid:bridge.nll(sampler,rows[eid]))
+            scores[eid]={'generation':gen,'nll':nll,'exactMatch':gen['prediction']==targets[eid],
+                         'normalizedExactMatch':' '.join(gen['prediction'].split())==' '.join(targets[eid].split())}
+        mean=sum(v['nll']['weightedNLLSum'] for v in scores.values())/sum(v['nll']['lossBearingTokens'] for v in scores.values())
+        exact=sum(v['normalizedExactMatch'] for v in scores.values());gate=spec['earlyStop']
+        success=mean<=gate['maximumMeanNLL'] and mean<=base_mean*gate['maximumNLLRatioToBase'] and exact>=gate['minimumNormalizedExactMatches']
+        snapshot={'epoch':epoch,'checkpoint':checkpoint,'scores':scores,'meanNLL':mean,'baselineMeanNLL':base_mean,
+                  'normalizedExactMatches':exact,'memorizationGatePassed':success}
+        snapshots.append(snapshot);progress({'evaluation':snapshot})
+        if success:break
+    return {'status':'passed_memorization_only' if snapshots[-1]['memorizationGatePassed'] else 'completed_requires_review',
+            'baseline':baseline,'snapshots':snapshots,'epochsCompleted':epoch,'optimizerSteps':epoch*len(ids),
+            'scope':'Repeated known examples with disposable adapter; not future-write evaluation'}
+
+
 def run(args):
     preparation=json.loads((args.output/'preparation.json').read_text())
     require(preparation['version']==VERSION and preparation['projectID']==args.project_id,'Wrong preflight binding')
@@ -224,6 +310,9 @@ def run(args):
         for case in preparation['arms'][arm]['cases']:
             row=rows[arm][case['exampleID']];datum_from_row(row,tinker)
             require(row['fullSequenceTokenSHA256']==case['fullSequenceTokenSHA256'],'Probe changed')
+    for case in preparation['additionalTests']['cases']:
+        row=rows['new'][case['exampleID']];datum_from_row(row,tinker)
+        require(row['fullSequenceTokenSHA256']==case['fullSequenceTokenSHA256'],'Additional probe changed')
     # Read only the explicitly scoped credential; never echo or put it in artifacts.
     for line in args.env_file.read_text().splitlines():
         text=line.strip().removeprefix('export ')
@@ -239,7 +328,7 @@ def run(args):
         'implementationCommit':subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),
         'preparationSHA256':file_hash(args.output/'preparation.json'),'sessionID':session_id,
         'projectID':args.project_id,'model':plain(capability),'modelRevision':'unverified: provider exposes model name only',
-        'maximumUSD':5.,'mainRunStarted':False,'arms':{}}
+        'maximumUSD':20.,'mainRunStarted':False,'arms':{}}
     save(args.output/'preflight.json',manifest)
     contract={**plan['contract'],'checkpointTTLSeconds':preparation['checkpointTTLSeconds']}
     service_proxy=NoAutomaticResampling(service)
@@ -249,7 +338,7 @@ def run(args):
     remote=raw_bridge.sampler().get_tokenizer()
     require(remote.get_vocab()==tok.get_vocab(),'Served-model tokenizer vocabulary differs')
     for arm in rows:
-        for e in preparation['arms'][arm]['probeIDs']:
+        for e in set(preparation['arms'][arm]['probeIDs']+(preparation['additionalTests']['probeIDs'] if arm=='new' else [])):
             row=rows[arm][e]
             for field in ('promptTokenIDs','completionTokenIDs'):
                 require(remote.decode(row[field],clean_up_tokenization_spaces=False)==tok.decode(row[field],clean_up_tokenization_spaces=False),'Tokenizer decode differs')
@@ -257,12 +346,22 @@ def run(args):
         'nativeTerminatorID':248046,'scope':'SDK tokenizer for served model; complete vocabulary and probe decodes match'}
     save(args.output/'preflight.json',manifest)
     journal=Journal(args.output,{'preparationSHA256':manifest['preparationSHA256'],'commit':manifest['implementationCommit']})
-    calls=Calls(journal,prices,5.)
+    calls=Calls(journal,prices,20.)
     try:
         with journal.exclusive():
             for arm in ('old','new'):
                 manifest['arms'][arm]=phases(JournaledBridge(raw_bridge),calls,rows[arm],preparation['arms'][arm],arm)
                 save(args.output/'preflight.json',manifest)
+            extra=preparation['additionalTests'];base=raw_bridge.sampler()
+            seeded={seed:TinkerBridge(service_proxy,tinker,tok,renderer,
+                    {**contract,'generation':{**contract['generation'],'seed':seed}}) for seed in extra['generationSeeds']}
+            manifest['capability']=capability_phase(calls,rows['new'],extra,
+                                                  lambda row,seed:seeded[seed].generate(base,row))
+            save(args.output/'preflight.json',manifest)
+            def progress(value):
+                journal.append({'kind':'overfit_progress','at':utc(),**value})
+                manifest['latestOverfitProgress']=value;save(args.output/'preflight.json',manifest)
+            manifest['overfit']=overfit_phase(JournaledBridge(raw_bridge),calls,rows['new'],extra,progress)
         values=[r['value'] for r in journal.records if r['kind']=='operation_result' and r['operation']=='generation']
         manifest['generationSummary']={'count':len(values),'empty':sum(not v['prediction'].strip() for v in values),
             'lengthStopped':sum(v['stopReason']=='length' for v in values),
