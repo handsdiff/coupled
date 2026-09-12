@@ -104,9 +104,36 @@ not count in the post-training comparison.
 
 ## Before execution
 
-1. Final review of targets, retained limitations, audits and immutable commit.
-2. Confirm current provider pricing; authorize a bounded live preflight.
-3. Inspect preflight outputs, then approve the full-run budget and launch.
+The September 12 reasoning-off preflight completed under the authorized $20
+cap. Its 230 journaled operations all have results; masks, native EOS, returned
+loss sums and full optimizer restoration checks passed. Ten-example overfit
+stopped at epoch five: mean NLL 3.5423 → 0.01363 and 8/10 exact reproductions.
+The frozen 20-case × four-answer substantive probe scored 0/80 in implementer
+intent review (not independent adjudication). This is a model-selection warning,
+not proof that supervised personalization cannot work.
+
+Results and the response-bound audit are in
+`coupled-data/sep02-10-qwen38-comprehensive-preflight-20260912-v3/`.
+Dispatched-token upper bound $12.39184 plus $0.25 storage reserve; actual billing
+has not populated. No full experiment started. The main corpus/packs/recipe
+and collector were not changed.
+
+At the user's request, additional formats are locally prepared in
+`coupled-data/sep02-10-qwen-model-preflights-20260912-v3/`:
+
+- Qwen3.6-35B-A3B reasoning off and Qwen3.5-35B-A3B-Base: identical selected
+  tests/semantic inputs, model-specific formatting and verified shifted masks.
+- Qwen3.8-27B reasoning xhigh: generation-only preparation. Human targets have
+  no reasoning traces; do not silently train empty reasoning as reasoning-on.
+- All 84 native rows reproduce byte-identically; memory <0.9 GiB. Base EOS is
+  248044, hybrid EOS 248046. The current 27B executor is not a Base executor.
+- Additional proposed maximum $18.19 including storage, requesting a separate
+  $20 approval. No added-model requests have been made. `REVIEW.md` states the
+  still-required executor, remote-tokenizer and reasoning-training decisions.
+
+Next: review these results and approve the extra-model scope/budget, then
+complete model-specific live execution safeguards. Choose a model/recipe from
+prediction quality, learning behavior and cost/latency before the full-run gate.
 
 **STOP: preparation is not launch authorization.** The live collector was not
 stopped, rebuilt or changed by this cleanup. Preserve raw capture and prior
