@@ -21,7 +21,7 @@ def fp(x):
     return hashlib.sha256(json.dumps(x,sort_keys=True,separators=(',',':'),ensure_ascii=False,allow_nan=False).encode()).hexdigest()
 
 
-def audit(directory):
+def audit(directory, diagnostics=()):
     p=directory;plan=json.loads((p/'execution.json').read_text());run=json.loads((p/'run.json').read_text())
     assert run['status']=='complete_pending_review' and not run['mainRunStarted']
     assert sha(p/'execution.json')==run['executionSHA256']
@@ -118,19 +118,50 @@ def audit(directory):
         grades=json.loads(grade_path.read_text())
         for key,entries in grades['models'].items():
             assert set(e['exampleID'] for e in entries)==set(cases) and len(entries)==20
-            good=0;any_count=0;all_count=0
+            good=0;any_count=0;all_count=0;passing_latencies=[]
             for e in entries:
                 answers=run['models'][key]['capability']['scores'][e['exampleID']]
                 assert e['cohortNumber']==cases[e['exampleID']]['cohortNumber']
                 assert len(e['passBySeed'])==4 and all(type(v) is bool for v in e['passBySeed'])
                 assert e['predictionsSHA256']==[hashlib.sha256(a['prediction'].encode()).hexdigest() for a in answers]
                 assert e['reason']
+                passing_latencies.extend(a['latencySeconds'] for passed,a in zip(e['passBySeed'],answers) if passed)
                 good+=sum(e['passBySeed']);any_count+=any(e['passBySeed']);all_count+=all(e['passBySeed'])
             summary[key]['intentGrades']={'passingAnswers':good,'answers':80,'anyOfFourCases':any_count,'allOfFourCases':all_count,
                                           'status':'implementer judgment; not independent or random-corpus estimate'}
+            summary[key]['passingOnlyLatency']=({'count':len(passing_latencies),
+                'medianSeconds':statistics.median(passing_latencies),'meanSeconds':statistics.mean(passing_latencies)}
+                if passing_latencies else None)
+    diagnostic_results=[];diagnostic_cost=0.
+    for d in diagnostics:
+        dp=json.loads((d/'plan.json').read_text());dr=json.loads((d/'result.json').read_text())
+        assert sha(d/'plan.json')==dr['planSHA256']
+        for path,digest in dp['runtime']['filesSHA256'].items():assert sha(Path(path))==digest
+        ds={};de={}
+        for event in map(json.loads,(d/'operations.jsonl').open()):
+            if event['kind']=='operation_begin':
+                assert event['key'] not in ds;ds[event['key']]=event
+            if event['kind']=='operation_result':
+                assert event['key'] in ds and event['key'] not in de;de[event['key']]=event
+        unresolved=set(ds)-set(de);resolution=None
+        if unresolved:
+            resolution=json.loads((d/'resolution.json').read_text())
+            assert unresolved=={resolution['operationKey']} and resolution['observedHTTPStatus']==400
+            assert resolution['status']=='diagnostic_not_supported_by_provider' and not resolution['replayed']
+            assert ds[resolution['operationKey']]['operation']=='admin'
+        cost=sum(v['maximumUSD'] for v in ds.values())
+        assert math.isclose(cost,dr['reservedTokenCostUSD'],abs_tol=1e-9)
+        assert cost<=.35 and dp['combinedMaximumIncludingStorageUSD']<=20.
+        diagnostic_cost+=cost
+        diagnostic_results.append({'directory':str(d),'result':dr,'resolution':resolution,
+            'lineageSHA256':{name:sha(d/name) for name in ('plan.json','result.json','operations.jsonl')},
+            'maximumDispatchedTokenCostUSD':cost})
+    assert total+diagnostic_cost+.5<=20.
     return {'status':'audit_passed_with_explicit_model_diagnostics_NOT_main_run_authorization',
             'models':summary,'pendingOperations':0,'reusedPriorBaselineCalls':len(reuse),
-            'totalAdditionalAuthorizationTokenBoundUSD':total,'storageReserveUSD':.5,'actualInvoiceCostUSD':None,
+            'totalAdditionalAuthorizationTokenBoundUSD':total+diagnostic_cost,'mainSuiteIncludingPriorTokenBoundUSD':total,
+            'diagnosticTokenBoundUSD':diagnostic_cost,'restorationControls':diagnostic_results,
+            'storageReserveUSD':.5,'actualInvoiceCostUSD':None,
             'priorAttemptsTokenBoundUSD':plan['priorAttempts']['reservedTokenCostUSD'],
             'wallMinutes':(dt.datetime.fromisoformat(run['endedAt'])-dt.datetime.fromisoformat(run['startedAt'])).total_seconds()/60,
             'lineageSHA256':{n:sha(p/n) for n in ('execution.json','run.json','operations.jsonl','reasoning-low-rows.jsonl')},
@@ -139,6 +170,7 @@ def audit(directory):
 
 if __name__=='__main__':
     p=argparse.ArgumentParser();p.add_argument('directory',type=Path);p.add_argument('--output',type=Path,required=True)
-    a=p.parse_args();result=audit(a.directory)
+    p.add_argument('--diagnostics',type=Path,nargs='*',default=[])
+    a=p.parse_args();result=audit(a.directory,a.diagnostics)
     with a.output.open('x') as f:json.dump(result,f,indent=2,sort_keys=True);f.write('\n')
     print(json.dumps(result,indent=2))
