@@ -446,6 +446,59 @@ Report content NLL, first-token/remaining-token decomposition, intent passes,
 cost and latency; this is one developmental future block, not a sustained
 learning curve or authorization for the larger old/new experiment.
 
+The Qwen3.8 pilot is now **complete and audited** in
+`coupled-data/sep02-10-qwen38-future-pilot-live-20260912-v1/`.
+Execution commit: `3d0f242`; plan SHA:
+`f6e0f500884b8c7713bb8b888885f8939ba4557b15bec26bd2abff4ff3ada73e`.
+Exactly 50 updates, 100 generations and 100 future likelihood measurements
+completed without errors or retries. Training presented 1,169 weighted tokens
+(1,119 authored/paste-marker content tokens plus 50 EOS). Remote vocabulary,
+native masks, target/conditioning hashes, chronology and budget audit passed.
+Provider metadata verifies one uncorrupted rank-32 Qwen3.8 adapter and four
+private seven-day checkpoints. Peak local memory was 770 MiB; runtime about
+25 minutes, including 16.7 minutes inside training calls.
+
+Matched **2e-4**, same 50 future writes, content NLL excluding native EOS:
+
+| Model | Frozen → trained NLL | Reduction | Intent passes | Passes excluding borderline |
+|---|---:|---:|---:|---:|
+| Qwen3.5 Base | 3.716 → 3.029 | 18.5% | 0 → 0 / 50 | 0 → 0 |
+| Qwen3.6 | 3.642 → 2.983 | 18.1% | 3 → 3 / 50 | 1 → 3 |
+| Qwen3.8, reasoning off | 3.316 → 2.842 | 14.3% | 2 → 6 / 50 | 0 → 2 |
+
+Qwen3.8 improves content likelihood on 48/50 future examples. Only 30.2% of its
+content-likelihood gain comes from the first token; excluding that token and EOS,
+NLL improves 3.120 → 2.772. It starts and ends with the lowest loss, but its relative
+improvement is smaller. This is meaningful likelihood adaptation, not evidence
+of sustained learning or a demonstrated semantic winner. Four of its six trained
+passes are borderline workflow-review requests; its two clear successes are the
+shell command and the multi-app test check. All 100 answers were manually read,
+with per-answer rationale and explicit borderline sensitivity. This is implementer
+judgment, not independent/blinded grading; older grades remain unchanged.
+
+Qwen3.8 has no empty, invalid or length-truncated answers. Repetitive frozen
+paste-marker/feedback outputs largely disappear, but many trained answers still
+ask a plausible **different** next question. Base at its prior lowest-loss 1e-4
+had 3/50 passes; Qwen3.6 at its prior highest-pass 5e-5 had 6/50 (three clear).
+Those are separate developmental LR comparisons, not matched-rate or independent
+selection results. No extra Qwen3.8 rate or full old/new run was launched.
+
+Estimated Qwen3.8 charges: training **$4.39945**, generation prefill **$4.86763**,
+generation output **$0.00859**, likelihood queries **$4.87232**, and seven-day
+checkpoint storage **$0.18029**: **about $14.33**, not an invoice. Billing had not
+yet reported this session. Audited maximum reservation plus conservative storage
+is **$15.42586 / $20**. Trained generation median/mean is **2.12/2.29 seconds**;
+quoted uncached cost is **$0.04877/query**, versus about $0.0142 for the two MoE
+models. Provider load differs across runs, so latency is not a controlled speed
+comparison. Checkpoint, per-query usage/timing and complete output evidence remain
+private alongside `REVIEW.md`, `analysis.json`, `judgments.json` and
+`comparison.png` (borderline passes are hatched).
+
+Journal SHA: `826acaac8640585e23ab99ea3bbeba79c81980f29d8dccdf61bc47d790810ff4`.
+Analysis SHA: `70a0d2c1d7b22ab647f8952096fbbba852b65daa5e8dd4fd5846b180a512f494`.
+Judgments, report, analysis and chart regenerate byte-identically. Prior model
+artifacts, raw capture, collector and corpus remain untouched.
+
 References: [experiment definition](PIPELINE-COMPARISON.md),
 [storage policy](STORAGE.md), [collection guide](COLLECTION_GUIDE.md), and
 `~/Vaults/Notes/Thesis.md`, `Data.md`, `Phase 1.md`.
