@@ -51,7 +51,8 @@ class Fake:
         if self.world.get('crash_gen'):
             self.world['crash_gen'] = False
             raise Crash()
-        return {'prediction': 'x', 'predictionTokenIDs': [1, 248046], 'latencySeconds': .1,
+        eos = self.contract.get('generation', {}).get('stopTokenIDs', [248046])[0]
+        return {'prediction': 'x', 'predictionTokenIDs': [1, eos], 'latencySeconds': .1,
                 'inputTokens': row['promptTokenCount'], 'outputTokens': 2, 'stopReason': 'stop'}
 
     def nll(self, sampler, row):
@@ -61,6 +62,19 @@ class Fake:
 
 
 def tests():
+    base_native = {'model':'Qwen/Qwen3.5-35B-A3B-Base', 'reasoning':'not_applicable',
+        'tokenizer':{'nativeStopTokenIDs':[248044]},
+        'arms':[{'contract':{'model':'Qwen/Qwen3.5-35B-A3B-Base', 'reasoning':None,
+                            'generation':{'stopTokenIDs':[248044]}, 'loss':{'nativeTerminatorTokenID':248044}}}]}
+    assert r.native_spec(base_native) == ('qwen35_base', 248044)
+    for field in ('tokenizer', 'generation', 'loss'):
+        wrong = copy.deepcopy(base_native)
+        if field == 'tokenizer': wrong['tokenizer']['nativeStopTokenIDs'] = [248046]
+        elif field == 'generation': wrong['arms'][0]['contract']['generation']['stopTokenIDs'] = [248046]
+        else: wrong['arms'][0]['contract']['loss']['nativeTerminatorTokenID'] = 248046
+        try: r.native_spec(wrong)
+        except m.ContractError: pass
+        else: raise AssertionError('Mixed Base/hybrid native contract accepted')
     ids = ['t1', 't2', 'e1', 'e2']
     rows = {eid: {'exampleID': eid, 'promptTokenCount': 10, 'lossBearingTokenCount': 2,
                   'trainingDatumPositions': 11, 'modelInputSHA256': 'input', 'targetSHA256': 'target'} for eid in ids}
@@ -99,6 +113,23 @@ def tests():
             try: m.Journal(Path(td), {'test': 1})
             except m.ContractError: pass
             else: raise AssertionError('Broken journal accepted')
+    base_report = copy.deepcopy(report)
+    base_report['arms'].append(copy.deepcopy(base_report['arms'][-1]))
+    base_report['arms'][-1]['name'] = 'lr-0.0005'
+    base_report['arms'][-1]['contract']['optimizer']['learningRate'] = 5e-4
+    for arm in base_report['arms']:
+        arm['contract']['model'] = base_native['model']
+        arm['contract']['generation'] = {'stopTokenIDs':[248044]}
+    with tempfile.TemporaryDirectory(prefix='coupled-base-four-rate-') as td:
+        j = m.Journal(Path(td), {'base':1})
+        world = {k:[] for k in ('creates','train','generations','nll','checkpoints')}
+        with j.exclusive(): r.Executor(base_report, rows, j, lambda c:Fake(c,world)).run()
+        assert len(world['train']) == 8 and len(world['generations']) == len(world['nll']) == 10
+        assert len(world['creates']) == 4 and all(parent is None for _,parent in world['creates'])
+        assert all(v['value']['predictionTokenIDs'][-1] == 248044 for v in j.results().values() if v['operation']=='generation')
+        before = copy.deepcopy(world)
+        with j.exclusive(): r.Executor(base_report, rows, j, lambda c:Fake(c,world)).run()
+        assert world == before
     # Explicitly exercise crash after checkpoint result but before logical commit.
     with tempfile.TemporaryDirectory(prefix='coupled-lr-checkpoint-gap-') as td:
         j = m.Journal(Path(td), {'test': 2})

@@ -326,6 +326,40 @@ The recommended-rate condition has now been tested; it is not a good candidate
 under this particular small-data recipe. This still does not establish a best
 rate or authorize the large old/new run. No collector or raw-data changes occurred.
 
+### Matched Qwen3.5 Base four-rate pilot (September 12)
+
+User authorized repeating the initial learning test for
+`Qwen/Qwen3.5-35B-A3B-Base`, including **5e-5, 1e-4, 2e-4 and 5e-4** plus one
+frozen Base baseline, under a separate $20 ceiling. This is not authorization
+for the large old/new experiment. Qwen3.6 artifacts remain immutable. `2e-4`
+is the primary matched-model comparison; the other rates are diagnostics.
+
+Local preparation/audit is complete in
+`coupled-data/sep02-10-qwen35-base-lr-pilot-20260912-v2/`.
+The same 50 training and next 50 future examples come from the latest reviewed
+655-example cleaned corpus. All semantic input/target hashes and ordering match
+Qwen3.6. Repeat preparation is byte-identical. Base uses raw continuation, not
+the hybrid chat/empty-reasoning envelope, and its own EOS `248044`. Every shifted
+loss position is audited; prompt/query are masked, authored content, literal
+paste marker and native EOS receive loss. The wrong hybrid EOS is rejected.
+
+Each rate starts fresh: rank-32 attention/MLP/unembedding LoRA; Adam, betas
+0.9/0.95, epsilon 1e-12, weight decay 0, clipping 1; batch one; one pass;
+seed/order 17. Generation temperature 0.6, seed 17, maximum 512 tokens and native
+EOS stop. Four adapters give 200 optimizer steps and 200 trained predictions;
+the frozen arm adds 50 predictions. All 250 future likelihoods are saved.
+Each rate trains 1,071,651 shifted positions, including 1,169 weighted tokens.
+
+Scheduled token maximum is $12.28222; including bounded recovery and a $4
+seven-day checkpoint storage reserve, $17.57594 / $20. Executor v3 retains
+in-flight cost, bounded retry, exact commit/runtime and private-project checks.
+Repository checks and no-network four-rate Base/resume tests pass. Prepared pack
+SHA: `e3f2840f4fd18d7e4c865b44034b4a5cdc86877e8389f6c65908743b4222ed18`.
+No provider calls occurred during preparation. Grade all predictions using the
+existing intended-thought rubric, then compare accuracy, future NLL, latency,
+cost and repetitive-output behavior with Qwen3.6. Do not infer sustained
+continual learning or a reliable winner from one small future block/seed.
+
 **STOP: preparation is not launch authorization.** The live collector was not
 stopped, rebuilt or changed by this cleanup. Preserve raw capture and prior
 model outputs; prune only explicitly identified reconstructible artifacts.

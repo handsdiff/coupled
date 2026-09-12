@@ -25,7 +25,7 @@ import time
 spec = importlib.util.spec_from_file_location('lr_prepare', Path(__file__).with_name('prepare-phase1-qwen-lr-pilot.py'))
 p = importlib.util.module_from_spec(spec); spec.loader.exec_module(p)
 m = p.m
-VERSION = 'phase1-qwen36-future-lr-execution-v2'
+VERSION = 'phase1-qwen-future-lr-execution-v3'
 CEILING = 20.0
 STORAGE_RESERVE = 4.0
 EXTENSION_STORAGE_RESERVE = 1.5
@@ -34,10 +34,24 @@ EXTENSION_STORAGE_RESERVE = 1.5
 def runtime():
     value = m.runtime_binding()
     for name in ('prepare-phase1-qwen-lr-pilot.py', 'check-phase1-qwen-lr-pilot.py',
-                 'run-phase1-qwen-lr-pilot.py', 'check-phase1-qwen-lr-execution.py'):
+                 'run-phase1-qwen-lr-pilot.py', 'check-phase1-qwen-lr-execution.py',
+                 'prepare-phase1-qwen-base-lr-pilot.py'):
         path = m.ROOT / 'scripts' / name
         value['filesSHA256'][str(path)] = m.file_hash(path)
     return value
+
+
+def native_spec(report):
+    specs = {'Qwen/Qwen3.6-35B-A3B': ('qwen36_hybrid', 248046, 'off'),
+             'Qwen/Qwen3.5-35B-A3B-Base': ('qwen35_base', 248044, 'not_applicable')}
+    m.require(report['model'] in specs, 'Unsupported pilot model')
+    key, eos, reasoning = specs[report['model']]
+    m.require(report['reasoning'] == reasoning and report['tokenizer']['nativeStopTokenIDs'] == [eos], 'Wrong native mode/EOS')
+    for arm in report['arms']:
+        c = arm['contract']
+        m.require(c['model'] == report['model'] and not c['reasoning'], 'Training model/reasoning differs')
+        m.require(c['generation']['stopTokenIDs'] == [eos] and c['loss']['nativeTerminatorTokenID'] == eos, 'Training/generation EOS mismatch')
+    return key, eos
 
 
 def load_prepared(directory):
@@ -49,7 +63,7 @@ def load_prepared(directory):
     audit = json.loads((directory / 'audit.json').read_text())
     m.require(audit['status'] == 'audit_passed_OFFLINE_ONLY', 'Offline native audit missing')
     m.require(audit['filesSHA256']['preparation.json'] == m.file_hash(directory / 'preparation.json'), 'Stale native audit')
-    m.require(report['model'] == 'Qwen/Qwen3.6-35B-A3B' and report['reasoning'] == 'off', 'Wrong model mode')
+    native_spec(report)
     m.require(report['projectID'] == m.PROJECT and report['counts']['uniqueTrainingExamples'] == 50
               and report['counts']['uniqueFutureExamples'] == 50, 'Wrong project or split')
     cohort = [json.loads(line) for line in (directory / 'cohort.jsonl').open()]
@@ -77,6 +91,7 @@ def prior_binding(directory, prepared):
               and math.isclose(cost, audit['reservedTokenCostUSD'], abs_tol=1e-9), 'Prior cost mismatch')
     outputs = journal.results()
     report, _ = load_prepared(prepared)
+    m.require(report['model'] == 'Qwen/Qwen3.6-35B-A3B', 'The original extension is only for Qwen3.6')
     for eid in report['evaluationIDs']:
         for kind in ('generation', 'nll'):
             m.require(f'frozen/score/{eid}/{kind}' in outputs, 'Missing reusable frozen baseline')
@@ -110,7 +125,7 @@ def prepare(args):
     report, rows = load_prepared(args.prepared)
     m.require(not args.output.exists(), 'Use a new execution directory')
     budget = {**report['budget'], 'checkpointStorageReserveUSD': STORAGE_RESERVE,
-              'proposedAuthorizationUSD': report['budget']['proposedAuthorizationUSD'] + STORAGE_RESERVE - 1.0}
+              'proposedAuthorizationUSD': report['budget']['proposedAuthorizationUSD'] + STORAGE_RESERVE - report['budget']['checkpointStorageReserveUSD']}
     extension = None
     if args.extend_from:
         extension = prior_binding(args.extend_from, args.prepared)
@@ -132,9 +147,12 @@ def prepare(args):
                          'policy': 'Retain uncertain dispatch maximum cost. Restart interrupted training from initial full optimizer state; never resume partial updates blindly.'},
             'checkpointStorage': {'ttlSeconds': 604800, 'reserveUSD': STORAGE_RESERVE,
                                   'cookbookTrainableParameterEstimate': 561463296,
-                                  'conservativeBudgetBasis': 'Eight checkpoint pairs at 32 bytes per trainable parameter retained seven days: under $4 at quoted storage rate.',
+                                  'conservativeBudgetBasis': 'Up to nine checkpoint pairs at 32 bytes per trainable parameter retained seven days: under $4 at quoted storage rate.',
                                   'priceUSDPerGBMonth': 0.10, 'source': 'https://tinker-docs.thinkingmachines.ai/tinker/models/'},
             'mainRunAuthorized': False}
+    if report['model'] == 'Qwen/Qwen3.5-35B-A3B-Base':
+        plan.update(authorization='User approved repeating the four-rate initial learning test for Qwen3.5 Base after the quoted approximately $14 estimate/$20 ceiling, 2026-09-12. Separate from prior Qwen3.6 spending.',
+                    primaryComparisonLearningRate=2e-4, comparisonRole='2e-4 is the provisional matched-model comparison; other rates are diagnostics, not an automatic selection policy.')
     if extension:
         plan.update(extension=extension, authorization='User authorized adding the omitted 5e-4 arm on 2026-09-12, within the existing pilot $20 ceiling.',
             schedule='One fresh 5e-4 adapter; identical first50 train once / next50 evaluate. Reuse original frozen baseline without provider calls.',
@@ -365,7 +383,9 @@ def run(args):
         proxy = m.original.NoAutomaticResampling(service)
         session = service.holder.get_session_id()
         journal.append({'kind': 'provider_session', 'sessionID': session, 'at': m.utc()})
-        tok, renderer = m.local_model('qwen36_hybrid')
+        model_key, eos = native_spec(report)
+        tok, renderer = m.local_model(model_key)
+        m.require(renderer.get_stop_sequences() == [eos], 'Renderer termination changed')
         capabilities = {x.model_name: x for x in service.get_server_capabilities().supported_models}
         m.require(capabilities[report['model']].max_context_length >= 65536, 'Model context unavailable')
         remote = proxy.create_sampling_client(base_model=report['model']).get_tokenizer()
@@ -373,7 +393,7 @@ def run(args):
         for eid in report['trainIDs'] + report['evaluationIDs']:
             row = rows[eid]; ids = row['promptTokenIDs'] + row['completionTokenIDs']
             m.require(remote.decode(ids, clean_up_tokenization_spaces=False) == tok.decode(ids, clean_up_tokenization_spaces=False), 'Native decode mismatch')
-            m.native_datum(row, tinker, 248046)
+            m.native_datum(row, tinker, eos)
         journal.append({'kind': 'remote_tokenizer_verified', 'vocabularySHA256': report['tokenizer']['tokenizerVocabularySHA256'],
                         'examples': 100, 'providerModelRevision': 'unverified: only model name exposed', 'at': m.utc()})
         executor = Executor(report, rows, journal, lambda c: PilotBridge(proxy, tinker, tok, renderer, c), storage=storage, carried=carried)
