@@ -239,9 +239,49 @@ training target is available before the evaluation block begins.
   one small development block, one seed and known scoring/client variability
   preclude claims of a definitive best LR or proven old/new pipeline advantage.
 
-No pilot training had started at this checkpoint update. Execution artifacts
-will be separate from preparation and earlier results. The larger experiment
-still needs approval; the collector and raw corpus remain untouched.
+The pilot is now complete in
+`coupled-data/sep02-10-qwen36-lr-pilot-live-20260912-v1/`, executed from `412eb1a`
+under plan hash `4f4e90a58da44737e8e330691d1b6fbe3c9dcf3b61775319918af9186cdfb704`.
+All 150 updates, 200 generations and 200 likelihood evaluations completed without
+errors/retries. The saved-response audit passed. Local peak memory: 562 MiB.
+
+| Arm | Intended-thought pass | Excluding all borderline passes | Future target-token NLL | Median generation |
+|---|---:|---:|---:|---:|
+| Frozen Qwen3.6 | 3/50 | 1/50 | 3.500 | 1.15s |
+| LR 5e-5 | 6/50 | 3/50 | 2.944 | 1.36s |
+| LR 1e-4 | 1/50 | 1/50 | 2.919 | 1.32s |
+| LR 2e-4 | 3/50 | 3/50 | 2.907 | 1.31s |
+
+These are implementer intent judgments with learning-rate labels hidden during
+answer review, not independent adjudication. Eight frozen outputs were previously
+inspected for infrastructure, and aggregate NLL was visible before grading; do
+not describe the experiment as perfectly blinded. Five borderline passes are
+explicitly marked. Compatible elaboration/paraphrase passes, but changed requests
+and mere topic overlap fail. The mean generation query estimate is about $0.0142
+at uncached rates, excluding training/NLL/storage; latency includes all outputs
+and may benefit from cache. No exact or whitespace-normalized exact matches.
+
+Training lowers per-example future NLL on 49/50, 49/50, 47/50 examples, respectively.
+It removes frozen's 20 paste-only/malformed-paste answers, but often substitutes
+plausible user-style questions that miss the intended action. Exact clipboard
+copies still occur. This is an early future-token learning signal, not reliable
+next-thought prediction or a decisive LR winner. The 50-case development block
+is workflow-concentrated, includes short acknowledgments/test text, and cannot
+establish old/new pipeline superiority or select the best model/recipe.
+
+Scheduled token maximum: $9.57822; returned-length token-rate estimate about
+$9.45086. All 12 private checkpoints have seven-day TTLs and total 53.65 GB remotely,
+about $1.25 storage. Actual invoice billing has not yet posted. These stay within
+the separate $20 authorization, with no retries; earlier authorizations/results
+are unchanged. `REVIEW.md` shows every answer and reason; `analysis.json` binds
+grades, native inputs, provider records, cost metadata, and analysis code.
+`learning-pilot.png` shows the loss/prediction results.
+
+Next: review the recurring wrong-action/clipboard failure pattern before choosing
+another paid test or committing to the large old/new experiment. The selected
+rate is not settled; saved optimizer states permit a later authorized continuation.
+The larger experiment still needs approval. The collector/raw corpus were not
+modified or stopped.
 
 **STOP: preparation is not launch authorization.** The live collector was not
 stopped, rebuilt or changed by this cleanup. Preserve raw capture and prior
