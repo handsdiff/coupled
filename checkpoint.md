@@ -170,6 +170,19 @@ random-corpus accuracy estimate. Memorization is not future-write learning.
   The completed-run audit and review regenerate byte-for-byte; the chart was
   visually inspected. The continuation failures above remain explicit.
 
+The next bounded diagnostic is a three-branch control on Qwen3.6 old and
+Qwen3.5 Base new, the demonstrated failing trajectories. A and B are independent
+seed-17 clients trained on the same first two examples; C is an explicitly
+seeded client loading A's full optimizer checkpoint. Compare repeated training
+forwards and short/long sampler likelihood before and after one identical next
+update. Native tokenization, masks, optimizer and data stay unchanged. This
+distinguishes fresh-client variability from restore-specific differences; it
+does not relax the existing tolerance or authorize the main run. All 98 planned
+operations use pre-dispatch journaling and refuse replay. Additional token bound
+is $1.72036; the combined bound including previous work and storage is $17.25530
+under the same $20 authorization. Preparation and execution are separate; see
+`scripts/diagnose-phase1-qwen-client-control.py` and its no-network check.
+
 Next: review the saved answers and failed continuation checks. The tests prove
 the formats can train and memorize; they do **not** yet select a model that
 predicts future thoughts well or establish an old/new pipeline benefit. A small
