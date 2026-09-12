@@ -360,9 +360,63 @@ existing intended-thought rubric, then compare accuracy, future NLL, latency,
 cost and repetitive-output behavior with Qwen3.6. Do not infer sustained
 continual learning or a reliable winner from one small future block/seed.
 
-**STOP: preparation is not launch authorization.** The live collector was not
-stopped, rebuilt or changed by this cleanup. Preserve raw capture and prior
-model outputs; prune only explicitly identified reconstructible artifacts.
+The separately authorized Base pilot is now **complete and audited** in
+`coupled-data/sep02-10-qwen35-base-lr-pilot-live-20260912-v1/`. It ran from
+`09e1b82`, with plan SHA
+`d510e255e0d3193deff114c263c4f71f3a1d822b846f7c17611884f11af729d5`.
+All 200 updates, 250 generations and 250 likelihood measurements completed
+without provider errors or retries. Native vocabulary validation, shifts/masks,
+train/future separation, result lineage and cost audit passed. Peak local memory
+was 692 MiB. Provider metadata confirms four distinct, uncorrupted rank-32 Base
+adapters and 16 private checkpoints with seven-day expiry.
+
+| Learning rate | Base content NLL | Qwen3.6 content NLL | Base intended-thought passes | Qwen3.6 passes |
+|---|---:|---:|---:|---:|
+| Frozen | 3.716 | 3.642 | 0/50 | 3/50 |
+| 5e-5 | 3.079 | 3.064 | 3/50 | 6/50 |
+| 1e-4 | 3.022 | 3.034 | 3/50 | 1/50 |
+| 2e-4 | 3.029 | 2.983 | 0/50 | 3/50 |
+| 5e-4 | 3.174 | 3.217 | 1/50 | 2/50 |
+
+Content NLL excludes EOS; all 100 content token sequences were verified identical
+across models. All 250 Base answers were reviewed under the existing intended-
+thought rubric. Grading is implementer judgment, not independent/blinded review.
+Excluding borderline passes, Base counts are 0/0/1/0/1 respectively. Full answers,
+per-answer rationales and unchanged Qwen3.6 comparison grades are preserved in
+`REVIEW.md`, `judgments.json` and `analysis.json`; the Matplotlib comparison is
+`learning-rate-comparison.png` in the same private artifact directory.
+
+Base's lower three rates improve content NLL on every future example, but this
+does not establish usable prediction or sustained continual learning. At 1e-4,
+about 75% of the likelihood gain comes from the first content token. Even excluding
+that token and EOS, NLL improves from 3.124 to 2.941: there is additional signal,
+but the large start-of-completion improvement and frozen Base's history replay
+suggest substantial task-format adaptation. At 2e-4, 11 answers consist of immediate
+EOS. At 5e-4, 46/50 answers are `git status`, which appears in only two training
+targets. The one actually correct command still receives a pass. No numerical,
+mask or decoding defect was identified; performance remains weak.
+
+Base 1e-4 is the lowest-loss Base candidate, not a demonstrated improvement over
+Qwen3.6. Nothing here supports adopting 5e-4 or establishes a semantic winner.
+The previously provisional Qwen3.6 2e-4 recipe remains reasonable for the matched
+experiment, subject to the separate full-run review. These are 50-example pilot
+results, not the large old/new-pipeline comparison.
+
+Estimated token charges are **$12.15210**, plus **$1.66917** for seven days of
+actual remote checkpoint bytes: **about $13.82**, not an invoice. The audited
+reservation including the conservative storage reserve is **$16.28222 / $20**.
+Provider billing had not yet reported this session. Every query's prefill/output,
+likelihood, training charge and latency is saved. Base median/mean generation
+latency by rate is 1.15/1.37s, 1.16/3.00s, 6.33/5.55s and 6.35/4.71s. Provider
+requests slowed during this sequential run, so these are observed latencies—not
+controlled model/rate speed comparisons. Raw operation journal SHA:
+`19af1417af500136ef28e610c3fe6fad932439a17f5dd9379af789f313d0bb75`.
+Analysis, judgments, report and plot regenerate byte-identically. Analysis SHA:
+`1e5ddae71cbc45468521bc12c000e0d34e4fee98362dfd4d5725b5db90d4c212`.
+
+**STOP: no large old/new experiment has been launched by this pilot.** The live
+collector was not stopped, rebuilt or changed. Raw capture, corpus and prior
+model outputs remain untouched; no artifact deletion was needed.
 
 References: [experiment definition](PIPELINE-COMPARISON.md),
 [storage policy](STORAGE.md), [collection guide](COLLECTION_GUIDE.md), and
