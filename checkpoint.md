@@ -67,8 +67,28 @@ certification, or universal rules for all manually repaired cases.
 Under `coupled-data/sep02-10-pipeline-era-comparison-20260911/`:
 
 - `revision-v3/comparison.json`: independent sources and curation provenance.
-- `packs-v4/{old,new}`: native Qwen inputs, targets and blocks.
-- `revision-v3/`: current native audits, execution checks and offline plan.
+- `packs-v4/{old,new}`: source Qwen3.8 inputs, targets and blocks.
+- `revision-v3/`: source native audits, execution checks and offline plan.
+
+The September 12 model decision is now **Qwen3.6-35B-A3B, reasoning off,
+learning rate `2e-4`**. See [the full recipe and release gate](docs/QWEN36-COMPARISON.md).
+The native repack preserves these exact source semantic inputs, targets and
+independent block schedules; it does not reopen data construction or the sweep.
+
+Canonical Qwen3.6 preparation:
+`coupled-data/sep02-10-qwen36-pipeline-comparison-20260912-v2/`, fingerprint
+`23e6ae08c6ac8ac45b9cb86a2e2d389d5f026f90dea2dc1b75fdc4936a1df787`.
+Scheduled token estimate: **$124.78** for both pipelines. Including recovery
+and seven-day checkpoint reserves: **$140.38**; proposed ceiling **$150**.
+This is not spending authorization. The final paid-launch binding/gate remains
+separate. No provider calls or collection changes occurred in this preparation.
+All 1,319 Qwen3.6 native rows passed independent HF/Cookbook/SDK validation;
+all six data artifacts repeated byte-identically. The exact schedules passed
+the no-network full-run/recovery rehearsal (2,438 generations, 2,538 NLL calls,
+1,300 updates); `audit.json`, `repeat-checks.json` and `execution-checks.json`
+record the results. The redundant v1 data copy was removed after comparison;
+its manifest and supersession note remain. Prior results and raw captures are
+untouched. `./scripts/check.sh` passes.
 
 Earlier `packs-v2`, `packs-v3` and `revision-v2/execution-plan.json` are superseded
 preparations, not prior model results. Do not launch the old plan. No provider
@@ -87,10 +107,11 @@ provider calls; see [its exact definition](docs/likelihood-metrics.md).
 The previous plan fingerprint and cost estimate are obsolete for this corpus.
 The regenerated `revision-v3/execution-plan.json` fingerprint is
 `061bffe2cfa1da25325c781a58164435fdbfe6c71704edc7cf7e8f9a59419099`.
-Its planning rates are dated September 10, not a fresh quote; pricing and budget
+That is the Qwen3.8 source-plan fingerprint, not the selected model's launch
+plan. Its prices are superseded by the Qwen3.6 calculation. Pricing and budget
 still require separate approval. Preparation is not permission to launch.
 
-Recipe: Qwen/Qwen3.8-27B, reasoning off; fresh rank-32 adapter per pipeline,
+Selected recipe: Qwen/Qwen3.6-35B-A3B, reasoning off; fresh rank-32 adapter per pipeline,
 attention/MLP/unembedding; seed 17, batch one, Adam 2e-4, betas .9/.95,
 epsilon 1e-12, weight decay 0, clipping 1. Score each block before training;
 train each new block once, warm-start full optimizer state, no final update.
@@ -101,6 +122,10 @@ Report holistic usefulness, cost and latency with each arm's denominator.
 Frozen/personalized likelihood is comparable within an arm; old/new absolute
 NLL is not a paired statistic when targets differ. First-block generations do
 not count in the post-training comparison.
+
+The first 100 new-pipeline examples informed model/LR selection. Preserve that
+development disclosure and report later blocks separately. Do not reuse a
+pilot's trained checkpoint in either full-run arm.
 
 ## Before execution
 

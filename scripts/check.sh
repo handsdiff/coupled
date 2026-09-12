@@ -51,6 +51,8 @@ python3 -m py_compile \
   "$project_dir/scripts/check-phase1-qwen-lr-pilot.py" \
   "$project_dir/scripts/prepare-phase1-qwen-base-lr-pilot.py" \
   "$project_dir/scripts/prepare-phase1-qwen38-future-pilot.py" \
+  "$project_dir/scripts/prepare-phase1-qwen36-comparison.py" \
+  "$project_dir/scripts/check-phase1-qwen36-comparison.py" \
   "$project_dir/scripts/run-phase1-qwen-lr-pilot.py" \
   "$project_dir/scripts/check-phase1-qwen-lr-execution.py" \
   "$project_dir/scripts/diagnose-phase1-qwen-sampler-repeat.py" \

@@ -23,8 +23,8 @@ whole-pipeline experiment.
 
 ## New means the best reviewed dataset we currently have
 
-Use `coupled-data/sep02-10-curated-repair-20260911/paired-v11-checked/new`:
-659 eligible targets, 1,141 historical WRITEs, and 6,775 READs.
+Use `coupled-data/sep02-10-cleanliness-review-20260911/corpus-v1/new`:
+655 eligible targets, 1,134 historical WRITEs, and 6,767 READs.
 See [the quality checklist and explicit remaining limits](docs/DATASET-READINESS.md).
 
 Keep all reviewed READ and WRITE repairs, reconstructed closed compositions,
@@ -64,25 +64,27 @@ the old corpus, pack tokens, start training, or contact providers.
 The independent historical replay is complete and passed its original corpus
 audit. It produced 669 targets, 1,138 historical WRITEs and 5,158 READs. The common
 credential-safety filter excludes five old targets, yielding **664 old versus
-659 new**. No new WRITE repairs or manual adjudications enter the old producer.
+655 new**. No new WRITE repairs or manual adjudications enter the old producer.
 
-Native Qwen3.8 packs are at `packs-v3/{old,new}` in the comparison directory.
+The source Qwen3.8 packs are at `packs-v4/{old,new}` in the comparison directory.
 Both completed exhaustive HF/Cookbook/SDK token and loss-mask validation.
 Independent audits and byte-identical repeated data artifacts passed. The
-actual two schedules passed the no-network executor test: 2,446 generated-answer
-operations, 2,546 NLL operations and 1,300 optimizer steps were simulated, with
+actual two schedules passed the no-network executor test: 2,438 generated-answer
+operations, 2,538 NLL operations and 1,300 optimizer steps were simulated, with
 interruption, full-optimizer resume, duplicate-request and budget guards.
 This proves the local execution contract, not remote GPU behavior.
 
 | Planned quantity | Old | New |
 |---|---:|---:|
-| Eligible examples | 664 | 659 |
+| Eligible examples | 664 | 655 |
 | Training examples | 650 | 650 |
-| Post-warmup scoring opportunities per model | 614 | 609 |
+| Post-warmup scoring opportunities per model | 614 | 605 |
 | Chronological blocks | 14 | 14 |
 
 Exact token counts, native prompt lengths and projected spending are recorded
-in each packing audit and `revision-v2/execution-plan.json`.
+in each packing audit and `revision-v3/execution-plan.json`. Those are the source
+construction artifacts, not authorization to run Qwen3.8. The selected full-run
+model is now **Qwen3.6-35B-A3B, reasoning off, learning rate `2e-4`**.
 
 Each arm has its own blocks and starts from a fresh adapter. Only newly scored
 blocks are trained once, with full optimizer-state continuation; no final-block
@@ -104,13 +106,11 @@ Execution still requires a new reviewed plan, immutable implementation and paid
 preflight/launch approval. No provider calls have been made in this preparation.
 Existing raw data and model results stay unchanged.
 
-The final local preparation is bound by `revision-v2/execution-plan.json`.
-Its canonical fingerprint is `0f74496321312a2f37b2038ba9a0e6ee2e306962bf7858cc9a39846f932fea59`;
-the uncached/max-output estimate is **$435.09** before preflight/retries.
-It supersedes the earlier `ecaf3688e500…` plan, not any completed model results.
-The estimate uses the reviewed September 10 rates, excluding live preflight and
-retries. Pricing needs reconfirmation before approval. This is an estimate, not
-spending or permission to spend; the plan remains **NOT AUTHORIZED**.
+The source preparation is bound by `revision-v3/execution-plan.json`, fingerprint
+`061bffe2cfa1da25325c781a58164435fdbfe6c71704edc7cf7e8f9a59419099`.
+Its Qwen3.8 cost is superseded by the model choice, not by changing the data.
+See [the Qwen3.6 full-run plan](docs/QWEN36-COMPARISON.md) for the native repack,
+complete hyperparameters, price assumptions and outstanding launch gate.
 
 Five newly generated expanded intermediate example files were removed after
 validation (17.156 GiB); `intermediate-cleanup-plan.json` lists the exact files.
@@ -123,7 +123,7 @@ Regeneration uses the recorded historical producer and
 stage commands; the pruned intermediate directories are not complete corpora.
 
 The prepared definition is
-`coupled-data/sep02-10-pipeline-era-comparison-20260911/revision-v2/comparison.json`.
+`coupled-data/sep02-10-pipeline-era-comparison-20260911/revision-v3/comparison.json`.
 Its exported historical producer has 140 files independently checked byte-for-
 byte against Git. The versioned manual-correction inventory binds the reviewed
 evidence/code and the three newly constructed new-arm artifacts. Contract
