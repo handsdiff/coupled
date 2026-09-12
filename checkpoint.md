@@ -170,18 +170,33 @@ random-corpus accuracy estimate. Memorization is not future-write learning.
   The completed-run audit and review regenerate byte-for-byte; the chart was
   visually inspected. The continuation failures above remain explicit.
 
-The next bounded diagnostic is a three-branch control on Qwen3.6 old and
-Qwen3.5 Base new, the demonstrated failing trajectories. A and B are independent
-seed-17 clients trained on the same first two examples; C is an explicitly
-seeded client loading A's full optimizer checkpoint. Compare repeated training
-forwards and short/long sampler likelihood before and after one identical next
-update. Native tokenization, masks, optimizer and data stay unchanged. This
-distinguishes fresh-client variability from restore-specific differences; it
-does not relax the existing tolerance or authorize the main run. All 98 planned
-operations use pre-dispatch journaling and refuse replay. Additional token bound
-is $1.72036; the combined bound including previous work and storage is $17.25530
-under the same $20 authorization. Preparation and execution are separate; see
-`scripts/diagnose-phase1-qwen-client-control.py` and its no-network check.
+The three-branch control is complete in
+`coupled-data/sep02-10-qwen-client-control-20260912-v1/` (execution commit
+`2f1ff47`, 98/98 operations, no errors). A and B were independent seed-17 clients
+trained on the same first two examples; C explicitly loaded A's full optimizer
+checkpoint into another seed-17 client. On **both Qwen3.6 and Qwen3.5 Base**,
+uninterrupted A and restored C matched exactly on three repeated training-side
+forwards both before and after the identical third update. Independent A/B
+clients differed: maximum post-update token-logprob deltas were 0.406487 and
+0.208327 respectively. Repeated unchanged-client forwards matched exactly.
+
+This changes the diagnosis, not the training recipe: earlier exact-continuation
+failures do not establish broken optimizer restoration, because differences also
+occur without restoration. The cause of independent-client variability is not
+yet established. Qwen3.5's restored sampler probes also all matched; Qwen3.6's
+short probe matched but its long probe differed (maximum token deltas 0.399566
+before and 0.282184 after). This remaining sampler/export question must stay
+explicit; the control does not prove a provider bug, prove optimizer tensors are
+equal, or automatically pass the main-run gate. No tolerance was loosened and
+no original failure was erased. The runner already keeps a live trainer across
+normal blocks; there was no need to change that behavior.
+
+Native vocabulary/decoding, shifted masks, control-schedule/failure-accounting
+tests, repository checks and the saved-response audit passed. The original
+corpus, captures, recipes and results were untouched. Additional token bound is
+$1.72036; shared authorization total including previous work and storage is
+**$17.25530 / $20**, not invoice-verified. `REVIEW.md` records separate training
+and sampler comparisons, limitations, native settings and next questions.
 
 Next: review the saved answers and failed continuation checks. The tests prove
 the formats can train and memorize; they do **not** yet select a model that
