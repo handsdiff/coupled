@@ -43,6 +43,7 @@ python3 "$project_dir/scripts/check-phase1-example-storage.py"
 python3 "$project_dir/scripts/check-phase1-corpus-memory.py"
 python3 "$project_dir/scripts/check-phase1-packed-version.py"
 python3 "$project_dir/scripts/check-phase1-read-quality-repairs.py"
+python3 "$project_dir/scripts/check-phase1-qwen38-preflight.py"
 
 PYTHONPYCACHEPREFIX="$project_dir/.build/python-cache" \
 python3 -m py_compile \
