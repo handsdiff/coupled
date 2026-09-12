@@ -74,7 +74,8 @@ def audit(directory):
                 v=results[f"{model}/capability/{eid}/seed-{a['seed']}"]['value']
                 assert a=={'seed':a['seed'],**v}
                 assert a['outputTokens']==len(a['predictionTokenIDs'])
-                assert a['predictionTokenIDs']==a['rawProviderResponse']['sequences'][0]['tokens']
+                raw_sequence=a['rawProviderResponse']['sequences'][0]
+                assert a['predictionTokenIDs']==raw_sequence.get('tokens',raw_sequence.get('tokens_np'))
                 if model.endswith('_low'):
                     assert a['reasoningTokenCount']+a['answerAndTerminationTokenCount']==a['outputTokens']
                     assert a['reasoningClosed'] or a['prediction']==''
