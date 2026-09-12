@@ -298,6 +298,34 @@ one bounded training recovery and scoring retries, the combined ceiling estimate
 is **$19.08273 / $20**. No-network tests cover no baseline replay, fresh adapter
 creation, resume, and shared-budget enforcement. No full experiment is authorized.
 
+The `5e-4` extension is **complete and audited** in
+`coupled-data/sep02-10-qwen36-lr-5e4-live-20260912-v1/`, executed from `557507c`
+under plan hash `ec6e84eb6245d2553cadb5b309a620b2e44e1fa1fbf802550ee26673d37c1cfc`.
+All 50 updates, 50 generations and 50 likelihood calls completed without errors or
+retries. All 100 native rows were rechecked locally; the unchanged native target
+and EOS masks passed. Local peak memory was 728 MiB. Previous outputs and grades
+remain unchanged and the frozen arm was not resampled.
+
+Result: **2/50 intended-thought passes (1/50 excluding the single borderline)**;
+target-token NLL **3.115**, worse than all three lower-rate trained arms, though
+better than frozen 3.500. Median/mean generation: **1.19s / 1.34s**. The model
+emitted `git status` on 32/50 queries, `git status --short` once, and three empty
+answers consisting of the native EOS alone. `git status` appeared in only two
+training targets (positions 17 and 47). This is severe repetitive-output behavior
+under this recipe, not an identified numerical/provider failure. All optimizer
+metrics were finite. Case 60's correct command still passes; case 74's broader
+implementer-review instruction is the borderline pass. All 50 judgments and
+rationales are recorded; grading is unblinded and not independently adjudicated.
+
+Additional token-rate estimate **$2.67634** (reserved maximum $2.71007), plus about
+**$0.41730** for four private seven-day checkpoints totaling 17.88 GB remotely.
+Actual billing remains pending. Combined original/new reservation, including all
+storage reserves, is **$17.78829 / $20**. `REVIEW.md`, `analysis.json`,
+`learning-rate-comparison.png` and the response audit preserve the full comparison.
+The recommended-rate condition has now been tested; it is not a good candidate
+under this particular small-data recipe. This still does not establish a best
+rate or authorize the large old/new run. No collector or raw-data changes occurred.
+
 **STOP: preparation is not launch authorization.** The live collector was not
 stopped, rebuilt or changed by this cleanup. Preserve raw capture and prior
 model outputs; prune only explicitly identified reconstructible artifacts.
