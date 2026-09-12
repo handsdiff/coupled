@@ -198,11 +198,50 @@ $1.72036; shared authorization total including previous work and storage is
 **$17.25530 / $20**, not invoice-verified. `REVIEW.md` records separate training
 and sampler comparisons, limitations, native settings and next questions.
 
-Next: review the saved answers and failed continuation checks. The tests prove
-the formats can train and memorize; they do **not** yet select a model that
-predicts future thoughts well or establish an old/new pipeline benefit. A small
-unseen-write learning check is a more informative next spending gate than
-jumping directly to the full experiment. Any larger run still needs approval.
+The fixed-sampler diagnostic is complete in
+`coupled-data/sep02-10-qwen-fixed-sampler-20260912-v1/` (execution `27c51f3`).
+Six identical likelihood requests to the same saved Qwen3.6 checkpoint used the
+same 32,852-token sequence: five matched exactly, while one same-client request
+differed (maximum target token-logprob delta 0.247036; mean NLL delta 0.004156).
+No training, restoration or export occurred. This establishes scoring execution
+variability independently of optimizer restoration; it does not explain every
+prior difference or prove generation is unaffected. Conditional export tests
+were therefore skipped. The response-bound audit passed. This cost $0.10645 at
+uncached token rates; the prior shared authorization totals **$17.36174 / $20**
+including storage reserve, not invoice-verified billing.
+
+The user separately authorized **another $20** for the small future-write/LR
+pilot. Offline preparation and exhaustive native-mask audit are complete in
+`coupled-data/sep02-10-qwen36-lr-pilot-20260912-v1/`. Its 100 re-rendered rows and
+cohort reproduce byte-for-byte. They are the first two 50-example chronological
+blocks of the 655-example new-pipeline source, not a new target selection. Every
+training target is available before the evaluation block begins.
+
+- Qwen3.6-35B-A3B, reasoning off; three fresh seed-17 adapters at `5e-5`, `1e-4`,
+  `2e-4`, with one shared frozen baseline. All other hyperparameters are equal.
+- Train first 50 once; evaluate next 50 without updating on them: 150 committed
+  optimizer steps and 200 generations plus 200 target-likelihood calls total.
+- Rank32 attention/MLP/unembedding, batch1, Adam .9/.95, epsilon1e-12, weight
+  decay0, clipping1. Deterministic order; content + literal paste marker + native
+  EOS receive loss, prompt/query zero. Temperature.6, seed17, ceiling512.
+- 1,072,251 shifted training positions and 1,169 weighted tokens per rate.
+  Native prompt lengths 432–29,360. Local preparation peak memory under650MiB.
+- Scheduled token maximum **$9.57822**, bounded recovery plus seven-day checkpoint
+  storage reserve **$14.87266**. Execution raises preparation's $1 storage estimate
+  to $4 after checking the 561,463,296-parameter rank32 adapter. Execution is
+  guarded by the separate $20 ceiling;
+  every uncertain dispatch stays charged. This is not full-experiment approval.
+- Resumable executor preserves completed scores, retries each scoring operation
+  type at most once globally, and restarts at most one interrupted training arm
+  from its own initial full optimizer state. Immutable code/runtime bindings,
+  native vocabulary checks and no-network failure tests precede paid execution.
+- Holistic intended-thought evaluation is primary. Future NLL/BPB is secondary;
+  one small development block, one seed and known scoring/client variability
+  preclude claims of a definitive best LR or proven old/new pipeline advantage.
+
+No pilot training had started at this checkpoint update. Execution artifacts
+will be separate from preparation and earlier results. The larger experiment
+still needs approval; the collector and raw corpus remain untouched.
 
 **STOP: preparation is not launch authorization.** The live collector was not
 stopped, rebuilt or changed by this cleanup. Preserve raw capture and prior
