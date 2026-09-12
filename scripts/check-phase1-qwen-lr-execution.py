@@ -108,6 +108,38 @@ def tests():
                   'value': {'samplerCheckpointPath': 'sample:saved', 'optimizerStatePath': 'state:saved'}})
         with j.exclusive(): r.Executor(report, rows, j, lambda c: Fake(c, world)).run()
         assert all(name != first for name, _ in world['train'])
+    # An extension must not recreate/resample frozen or any previously trained arm.
+    extra = r.extension_report(report)
+    assert report['arms'][0]['contract']['optimizer']['learningRate'] == r.p.RATES[0]
+    assert extra['arms'][0]['contract']['optimizer']['learningRate'] == 5e-4
+    assert extra['arms'][0]['trainingOrder'] == report['arms'][-1]['trainingOrder']
+    normalized = copy.deepcopy(extra['arms'][0]['contract'])
+    normalized['optimizer']['learningRate'] = report['arms'][-1]['contract']['optimizer']['learningRate']
+    assert normalized == report['arms'][-1]['contract']
+    for mode in ('normal', 'crash_train', 'crash_gen'):
+        with tempfile.TemporaryDirectory(prefix='coupled-lr-extension-') as td:
+            world = {k: [] for k in ('creates', 'train', 'generations', 'nll', 'checkpoints')}
+            if mode != 'normal': world[mode] = True
+            j = m.Journal(Path(td), {'extension': 1})
+            make = lambda: r.Executor(extra, rows, j, lambda c: Fake(c, world), carried=13.58, storage=1.5)
+            try:
+                with j.exclusive(): make().run()
+            except Crash:
+                j = m.Journal(Path(td), {'extension': 1})
+                with j.exclusive(): make().run()
+            assert len(world['generations']) == 2 + (mode == 'crash_gen')
+            assert len(world['nll']) == 2
+            assert len(world['train']) == 2 + (mode == 'crash_train')
+            assert all(name == 'lr-0.0005' for name, _ in world['train'])
+            assert world['creates'][0][1] is None, 'Extension warm-started a prior adapter'
+            before = copy.deepcopy(world)
+            with j.exclusive(): make().run()
+            assert world == before
+            with j.exclusive():
+                calls = r.Calls(j, report['prices'], carried=19.99, storage=.02)
+                try: calls.call('over-shared-cap', 'generation', rows['e1'], lambda: (_ for _ in ()).throw(AssertionError('Spent prior funds twice')))
+                except m.ContractError: pass
+                else: raise AssertionError('Carried costs omitted')
     print('LR execution tests passed: native source separate; no eval training; completed-score resume; bounded mutation restart; charged uncertainty; checkpoint gap; pre-dispatch budget; damaged journal.')
 
 
@@ -115,6 +147,14 @@ def audit(directory):
     plan = json.loads((directory / 'execution.json').read_text())
     prepared = Path(plan['preparedDirectory'])
     report, rows = r.load_prepared(prepared)
+    carried = 0.
+    storage = plan['checkpointStorage']['reserveUSD']
+    if plan.get('extension'):
+        prior = r.prior_binding(Path(plan['extension']['directory']), prepared)
+        m.require(prior == plan['extension'], 'Previous artifacts/budget changed')
+        report = r.extension_report(report)
+        m.require(plan['training'] == report['arms'] and plan['budget'] == r.extension_budget(report, rows, prior), 'Changed extension contract')
+        carried = prior['priorReservedTokenUSD'] + prior['priorStorageReserveUSD']
     m.require(m.file_hash(prepared / 'preparation.json') == plan['preparedSHA256'], 'Changed preparation')
     result = json.loads((directory / 'result.json').read_text())
     m.require(result['status'] == 'complete' and result['executionSHA256'] == m.file_hash(directory / 'execution.json'), 'Incomplete/mismatched execution')
@@ -125,7 +165,9 @@ def audit(directory):
     for op in begins:
         row = rows[op['exampleID']] if op.get('exampleID') else {}
         m.require(math.isclose(op['maximumUSD'], m.original.charge(op['operation'], row, report['prices']), abs_tol=1e-12), 'Wrong cost reservation')
-    for arm in ['frozen'] + [a['name'] for a in report['arms']]:
+    arms = ([] if report.get('reuseFrozenBaseline') else ['frozen']) + [a['name'] for a in report['arms']]
+    m.require(all(op['key'].split('/')[0] in arms for op in begins), 'Unexpected/duplicated prior arm dispatched')
+    for arm in arms:
         for eid in report['evaluationIDs']:
             row = rows[eid]
             for kind in ('generation', 'nll'):
@@ -151,14 +193,15 @@ def audit(directory):
             if start['kind'] == 'training_begin' and start['arm'] == name:
                 m.require(start['exampleIDs'] == arm['trainingOrder'] and start['initialOptimizerStatePath'] == initial['optimizerStatePath'], 'Retry parent/order mismatch')
     cost = sum(x['maximumUSD'] for x in begins)
-    m.require(math.isclose(result['reservedTokenCostUSD'], cost, abs_tol=1e-9) and cost + r.STORAGE_RESERVE <= 20, 'Budget audit failed')
+    m.require(math.isclose(result['reservedTokenCostUSD'], cost, abs_tol=1e-9) and carried + cost + storage <= 20, 'Budget audit failed')
+    m.require(math.isclose(result['includingStorageReserveUSD'], carried + cost + storage, abs_tol=1e-9), 'Carried/storage total mismatch')
     m.require(result['summary'] == r.summarize(report, j), 'Summary changed')
     m.require(sum(x['kind'] == 'training_begin' and x['attemptOrdinal'] > 0 for x in j.records) <= 1, 'Training retry bound exceeded')
     for kind in ('generation', 'nll'):
         m.require(sum(x['operation'] == kind and x['attemptOrdinal'] > 0 for x in begins) <= 1, 'Scoring retry bound exceeded')
     report_out = {'status': 'audit_passed', 'distinctTrainingExamples': 50, 'distinctFutureExamples': 50,
-                  'scoredGenerations': 200, 'targetNLLCalls': 200, 'committedOptimizerSteps': 150,
-                  'reservedTokenCostUSD': cost, 'withStorageReserveUSD': cost + r.STORAGE_RESERVE,
+                  'scoredGenerations': 50 * len(arms), 'targetNLLCalls': 50 * len(arms), 'committedOptimizerSteps': 50 * len(report['arms']),
+                  'reservedTokenCostUSD': cost, 'withStorageReserveUSD': carried + cost + storage,
                   'filesSHA256': {n: m.file_hash(directory / n) for n in ('execution.json', 'result.json', 'operations.jsonl')},
                   'auditCodeSHA256': m.file_hash(Path(__file__))}
     m.original.save(directory / 'audit.json', report_out)

@@ -5,6 +5,8 @@ One shared frozen baseline, three fresh adapters, 50 updates apiece, then 50
 future queries. Every dispatch is fsynced before provider submission. Uncertain
 cost is never refunded. A partial update restarts from that arm's INITIAL full
 optimizer checkpoint once globally; completed scores are never resampled.
+An explicitly authorized --extend-from run adds only 5e-4, reuses the original
+baseline, and carries all prior reserved costs into the same $20 ceiling.
 """
 from __future__ import annotations
 
@@ -23,9 +25,10 @@ import time
 spec = importlib.util.spec_from_file_location('lr_prepare', Path(__file__).with_name('prepare-phase1-qwen-lr-pilot.py'))
 p = importlib.util.module_from_spec(spec); spec.loader.exec_module(p)
 m = p.m
-VERSION = 'phase1-qwen36-future-lr-execution-v1'
+VERSION = 'phase1-qwen36-future-lr-execution-v2'
 CEILING = 20.0
 STORAGE_RESERVE = 4.0
+EXTENSION_STORAGE_RESERVE = 1.5
 
 
 def runtime():
@@ -55,11 +58,64 @@ def load_prepared(directory):
     return report, p.NativeRows(directory / 'native-rows.jsonl')
 
 
+def prior_binding(directory, prepared):
+    """Account for the completed original run without rewriting its artifacts."""
+    plan = json.loads((directory / 'execution.json').read_text())
+    result = json.loads((directory / 'result.json').read_text())
+    audit = json.loads((directory / 'audit.json').read_text())
+    m.require(result['status'] == 'complete' and audit['status'] == 'audit_passed', 'Prior run not complete/audited')
+    m.require(not plan.get('extension') and plan['hardCeilingUSD'] == CEILING and plan['projectID'] == m.PROJECT,
+              'Only the original authorized pilot may be extended')
+    m.require(plan['preparedSHA256'] == m.file_hash(prepared / 'preparation.json'), 'Different prior cohort')
+    m.require(result['executionSHA256'] == m.file_hash(directory / 'execution.json'), 'Prior plan changed')
+    for name, digest in audit['filesSHA256'].items():
+        m.require(m.file_hash(directory / name) == digest, 'Prior audit artifact changed: ' + name)
+    journal = m.Journal(directory, {'executionSHA256': result['executionSHA256']})
+    m.require(result['journalSHA256'] == m.file_hash(journal.path), 'Prior journal changed')
+    cost = sum(x['maximumUSD'] for x in journal.records if x['kind'] == 'operation_begin')
+    m.require(math.isclose(cost, result['reservedTokenCostUSD'], abs_tol=1e-9)
+              and math.isclose(cost, audit['reservedTokenCostUSD'], abs_tol=1e-9), 'Prior cost mismatch')
+    outputs = journal.results()
+    report, _ = load_prepared(prepared)
+    for eid in report['evaluationIDs']:
+        for kind in ('generation', 'nll'):
+            m.require(f'frozen/score/{eid}/{kind}' in outputs, 'Missing reusable frozen baseline')
+    return {'directory': str(directory.resolve()),
+            'filesSHA256': {n: m.file_hash(directory / n) for n in ('execution.json', 'result.json', 'operations.jsonl', 'audit.json')},
+            'priorReservedTokenUSD': cost, 'priorStorageReserveUSD': plan['checkpointStorage']['reserveUSD']}
+
+
+def extension_report(report):
+    """Same frozen rows and recipe; only one additional LR, no baseline sampling."""
+    result = copy.deepcopy(report)
+    arm = copy.deepcopy(report['arms'][-1])
+    arm['name'] = 'lr-0.0005'
+    arm['contract']['optimizer']['learningRate'] = 5e-4
+    result['arms'] = [arm]
+    result['reuseFrozenBaseline'] = True
+    return result
+
+
+def extension_budget(report, rows, prior):
+    train = sum(m.original.charge('train', rows[e], report['prices']) for e in report['trainIDs'])
+    scoring = sum(m.original.charge(k, rows[e], report['prices']) for e in report['evaluationIDs'] for k in ('generation', 'nll'))
+    retry = train + sum(max(m.original.charge(k, rows[e], report['prices']) for e in report['evaluationIDs']) for k in ('generation', 'nll'))
+    carried = prior['priorReservedTokenUSD'] + prior['priorStorageReserveUSD']
+    return {'scheduledTokenMaximumUSD': train + scoring, 'optionalRecoveryMaximumUSD': retry,
+            'carriedPriorCommitmentUSD': carried, 'checkpointStorageReserveUSD': EXTENSION_STORAGE_RESERVE,
+            'proposedAuthorizationUSD': carried + train + scoring + retry + EXTENSION_STORAGE_RESERVE}
+
+
 def prepare(args):
-    report, _ = load_prepared(args.prepared)
+    report, rows = load_prepared(args.prepared)
     m.require(not args.output.exists(), 'Use a new execution directory')
     budget = {**report['budget'], 'checkpointStorageReserveUSD': STORAGE_RESERVE,
               'proposedAuthorizationUSD': report['budget']['proposedAuthorizationUSD'] + STORAGE_RESERVE - 1.0}
+    extension = None
+    if args.extend_from:
+        extension = prior_binding(args.extend_from, args.prepared)
+        report = extension_report(report)
+        budget = extension_budget(report, rows, extension)
     m.require(budget['proposedAuthorizationUSD'] <= CEILING, 'Plan exceeds separate $20 ceiling')
     m.require(not subprocess.check_output(['git', 'status', '--porcelain'], cwd=m.ROOT, text=True).strip(), 'Commit before freezing execution')
     args.output.mkdir(parents=True)
@@ -79,15 +135,26 @@ def prepare(args):
                                   'conservativeBudgetBasis': 'Eight checkpoint pairs at 32 bytes per trainable parameter retained seven days: under $4 at quoted storage rate.',
                                   'priceUSDPerGBMonth': 0.10, 'source': 'https://tinker-docs.thinkingmachines.ai/tinker/models/'},
             'mainRunAuthorized': False}
+    if extension:
+        plan.update(extension=extension, authorization='User authorized adding the omitted 5e-4 arm on 2026-09-12, within the existing pilot $20 ceiling.',
+            schedule='One fresh 5e-4 adapter; identical first50 train once / next50 evaluate. Reuse original frozen baseline without provider calls.',
+            learningRateRationale={'rate': 5e-4, 'cookbookRecommendation': 0.0004990818286656736,
+                'source': 'https://github.com/thinking-machines-lab/tinker-cookbook/blob/main/tinker_cookbook/hyperparam_utils.py',
+                'meaning': 'Rounded model-specific LoRA starting recommendation omitted from the original sweep; not a demonstrated optimum.'})
+        plan['checkpointStorage'].update(reserveUSD=EXTENSION_STORAGE_RESERVE,
+            conservativeBudgetBasis='Up to three new checkpoint pairs at 32 bytes per trainable parameter for seven days; original $4 reserve remains charged separately.')
     m.original.save(args.output / 'execution.json', plan)
     print(json.dumps({'status': 'frozen', 'executionSHA256': m.file_hash(args.output / 'execution.json'),
-                      'scheduledTokenMaximumUSD': report['budget']['scheduledTokenMaximumUSD'],
+                      'scheduledTokenMaximumUSD': budget['scheduledTokenMaximumUSD'],
+                      'includingPriorAndRecoveryAndStorageUSD': budget['proposedAuthorizationUSD'],
                       'hardCeilingUSD': CEILING, 'providerCalls': 0}))
 
 
 class Calls:
-    def __init__(self, journal, prices, ceiling=CEILING, storage=STORAGE_RESERVE):
+    def __init__(self, journal, prices, ceiling=CEILING, storage=STORAGE_RESERVE, carried=0.):
         self.journal, self.prices, self.ceiling, self.storage = journal, prices, ceiling, storage
+        m.require(carried >= 0 and storage >= 0, 'Invalid carried budget')
+        self.carried = carried
 
     def spent(self):
         return sum(r['maximumUSD'] for r in self.journal.records if r['kind'] == 'operation_begin')
@@ -112,7 +179,7 @@ class Calls:
                               for r in self.journal.records)
                 m.require(count == 1 and retries == 0, 'Bounded scoring retry exhausted: ' + key)
             maximum = m.original.charge(kind, row, self.prices)
-            m.require(self.spent() + maximum + self.storage <= self.ceiling, 'Budget reached BEFORE dispatch')
+            m.require(self.carried + self.spent() + maximum + self.storage <= self.ceiling, 'Budget reached BEFORE dispatch')
             self.journal.append({'kind': 'operation_begin', 'key': key, 'operation': kind,
                                  'attemptOrdinal': count, 'maximumUSD': maximum, 'exampleID': row.get('exampleID'),
                                  'identity': identity or {}, 'at': m.utc()})
@@ -160,9 +227,9 @@ class PilotBridge(m.NativeBridge):
 
 
 class Executor:
-    def __init__(self, report, rows, journal, bridge_factory):
+    def __init__(self, report, rows, journal, bridge_factory, *, storage=STORAGE_RESERVE, carried=0.):
         self.report, self.rows, self.journal, self.factory = report, rows, journal, bridge_factory
-        self.calls = Calls(journal, report['prices'])
+        self.calls = Calls(journal, report['prices'], storage=storage, carried=carried)
 
     def score(self, name, bridge, checkpoint=None):
         ids = self.report['evaluationIDs']
@@ -199,7 +266,7 @@ class Executor:
                 m.require(ordinal == 1 and retries == 0, 'One whole-arm training recovery already used')
                 trainer = None
             total = sum(m.original.charge('train', self.rows[e], self.report['prices']) for e in order)
-            m.require(self.calls.spent() + total + self.calls.storage <= CEILING, 'Cannot afford complete update')
+            m.require(self.calls.carried + self.calls.spent() + total + self.calls.storage <= self.calls.ceiling, 'Cannot afford complete update')
             if trainer is None:
                 trainer = bridge.trainer(name, initial)
             self.journal.append({'kind': 'training_begin', 'arm': name, 'attemptOrdinal': ordinal,
@@ -227,7 +294,8 @@ class Executor:
 
     def run(self):
         contract = self.report['arms'][0]['contract']
-        self.score('frozen', self.factory(contract))
+        if not self.report.get('reuseFrozenBaseline'):
+            self.score('frozen', self.factory(contract))
         for arm in self.report['arms']:
             bridge = self.factory(arm['contract'])
             # Repair the narrow crash gap after saved checkpoint / before commit.
@@ -246,7 +314,7 @@ class Executor:
 def summarize(report, journal):
     results = journal.results()
     summary = {}
-    for name in ['frozen'] + [a['name'] for a in report['arms']]:
+    for name in ([] if report.get('reuseFrozenBaseline') else ['frozen']) + [a['name'] for a in report['arms']]:
         generations = [r['value'] for key, r in results.items() if key.startswith(name + '/score/') and key.endswith('/generation')]
         nll = [r['value'] for key, r in results.items() if key.startswith(name + '/score/') and key.endswith('/nll')]
         times = [r['latencySeconds'] for r in generations]
@@ -271,6 +339,14 @@ def run(args):
     m.require(m.file_hash(directory / 'preparation.json') == plan['preparedSHA256']
               and m.file_hash(directory / 'audit.json') == plan['auditSHA256'], 'Prepared artifact changed')
     report, rows = load_prepared(directory)
+    carried = 0.
+    storage = plan['checkpointStorage']['reserveUSD']
+    if plan.get('extension'):
+        prior = prior_binding(Path(plan['extension']['directory']), directory)
+        m.require(prior == plan['extension'], 'Previous results/budget changed')
+        report = extension_report(report)
+        m.require(extension_budget(report, rows, prior) == plan['budget'], 'Extension budget changed')
+        carried = prior['priorReservedTokenUSD'] + prior['priorStorageReserveUSD']
     m.require(report['arms'] == plan['training'], 'Frozen hyperparameters changed')
     journal = m.Journal(args.output, {'executionSHA256': m.file_hash(plan_path)})
     with journal.exclusive():
@@ -300,7 +376,7 @@ def run(args):
             m.native_datum(row, tinker, 248046)
         journal.append({'kind': 'remote_tokenizer_verified', 'vocabularySHA256': report['tokenizer']['tokenizerVocabularySHA256'],
                         'examples': 100, 'providerModelRevision': 'unverified: only model name exposed', 'at': m.utc()})
-        executor = Executor(report, rows, journal, lambda c: PilotBridge(proxy, tinker, tok, renderer, c))
+        executor = Executor(report, rows, journal, lambda c: PilotBridge(proxy, tinker, tok, renderer, c), storage=storage, carried=carried)
         state = {'version': VERSION, 'status': 'running', 'executionSHA256': m.file_hash(plan_path),
                  'implementationCommit': plan['implementationCommit'], 'startedAt': m.utc(), 'sessionID': session}
         if completed.exists(): state['priorAttempt'] = json.loads(completed.read_text()).get('startedAt')
@@ -313,7 +389,7 @@ def run(args):
             raise
         finally:
             state.update(finishedAt=m.utc(), reservedTokenCostUSD=executor.calls.spent(),
-                         includingStorageReserveUSD=executor.calls.spent() + STORAGE_RESERVE, hardCeilingUSD=CEILING,
+                         includingStorageReserveUSD=carried + executor.calls.spent() + storage, hardCeilingUSD=CEILING,
                          summary=summarize(report, journal), memoryPeakMiB=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024**2,
                          journalSHA256=m.file_hash(journal.path))
             m.original.save(completed, state)
@@ -323,6 +399,7 @@ def run(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--prepared', type=Path)
+    parser.add_argument('--extend-from', type=Path, help='Completed original pilot; add only 5e-4 under its remaining shared authorization')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--execute', action='store_true')
     parser.add_argument('--confirm-transfer', action='store_true')

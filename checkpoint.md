@@ -283,6 +283,21 @@ rate is not settled; saved optimizer states permit a later authorized continuati
 The larger experiment still needs approval. The collector/raw corpus were not
 modified or stopped.
 
+Correction and authorized extension (September 12): the original downward sweep
+omitted Tinker's model-specific LoRA starting recommendation, about `4.9908e-4`.
+`5e-5` was an implementer-selected lower rate, not Tinker guidance; no documented
+technical reason justified omitting the higher-rate condition. User approved
+adding one **fresh `5e-4` adapter**, using the exact same 50/50 split, tokenized
+inputs, loss masks, order, seed and other hyperparameters. Existing runs remain
+immutable; the frozen baseline is reused, not sampled again.
+
+Executor v2 adds this bounded extension and charges the prior **$13.57822** token
+and storage commitment against the same $20 authorization. Additional scheduled
+token maximum: **$2.71007**; new seven-day storage reserve: **$1.50**. Including
+one bounded training recovery and scoring retries, the combined ceiling estimate
+is **$19.08273 / $20**. No-network tests cover no baseline replay, fresh adapter
+creation, resume, and shared-budget enforcement. No full experiment is authorized.
+
 **STOP: preparation is not launch authorization.** The live collector was not
 stopped, rebuilt or changed by this cleanup. Preserve raw capture and prior
 model outputs; prune only explicitly identified reconstructible artifacts.
