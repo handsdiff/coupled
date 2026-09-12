@@ -63,7 +63,7 @@ def audit(directory, diagnostics=()):
                 assert math.isclose(v['forwardMetrics']['loss:sum'],v['weightedNLLSum'],rel_tol=2e-5,abs_tol=1e-4)
                 if v.get('optimizerUpdatePerformed') is not False:
                     assert all(math.isfinite(x) for x in v['optimizerMetrics'].values())
-    summary={}
+    summary={};prices=json.loads((p/'pricing.json').read_text())['models']
     for model,s in run['models'].items():
         assert s['tokenizerVerified'] and s['status']=='complete_pending_review'
         cap=s['capability']['scores'];assert set(cap)==set(cases)
@@ -90,6 +90,10 @@ def audit(directory, diagnostics=()):
              'frozenInputTokens':sum(a['inputTokens'] for a in generations),
              'frozenOutputTokens':sum(a['outputTokens'] for a in generations),
              'maximumNewDispatchTokenCostUSD':sum(v['maximumUSD'] for k,v in begins.items() if k.startswith(model+'/'))}
+        price=prices['qwen38_reasoning' if model.endswith('_low') else model]
+        row['frozenUncachedTokenEstimateUSD']=(row['frozenInputTokens']*price['prefill']+row['frozenOutputTokens']*price['sample'])/1e6
+        row['frozenMeanEstimatedQueryUSD']=row['frozenUncachedTokenEstimateUSD']/len(generations)
+        row['generationCostMeaning']='Saved actual token counts at execution-time full rates; excludes caching/storage and is not an invoice.'
         if 'overfit' in s:
             o=s['overfit'];epochs=o['epochsCompleted'];evaluations=len(o['snapshots'])
             assert counts['generation']==100+10*evaluations and counts['nll']==38+10*evaluations
@@ -164,7 +168,7 @@ def audit(directory, diagnostics=()):
             'storageReserveUSD':.5,'actualInvoiceCostUSD':None,
             'priorAttemptsTokenBoundUSD':plan['priorAttempts']['reservedTokenCostUSD'],
             'wallMinutes':(dt.datetime.fromisoformat(run['endedAt'])-dt.datetime.fromisoformat(run['startedAt'])).total_seconds()/60,
-            'lineageSHA256':{n:sha(p/n) for n in ('execution.json','run.json','operations.jsonl','reasoning-low-rows.jsonl')},
+            'lineageSHA256':{n:sha(p/n) for n in ('execution.json','run.json','operations.jsonl','reasoning-low-rows.jsonl','pricing.json')},
             'gradeFileSHA256':sha(grade_path) if grade_path.exists() else None,'auditCodeSHA256':sha(Path(__file__))}
 
 

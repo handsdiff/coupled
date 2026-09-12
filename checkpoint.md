@@ -1,4 +1,4 @@
-# Coupled checkpoint — September 11, 2026
+# Coupled checkpoint — September 12, 2026
 
 Current state only. Earlier work is preserved in the
 [archived checkpoint](docs/checkpoints/2026-09-11-before-era-replay.md).
@@ -114,26 +114,67 @@ not proof that supervised personalization cannot work.
 
 Results and the response-bound audit are in
 `coupled-data/sep02-10-qwen38-comprehensive-preflight-20260912-v3/`.
-Dispatched-token upper bound $12.39184 plus $0.25 storage reserve; actual billing
-has not populated. No full experiment started. The main corpus/packs/recipe
+Dispatched-token upper bound $12.39184 plus $0.25 storage reserve; final dollar
+billing is unverified. No full experiment started. The main corpus/packs/recipe
 and collector were not changed.
 
-At the user's request, additional formats are locally prepared in
-`coupled-data/sep02-10-qwen-model-preflights-20260912-v3/`:
+The additionally authorized shared $20 model comparison is now complete in
+`coupled-data/sep02-10-qwen-model-preflights-live-20260912-v3/`, using preparation
+`sep02-10-qwen-model-preflights-20260912-v4`. `REVIEW.md` contains all frozen
+answers, trained memorization outputs, curves, full hyperparameters, costs and
+restore caveats; `audit.json` binds responses, grades, sources and implementation.
 
-- Qwen3.6-35B-A3B reasoning off and Qwen3.5-35B-A3B-Base: identical selected
-  tests/semantic inputs, model-specific formatting and verified shifted masks.
-- Qwen3.8-27B reasoning xhigh: generation-only preparation. Human targets have
-  no reasoning traces; do not silently train empty reasoning as reasoning-on.
-- All 84 native rows reproduce byte-identically; memory <0.9 GiB. Base EOS is
-  248044, hybrid EOS 248046. The current 27B executor is not a Base executor.
-- Additional proposed maximum $18.19 including storage, requesting a separate
-  $20 approval. No added-model requests have been made. `REVIEW.md` states the
-  still-required executor, remote-tokenizer and reasoning-training decisions.
+| Configuration | Intended-thought passes, frozen | Ten-example memorization NLL | Exact at five passes |
+|---|---:|---:|---:|
+| Qwen3.8-27B, reasoning off | 0/80 | 3.5423 → 0.01363 | 8/10 |
+| Qwen3.6-35B-A3B, reasoning off | 3/80 | 3.7604 → 0.05405 | 8/10 |
+| Qwen3.5-35B-A3B-Base | 0/80 | 3.8183 → 0.04729 | 8/10 |
+| Qwen3.8-27B, reasoning low | 0/80 | Not trained | Not trained |
 
-Next: review these results and approve the extra-model scope/budget, then
-complete model-specific live execution safeguards. Choose a model/recipe from
-prediction quality, learning behavior and cost/latency before the full-run gate.
+The twenty substantive cases have five cases per application and four seeds
+each. Grades allow paraphrase/useful elaboration but require the intended
+thought; they are implementer judgments, not independently adjudicated or a
+random-corpus accuracy estimate. Memorization is not future-write learning.
+
+- Native formats, full remote/local vocabulary identity, selected token decode,
+  shifted masks, native EOS and returned weighted loss sums pass. Exact server
+  model revisions remain unverified. Base EOS is 248044; hybrid EOS is 248046.
+- Earlier xhigh reasoning probes remain preserved: three of four exhausted
+  8,192 tokens without a final answer. The separate low-effort series completed
+  all 80 final answers without length failures. Reasoning-on **training was not
+  tested**; no empty or invented human reasoning traces were supervised.
+- Base's frozen outputs all hit 512 tokens, generally continuing serialized
+  history. All three trained configurations subsequently passed the same
+  memorization gate at epoch five, avoiding the additional five planned passes.
+- Qwen3.8-off passed both next-update checkpoint-continuation checks exactly.
+  Qwen3.6 failed old and new; Qwen3.5 Base passed old and failed new. Sampler
+  likelihood agrees before/after restore, but subsequent training diverges.
+  Three unchanged-trainer forwards agree exactly. An explicit seeded restore
+  did not fix Qwen3.6; a long sampler probe still matched exactly. A same-client
+  load control was rejected by Tinker with HTTP 400, not treated as a pass.
+  The cause remains unresolved; do not relabel these as passed restore gates.
+- All dispatched paid operations are accounted for. Ten prior baseline results
+  were reused with hashes, not resampled. Additional-authorization token bound
+  is **$15.03494**, including both stopped attempts and all three diagnostics,
+  plus $0.50 storage reserve. This is separate from the original $12.39184
+  bound and is not invoice-verified billing. No larger experiment was launched.
+- The final read-only billing lookup has token buckets for the earlier sessions,
+  but not the completed main additional suite/diagnostics. Saved separately in
+  `billing-snapshot.json`; missing provider buckets are not zero cost.
+- Runs and diagnostics preserve tokens, final answers, raw reasoning, losses,
+  timings and checkpoint paths. One-hour disposable checkpoint TTL was planned;
+  their saved paths do not imply ongoing server retention. Local process memory
+  was approximately 157 MiB when checked; collector/raw evidence were untouched.
+- Full repository checks and dedicated no-network recovery checks pass. Some
+  older integration tests explicitly skip missing local historical artifacts.
+  The completed-run audit and review regenerate byte-for-byte; the chart was
+  visually inspected. The continuation failures above remain explicit.
+
+Next: review the saved answers and failed continuation checks. The tests prove
+the formats can train and memorize; they do **not** yet select a model that
+predicts future thoughts well or establish an old/new pipeline benefit. A small
+unseen-write learning check is a more informative next spending gate than
+jumping directly to the full experiment. Any larger run still needs approval.
 
 **STOP: preparation is not launch authorization.** The live collector was not
 stopped, rebuilt or changed by this cleanup. Preserve raw capture and prior
