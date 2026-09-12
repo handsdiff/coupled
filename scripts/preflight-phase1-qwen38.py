@@ -59,6 +59,17 @@ def local_renderer():
     return tok, mod.ExactContentRenderer(tok)
 
 
+def api_key(path):
+    text=path.read_text().strip()
+    if text and '\n' not in text and '=' not in text:return text
+    for line in text.splitlines():
+        entry=line.strip().removeprefix('export ')
+        if '=' in entry:
+            name,value=entry.split('=',1)
+            if name.strip()=='TINKER_API_KEY' and value.strip():return value.strip().strip('\"\'')
+    raise ContractError('Missing Tinker key')
+
+
 def charge(kind, row, prices):
     if kind == 'generation':
         return (row['promptTokenCount']*prices['prefill'] + 512*prices['sample'])/1e6
@@ -316,11 +327,7 @@ def run(args):
         row=rows['new'][case['exampleID']];datum_from_row(row,tinker)
         require(row['fullSequenceTokenSHA256']==case['fullSequenceTokenSHA256'],'Additional probe changed')
     # Read only the explicitly scoped credential; never echo or put it in artifacts.
-    for line in args.env_file.read_text().splitlines():
-        text=line.strip().removeprefix('export ')
-        if text.startswith('TINKER_API_KEY='):
-            os.environ['TINKER_API_KEY']=text.split('=',1)[1].strip().strip('\"\'');break
-    require(bool(os.environ.get('TINKER_API_KEY')),'Missing Tinker key')
+    os.environ['TINKER_API_KEY']=api_key(args.env_file)
     metadata={'purpose':'phase1-qwen38-bounded-preflight','plan':preparation['planSHA256']}
     service=tinker.ServiceClient(project_id=args.project_id,user_metadata=metadata,max_retries=0)
     capability=next((v for v in service.get_server_capabilities().supported_models if v.model_name==plan['contract']['model']),None)

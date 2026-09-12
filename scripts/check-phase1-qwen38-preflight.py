@@ -11,6 +11,9 @@ spec=importlib.util.spec_from_file_location('preflight',Path(__file__).with_name
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 socket.socket.connect=lambda *a,**k: (_ for _ in ()).throw(AssertionError('Network prohibited'))
 
+for content in ('synthetic-test-key','TINKER_API_KEY=synthetic-test-key','export TINKER_API_KEY = "synthetic-test-key"'):
+    assert m.api_key(SimpleNamespace(read_text=lambda content=content:content))=='synthetic-test-key'
+
 
 class FakeBridge:
     def __init__(self,weights_only=False):self.states={};self.weights_only=weights_only;self.trained=[]
