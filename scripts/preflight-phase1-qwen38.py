@@ -20,7 +20,6 @@ import statistics
 import subprocess
 import sys
 import time
-import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
 PREP = ROOT / 'coupled-data/sep02-10-training-prep-20260910'
@@ -298,7 +297,10 @@ def run(args):
     plan=json.loads(Path(preparation['executionPlan']).read_text());verify_execution_binding(plan)
     require(fingerprint(plan)==preparation['planSHA256'],'Frozen plan differs')
     # Public machine-readable price check before constructing an authenticated client.
-    with urllib.request.urlopen(PRICING_URL,timeout=30) as response: prices_doc=json.load(response)
+    # The public documentation endpoint rejects this Python runtime's default
+    # HTTP client; curl is already used successfully for this public resource.
+    prices_doc=json.loads(subprocess.check_output(
+        ['curl','--fail','--silent','--show-error','--max-time','30',PRICING_URL],text=True))
     current=next(v for v in prices_doc if v['tinker_id']==plan['contract']['model'])
     prices={k:float(current[k].lstrip('$')) for k in ('train','prefill','sample')}
     require(prices==preparation['pricesPerMillionTokens'],'Prices changed; regenerate bounded approval')
