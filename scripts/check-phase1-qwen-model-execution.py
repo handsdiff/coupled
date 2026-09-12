@@ -138,6 +138,32 @@ with tempfile.TemporaryDirectory() as directory:
     else: raise AssertionError('Cross-model ceiling was not enforced')
     assert len(journal.records) == 2
 with tempfile.TemporaryDirectory() as directory:
+    journal = m.Journal(Path(directory), {'test': 'carried prior attempt'})
+    calls = m.SharedCalls(journal, 'next-model', {'prefill': 1.86, 'sample': 5.595}, 8192, carried_usd=19.49)
+    try: calls.call('too-expensive', 'generation', row, lambda: 1)
+    except m.ContractError: pass
+    else: raise AssertionError('Prior-process costs were omitted')
+    assert len(journal.records) == 1
+
+with tempfile.TemporaryDirectory() as directory:
+    p = Path(directory)
+    execution = {'preparedSHA256': 'frozen', 'hardCeilingUSD': 20.}
+    (p/'execution.json').write_text(json.dumps(execution))
+    state = {'status': 'stopped_requires_review', 'projectID': m.PROJECT,
+             'executionSHA256': m.file_hash(p/'execution.json'), 'models': {'qwen38_reasoning': {}},
+             'reservedTokenCostUSD': .4}
+    (p/'run.json').write_text(json.dumps(state))
+    records = []
+    for i in range(4):
+        records += [{'kind': 'operation_begin', 'key': str(i), 'modelKey': 'qwen38_reasoning', 'operation': 'generation', 'maximumUSD': .1},
+                    {'kind': 'operation_result', 'key': str(i), 'value': {'reasoningClosed': False}}]
+    (p/'operations.jsonl').write_text(''.join(json.dumps(r)+'\n' for r in records))
+    assert m.stopped_reasoning_gate(p,'frozen')['reservedTokenCostUSD'] == .4
+    state['models']['qwen35_base'] = {}; (p/'run.json').write_text(json.dumps(state))
+    try: m.stopped_reasoning_gate(p,'frozen')
+    except m.ContractError: pass
+    else: raise AssertionError('Already-started 35B model could be replayed')
+with tempfile.TemporaryDirectory() as directory:
     journal = m.Journal(Path(directory), {'test': 'interruption'})
     calls = m.SharedCalls(journal, 'model', {'prefill': 1.86, 'sample': 5.595}, 8192)
     try: calls.call('sample', 'generation', row, lambda: 1 / 0)

@@ -28,7 +28,7 @@ original = module('qwen_reference_preflight', 'preflight-phase1-qwen38.py')
 from phase1_qwen38_execution import (ContractError, Journal, TinkerBridge, file_hash,
     fingerprint, nll_result, plain, require, text_bpb_result, utc)
 
-VERSION = 'phase1-qwen-model-preflight-execution-v1'
+VERSION = 'phase1-qwen-model-preflight-execution-v2'
 MODEL_ORDER = ['qwen38_reasoning', 'qwen36_hybrid', 'qwen35_base']
 PROJECT = '10b258ab-25fe-45e0-a54b-fef023154281'
 
@@ -109,8 +109,10 @@ class NativeBridge(TinkerBridge):
 
 
 class SharedCalls:
-    def __init__(self, journal, key, prices, maximum_tokens):
+    def __init__(self, journal, key, prices, maximum_tokens, carried_usd=0.):
         self.journal, self.key, self.prices, self.maximum_tokens = journal, key, prices, maximum_tokens
+        require(0 <= carried_usd <= 20, 'Invalid prior-attempt charge')
+        self.carried_usd = carried_usd
 
     def call(self, key, kind, row, fn):
         full_key = self.key + '/' + key
@@ -121,7 +123,7 @@ class SharedCalls:
         elif kind == 'train': maximum = row['trainingDatumPositions'] * p['train'] / 1e6
         else:
             require(kind == 'admin', 'Unknown operation'); maximum = 0.
-        spent = sum(r.get('maximumUSD', 0.) for r in self.journal.records if r['kind'] == 'operation_begin')
+        spent = self.carried_usd + sum(r.get('maximumUSD', 0.) for r in self.journal.records if r['kind'] == 'operation_begin')
         require(spent + maximum + .5 <= 20., 'Shared $20 ceiling reached before dispatch')
         self.journal.append({'kind': 'operation_begin', 'key': full_key, 'operation': kind, 'modelKey': self.key,
             'exampleID': row['exampleID'], 'maximumUSD': maximum, 'at': utc()})
@@ -164,16 +166,45 @@ def local_model(key):
     return tok, prep.native_runtime_from_tokenizer(key, tok).renderer
 
 
+def stopped_reasoning_gate(directory, prepared_sha):
+    """Continue only independent, never-started models; never replay the gate."""
+    if directory is None: return None
+    state = json.loads((directory / 'run.json').read_text())
+    execution = json.loads((directory / 'execution.json').read_text())
+    require(state['status'] == 'stopped_requires_review' and state['projectID'] == PROJECT,
+            'Prior attempt is not a stopped run in the authorized project')
+    require(execution['preparedSHA256'] == prepared_sha and execution['hardCeilingUSD'] == 20., 'Prior data/budget mismatch')
+    require(file_hash(directory / 'execution.json') == state['executionSHA256'], 'Prior execution changed')
+    require(set(state['models']) == {'qwen38_reasoning'}, 'Another model has already started')
+    require(not execution.get('priorReasoningGate'), 'Nested attempt carry is not supported')
+    records = [json.loads(l) for l in (directory / 'operations.jsonl').open()]
+    begins = [r for r in records if r['kind'] == 'operation_begin']
+    results = [r for r in records if r['kind'] == 'operation_result']
+    require(len(begins) == len(results) == 4 and {r['key'] for r in begins} == {r['key'] for r in results},
+            'Prior gate has missing/extra operations')
+    require(all(r.get('modelKey') == 'qwen38_reasoning' and r['operation'] == 'generation' for r in begins), 'Prior spend is not just the reasoning gate')
+    require(any(not r['value'].get('reasoningClosed') for r in results), 'No reasoning-limit pause to continue from')
+    cost = sum(r['maximumUSD'] for r in begins)
+    require(math.isclose(cost, state['reservedTokenCostUSD'], abs_tol=1e-9), 'Prior cost accounting differs')
+    return {'directory': str(directory.resolve()), 'reservedTokenCostUSD': cost,
+            'filesSHA256': {str((directory / name).resolve()): file_hash(directory / name)
+                            for name in ('run.json', 'execution.json', 'operations.jsonl')},
+            'reason': 'Reasoning batch held; run only the two unstarted 35B suites under the SAME $20 authorization'}
+
+
 def prepare(args):
     require(not args.output.exists(), 'Use a fresh output directory')
     report, reference, rows = load_inputs(args.prepared)
-    maximum = sum(s['budget'].get('maximumTokenCostUSD', s['budget']['frozen80GenerationsMaximumUSD']) for s in report['models'].values()) + .5
+    prior = stopped_reasoning_gate(args.continue_after_reasoning_gate, file_hash(args.prepared / 'preparation.json'))
+    order = MODEL_ORDER[1:] if prior else MODEL_ORDER
+    maximum = sum(report['models'][k]['budget'].get('maximumTokenCostUSD', report['models'][k]['budget']['frozen80GenerationsMaximumUSD']) for k in order)
+    maximum += .5 + (prior['reservedTokenCostUSD'] if prior else 0.)
     require(maximum <= 20., 'Prepared tests exceed shared approval')
     args.output.mkdir(parents=True)
     original.save(args.output / 'execution.json', {'version': VERSION, 'preparedDirectory': str(args.prepared.resolve()),
         'preparedSHA256': file_hash(args.prepared / 'preparation.json'), 'runtime': runtime_binding(),
         'projectID': PROJECT, 'hardCeilingUSD': 20., 'maximumIncludingStorageUSD': maximum,
-        'modelOrder': MODEL_ORDER, 'reasoningOn': 'frozen inference only; score final answer, never reasoning text',
+        'modelOrder': order, 'priorReasoningGate': prior, 'reasoningOn': 'frozen inference only; score final answer, never reasoning text',
         'retryPolicy': 'No automatic resampling or replay; all uncertain dispatches remain charged against shared ceiling',
         'authorization': 'User approved additional $20 on 2026-09-12; not authorization for main experiment'})
     print(json.dumps({'status': 'ready_for_code_gate', 'maximumIncludingStorageUSD': maximum, 'providerCalls': 0}))
@@ -186,11 +217,17 @@ def run(args):
     require(not subprocess.check_output(['git', 'status', '--porcelain'], cwd=ROOT, text=True).strip(), 'Commit before execution')
     require(execution['runtime'] == runtime_binding(), 'Runtime changed after preparation')
     require(file_hash(args.prepared / 'preparation.json') == execution['preparedSHA256'], 'Prepared manifest changed')
+    prior = execution.get('priorReasoningGate')
+    carried = prior['reservedTokenCostUSD'] if prior else 0.
+    if prior:
+        require(stopped_reasoning_gate(Path(prior['directory']), execution['preparedSHA256']) == prior, 'Prior gate artifact changed')
+    order = MODEL_ORDER[1:] if prior else MODEL_ORDER
+    require(execution['modelOrder'] == order, 'Unapproved model selection')
     report, reference, rows = load_inputs(args.prepared)
     prices_doc = json.loads(subprocess.check_output(['curl', '--fail', '--silent', '--show-error', '--max-time', '30',
                                                     original.PRICING_URL], text=True))
     checked = {}
-    for key in MODEL_ORDER:
+    for key in order:
         model = report['models'][key]['model']; price = next(v for v in prices_doc if v['tinker_id'] == model)
         checked[key] = {k: float(price[k].lstrip('$')) for k in ('train', 'prefill', 'sample')}
         require(checked[key] == prep.PRICES[key], 'Prices changed; review before dispatch')
@@ -206,13 +243,14 @@ def run(args):
     state = {'version': VERSION, 'status': 'running', 'startedAt': utc(), 'sessionID': service.holder.get_session_id(),
              'executionSHA256': file_hash(args.output / 'execution.json'),
              'implementationCommit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
-             'projectID': PROJECT, 'maximumUSD': 20., 'models': {}, 'mainRunStarted': False}
+             'projectID': PROJECT, 'maximumUSD': 20., 'models': {}, 'mainRunStarted': False,
+             'priorReasoningGate': prior, 'priorReservedTokenCostUSD': carried}
     journal = Journal(args.output, {'executionSHA256': state['executionSHA256']})
     def save(): original.save(args.output / 'run.json', state)
     save()
     try:
         with journal.exclusive():
-            for key in MODEL_ORDER:
+            for key in order:
                 spec = report['models'][key]; model = spec['model']
                 require(model in available and available[model].max_context_length >= 65536, 'Model or context unavailable')
                 tok, renderer = local_model(key)
@@ -232,7 +270,7 @@ def run(args):
                 contract.update(model=model, reasoning=key == 'qwen38_reasoning',
                     generation={**spec['generation'], 'seed': 17, 'samplesPerExample': 1})
                 bridge = NativeBridge(proxy, tinker, tok, renderer, contract)
-                calls = SharedCalls(journal, key, checked[key], spec['generation']['maximumTokens'])
+                calls = SharedCalls(journal, key, checked[key], spec['generation']['maximumTokens'], carried)
                 extra = reference['additionalTests']
                 if key != 'qwen38_reasoning':
                     model_state['originalChecks'] = {}
@@ -276,6 +314,7 @@ def run(args):
     finally:
         state['endedAt'] = utc()
         state['reservedTokenCostUSD'] = sum(r.get('maximumUSD', 0.) for r in journal.records if r['kind'] == 'operation_begin')
+        state['totalAuthorizationReservedTokenCostUSD'] = carried + state['reservedTokenCostUSD']
         save()
     start = dt.datetime.fromisoformat(state['startedAt']).replace(minute=0, second=0, microsecond=0)
     end = dt.datetime.now(dt.timezone.utc).replace(minute=0, second=0, microsecond=0) + dt.timedelta(hours=1)
@@ -291,6 +330,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--prepared', type=Path, required=True); p.add_argument('--output', type=Path, required=True)
     p.add_argument('--env-file', type=Path, default=ROOT / '.env'); p.add_argument('--confirm-transfer', action='store_true')
+    p.add_argument('--continue-after-reasoning-gate', type=Path)
     p.add_argument('--prepare', action='store_true'); p.add_argument('--execute', action='store_true'); a = p.parse_args()
     require(a.prepare != a.execute, 'Choose preparation or execution')
     prepare(a) if a.prepare else run(a)
