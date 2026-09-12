@@ -418,6 +418,34 @@ Analysis, judgments, report and plot regenerate byte-identically. Analysis SHA:
 collector was not stopped, rebuilt or changed. Raw capture, corpus and prior
 model outputs remain untouched; no artifact deletion was needed.
 
+### Matched Qwen3.8 future-write pilot (September 12)
+
+User approved completing the model comparison with **one Qwen3.8-27B,
+reasoning-off, 2e-4 arm**, not another learning-rate sweep. Fresh rank-32
+attention/MLP/unembedding LoRA, batch one, one deterministic pass over the same
+first 50 examples; score the same next 50 with both frozen and trained models.
+Adam betas 0.9/0.95, epsilon 1e-12, decay 0, clipping 1, seed/order 17; generation
+temperature 0.6, seed 17, ceiling 512 and native EOS 248046. This authorizes the
+bounded pilot only, under a conservative **$20 ceiling**.
+
+Preparation is in `coupled-data/sep02-10-qwen38-future-pilot-20260912-v1/`.
+It selects the original, already Qwen3.8-native rows unchanged. Semantic inputs,
+targets and order match Base/Qwen3.6. All 100 native renderings, shifted masks,
+exact target bytes and EOS are independently audited, including rejection of
+the Base EOS; deterministic preparation is byte-identical. No reasoning traces
+receive loss. The empty non-thinking envelope belongs to the masked prompt.
+Pack SHA: `abaa7dd13371c35b7c7ef923ea0276043ae2bfcee63a373ec5ea195de287f72c`.
+
+Scheduled maximum token charges are **$14.42586**. One allowed training restart,
+bounded scoring retries and a $1 seven-day private-checkpoint storage reserve
+bring the upper estimate to **$19.93743 / $20**. Executor v4 freezes the exact
+code/runtime and journals cost before dispatch. No provider calls occurred in
+preparation. The final comparison must retain all answers, apply the existing
+intended-thought rubric, and distinguish matched-rate from best-rate results.
+Report content NLL, first-token/remaining-token decomposition, intent passes,
+cost and latency; this is one developmental future block, not a sustained
+learning curve or authorization for the larger old/new experiment.
+
 References: [experiment definition](PIPELINE-COMPARISON.md),
 [storage policy](STORAGE.md), [collection guide](COLLECTION_GUIDE.md), and
 `~/Vaults/Notes/Thesis.md`, `Data.md`, `Phase 1.md`.

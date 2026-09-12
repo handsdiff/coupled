@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Resumable, separately authorized $20 future-write LR pilot, not the main run.
 
-One shared frozen baseline, three fresh adapters, 50 updates apiece, then 50
+One shared frozen baseline, prepared fresh adapters, 50 updates apiece, then 50
 future queries. Every dispatch is fsynced before provider submission. Uncertain
 cost is never refunded. A partial update restarts from that arm's INITIAL full
 optimizer checkpoint once globally; completed scores are never resampled.
@@ -25,17 +25,18 @@ import time
 spec = importlib.util.spec_from_file_location('lr_prepare', Path(__file__).with_name('prepare-phase1-qwen-lr-pilot.py'))
 p = importlib.util.module_from_spec(spec); spec.loader.exec_module(p)
 m = p.m
-VERSION = 'phase1-qwen-future-lr-execution-v3'
+VERSION = 'phase1-qwen-future-lr-execution-v4'
 CEILING = 20.0
 STORAGE_RESERVE = 4.0
 EXTENSION_STORAGE_RESERVE = 1.5
+QWEN38_STORAGE_RESERVE = 1.0
 
 
 def runtime():
     value = m.runtime_binding()
     for name in ('prepare-phase1-qwen-lr-pilot.py', 'check-phase1-qwen-lr-pilot.py',
                  'run-phase1-qwen-lr-pilot.py', 'check-phase1-qwen-lr-execution.py',
-                 'prepare-phase1-qwen-base-lr-pilot.py'):
+                 'prepare-phase1-qwen-base-lr-pilot.py', 'prepare-phase1-qwen38-future-pilot.py'):
         path = m.ROOT / 'scripts' / name
         value['filesSHA256'][str(path)] = m.file_hash(path)
     return value
@@ -43,7 +44,8 @@ def runtime():
 
 def native_spec(report):
     specs = {'Qwen/Qwen3.6-35B-A3B': ('qwen36_hybrid', 248046, 'off'),
-             'Qwen/Qwen3.5-35B-A3B-Base': ('qwen35_base', 248044, 'not_applicable')}
+             'Qwen/Qwen3.5-35B-A3B-Base': ('qwen35_base', 248044, 'not_applicable'),
+             'Qwen/Qwen3.8-27B': ('qwen38_off', 248046, 'off')}
     m.require(report['model'] in specs, 'Unsupported pilot model')
     key, eos, reasoning = specs[report['model']]
     m.require(report['reasoning'] == reasoning and report['tokenizer']['nativeStopTokenIDs'] == [eos], 'Wrong native mode/EOS')
@@ -51,7 +53,20 @@ def native_spec(report):
         c = arm['contract']
         m.require(c['model'] == report['model'] and not c['reasoning'], 'Training model/reasoning differs')
         m.require(c['generation']['stopTokenIDs'] == [eos] and c['loss']['nativeTerminatorTokenID'] == eos, 'Training/generation EOS mismatch')
+    if key == 'qwen38_off':
+        m.require(len(report['arms']) == 1 and report['arms'][0]['name'] == 'lr-0.0002'
+                  and report['arms'][0]['contract']['optimizer']['learningRate'] == 2e-4,
+                  'Qwen3.8 authorization is one reasoning-off 2e-4 arm, not a sweep')
     return key, eos
+
+
+def local_renderer(model_key):
+    # Keep the already-audited Qwen3.8 renderer separate from reasoning-on.
+    return m.original.local_renderer() if model_key == 'qwen38_off' else m.local_model(model_key)
+
+
+def storage_reserve(report):
+    return QWEN38_STORAGE_RESERVE if report['model'] == 'Qwen/Qwen3.8-27B' else STORAGE_RESERVE
 
 
 def load_prepared(directory):
@@ -124,8 +139,9 @@ def extension_budget(report, rows, prior):
 def prepare(args):
     report, rows = load_prepared(args.prepared)
     m.require(not args.output.exists(), 'Use a new execution directory')
-    budget = {**report['budget'], 'checkpointStorageReserveUSD': STORAGE_RESERVE,
-              'proposedAuthorizationUSD': report['budget']['proposedAuthorizationUSD'] + STORAGE_RESERVE - report['budget']['checkpointStorageReserveUSD']}
+    storage = storage_reserve(report)
+    budget = {**report['budget'], 'checkpointStorageReserveUSD': storage,
+              'proposedAuthorizationUSD': report['budget']['proposedAuthorizationUSD'] + storage - report['budget']['checkpointStorageReserveUSD']}
     extension = None
     if args.extend_from:
         extension = prior_binding(args.extend_from, args.prepared)
@@ -145,7 +161,7 @@ def prepare(args):
             'recovery': {'maximumTrainingArmRestartsAcrossRun': 1,
                          'maximumScoreRetriesAcrossRun': {'generation': 1, 'nll': 1},
                          'policy': 'Retain uncertain dispatch maximum cost. Restart interrupted training from initial full optimizer state; never resume partial updates blindly.'},
-            'checkpointStorage': {'ttlSeconds': 604800, 'reserveUSD': STORAGE_RESERVE,
+            'checkpointStorage': {'ttlSeconds': 604800, 'reserveUSD': storage,
                                   'cookbookTrainableParameterEstimate': 561463296,
                                   'conservativeBudgetBasis': 'Up to nine checkpoint pairs at 32 bytes per trainable parameter retained seven days: under $4 at quoted storage rate.',
                                   'priceUSDPerGBMonth': 0.10, 'source': 'https://tinker-docs.thinkingmachines.ai/tinker/models/'},
@@ -153,6 +169,11 @@ def prepare(args):
     if report['model'] == 'Qwen/Qwen3.5-35B-A3B-Base':
         plan.update(authorization='User approved repeating the four-rate initial learning test for Qwen3.5 Base after the quoted approximately $14 estimate/$20 ceiling, 2026-09-12. Separate from prior Qwen3.6 spending.',
                     primaryComparisonLearningRate=2e-4, comparisonRole='2e-4 is the provisional matched-model comparison; other rates are diagnostics, not an automatic selection policy.')
+    if report['model'] == 'Qwen/Qwen3.8-27B':
+        plan.update(authorization='User approved the single reasoning-off Qwen3.8 2e-4 future-write pilot after an approximately $14.40 token quote plus storage/recovery, 2026-09-12. Conservatively capped at $20; no additional rates or full experiment.',
+                    primaryComparisonLearningRate=2e-4, comparisonRole='Complete the same 50-train/50-future comparison with Base and Qwen3.6, not a learning-rate sweep.')
+        plan['checkpointStorage'].update(cookbookTrainableParameterEstimate=241418240,
+            conservativeBudgetBasis='Up to three checkpoint pairs including recovery, at 32 bytes per rank-32 trainable parameter for seven days: about $0.55, below the $1 reserve.')
     if extension:
         plan.update(extension=extension, authorization='User authorized adding the omitted 5e-4 arm on 2026-09-12, within the existing pilot $20 ceiling.',
             schedule='One fresh 5e-4 adapter; identical first50 train once / next50 evaluate. Reuse original frozen baseline without provider calls.',
@@ -384,7 +405,7 @@ def run(args):
         session = service.holder.get_session_id()
         journal.append({'kind': 'provider_session', 'sessionID': session, 'at': m.utc()})
         model_key, eos = native_spec(report)
-        tok, renderer = m.local_model(model_key)
+        tok, renderer = local_renderer(model_key)
         m.require(renderer.get_stop_sequences() == [eos], 'Renderer termination changed')
         capabilities = {x.model_name: x for x in service.get_server_capabilities().supported_models}
         m.require(capabilities[report['model']].max_context_length >= 65536, 'Model context unavailable')

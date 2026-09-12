@@ -67,6 +67,20 @@ def tests():
         'arms':[{'contract':{'model':'Qwen/Qwen3.5-35B-A3B-Base', 'reasoning':None,
                             'generation':{'stopTokenIDs':[248044]}, 'loss':{'nativeTerminatorTokenID':248044}}}]}
     assert r.native_spec(base_native) == ('qwen35_base', 248044)
+    q38 = {'model':'Qwen/Qwen3.8-27B','reasoning':'off','tokenizer':{'nativeStopTokenIDs':[248046]},
+           'arms':[{'name':'lr-0.0002','contract':{'model':'Qwen/Qwen3.8-27B','reasoning':False,
+                    'generation':{'stopTokenIDs':[248046]},'loss':{'nativeTerminatorTokenID':248046},
+                    'optimizer':{'learningRate':2e-4}}}]}
+    assert r.native_spec(q38)==('qwen38_off',248046) and r.storage_reserve(q38)==1.
+    assert r.storage_reserve(base_native)==4.
+    for change in ('reasoning','rate','extra_arm'):
+        wrong=copy.deepcopy(q38)
+        if change=='reasoning':wrong['arms'][0]['contract']['reasoning']=True
+        elif change=='rate':wrong['arms'][0]['contract']['optimizer']['learningRate']=5e-4
+        else:wrong['arms'].append(copy.deepcopy(wrong['arms'][0]))
+        try:r.native_spec(wrong)
+        except m.ContractError:pass
+        else:raise AssertionError('Unapproved Qwen3.8 mode/rate/sweep accepted')
     for field in ('tokenizer', 'generation', 'loss'):
         wrong = copy.deepcopy(base_native)
         if field == 'tokenizer': wrong['tokenizer']['nativeStopTokenIDs'] = [248046]
@@ -130,6 +144,15 @@ def tests():
         before = copy.deepcopy(world)
         with j.exclusive(): r.Executor(base_report, rows, j, lambda c:Fake(c,world)).run()
         assert world == before
+    single_report=copy.deepcopy(report);single_report['arms']=[{**q38['arms'][0],'trainingOrder':ids[:2]}]
+    with tempfile.TemporaryDirectory(prefix='coupled-q38-one-rate-') as td:
+        j=m.Journal(Path(td),{'q38':1});world={k:[] for k in ('creates','train','generations','nll','checkpoints')}
+        with j.exclusive():r.Executor(single_report,rows,j,lambda c:Fake(c,world),storage=1.).run()
+        assert len(world['train'])==2 and len(world['generations'])==len(world['nll'])==4
+        assert len(world['creates'])==1 and world['creates'][0][1] is None
+        before=copy.deepcopy(world)
+        with j.exclusive():r.Executor(single_report,rows,j,lambda c:Fake(c,world),storage=1.).run()
+        assert world==before
     # Explicitly exercise crash after checkpoint result but before logical commit.
     with tempfile.TemporaryDirectory(prefix='coupled-lr-checkpoint-gap-') as td:
         j = m.Journal(Path(td), {'test': 2})
